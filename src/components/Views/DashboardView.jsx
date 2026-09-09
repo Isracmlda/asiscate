@@ -287,18 +287,21 @@ export function DashboardView({
                   .filter(s => s.groupId === selectedGroupId)
                   .map(student => {
                     const status = getAttendanceStatus(student, attendanceDate);
+                    const displayEmail = student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
+                    const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
+                    const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
                     return (
                       <div key={student.id} className="p-4 space-y-3">
                         <div className="flex justify-between items-start">
                           <div>
-                            <h4 className="font-bold text-sm">{student.name}</h4>
+                            <h4 className="font-bold text-sm">{student.fullName || student.name}</h4>
                             <p className="text-xs text-slate-400 mt-0.5">
-                              {student.parentEmail ? `📧 ${student.parentEmail}` : <span className="italic text-slate-500">Sin correo</span>}
+                              {displayEmail ? `📧 ${displayEmail}` : <span className="italic text-slate-500">Sin correo</span>}
                             </p>
                           </div>
                           <div className="flex gap-1">
-                            <button disabled={!student.parentEmail} onClick={() => handleOpenAttendanceMessage(student, 'email')} className="text-[11px] bg-sky-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold px-2 py-1 rounded-md">Correo</button>
-                            <button disabled={!student.parentPhone} onClick={() => handleOpenAttendanceMessage(student, 'phone')} className="text-[11px] bg-emerald-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold px-2 py-1 rounded-md">Teléfono</button>
+                            <button disabled={!displayEmail} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={displayEmail || 'Correo no registrado'} className="max-w-36 truncate text-[11px] bg-sky-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold px-2 py-1 rounded-md">✉ {displayEmail || 'Sin correo'}</button>
+                            <button disabled={!displayPhone} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={displayPhone || 'Teléfono no registrado'} className="max-w-36 truncate text-[11px] bg-emerald-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold px-2 py-1 rounded-md">☎ {displayPhone || 'Sin teléfono'}</button>
                           </div>
                         </div>
 
@@ -360,11 +363,14 @@ export function DashboardView({
                       .filter(s => s.groupId === selectedGroupId)
                       .map(student => {
                         const status = getAttendanceStatus(student, attendanceDate);
+                        const displayEmail = student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
+                        const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
+                        const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
 
                         return (
                           <tr key={student.id} className="hover:bg-slate-700/20 transition-colors">
                             <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold">
-                              {student.name}
+                              {student.fullName || student.name}
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-center">
                               <div className={`inline-flex rounded-lg shadow-sm border p-1 gap-1 ${themeMode === 'dark' ? 'border-neutral-800 bg-black' : 'border-slate-200 bg-white'}`}>
@@ -403,18 +409,20 @@ export function DashboardView({
                             <td className="px-6 py-4 whitespace-nowrap text-right">
                               <div className="flex justify-end gap-2">
                                 <button
-                                  disabled={!student.parentEmail}
-                                  onClick={() => handleOpenAttendanceMessage(student, 'email')}
-                                  className="text-xs bg-sky-600 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold px-3 py-1.5 rounded-lg border border-sky-500 disabled:border-slate-600 transition-colors"
+                                  disabled={!displayEmail}
+                                  onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')}
+                                  title={displayEmail || 'Correo no registrado'}
+                                  className="max-w-64 truncate text-xs bg-sky-600 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold px-3 py-1.5 rounded-lg border border-sky-500 disabled:border-slate-600 transition-colors"
                                 >
-                                  {student.parentEmail ? 'Correo' : 'Correo no registrado'}
+                                  {displayEmail ? `✉ ${displayEmail}` : 'Correo no registrado'}
                                 </button>
                                 <button
-                                  disabled={!student.parentPhone}
-                                  onClick={() => handleOpenAttendanceMessage(student, 'phone')}
-                                  className="text-xs bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold px-3 py-1.5 rounded-lg border border-emerald-500 disabled:border-slate-600 transition-colors"
+                                  disabled={!displayPhone}
+                                  onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')}
+                                  title={displayPhone || 'Teléfono no registrado'}
+                                  className="max-w-52 truncate text-xs bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold px-3 py-1.5 rounded-lg border border-emerald-500 disabled:border-slate-600 transition-colors"
                                 >
-                                  {student.parentPhone ? 'Teléfono' : 'Teléfono no registrado'}
+                                  {displayPhone ? `☎ ${displayPhone}` : 'Teléfono no registrado'}
                                 </button>
                               </div>
                             </td>

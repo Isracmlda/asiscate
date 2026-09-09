@@ -198,12 +198,18 @@ export default function EnrollmentView({
   // Modal de Pago y Recibo
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [registeredStudentId, setRegisteredStudentId] = useState(null);
-  const [paymentOption, setPaymentOption] = useState('MATRICULA'); // MATRICULA | MATRICULA_LIBRO
+  const [paymentOption, setPaymentOption] = useState('MATRICULA'); // MATRICULA | LIBRO | MATRICULA_LIBRO
   const [customAmount, setCustomAmount] = useState(3000);
   const [paymentMethod, setPaymentMethod] = useState('EFECTIVO');
   const [isSaving, setIsSaving] = useState(false);
   const [isSendingEmail, setIsSendingEmail] = useState(false);
   const [generatedReceipt, setGeneratedReceipt] = useState(null);
+
+  const getPaymentConcept = (option = paymentOption) => {
+    if (option === 'LIBRO') return 'Pago de libro';
+    if (option === 'MATRICULA_LIBRO') return 'Pago de matrícula + libro';
+    return 'Pago de matrícula';
+  };
 
   // Calcular Edad automáticamente
   useEffect(() => {
@@ -228,6 +234,8 @@ export default function EnrollmentView({
       setCustomAmount(0);
     } else if (paymentOption === 'MATRICULA') {
       setCustomAmount(3000);
+    } else if (paymentOption === 'LIBRO') {
+      setCustomAmount(bookPrice);
     } else {
       setCustomAmount(3000 + bookPrice);
     }
@@ -471,6 +479,9 @@ export default function EnrollmentView({
 
       // 2. Guardar en Firestore
       const studentData = {
+        // Se conserva `fullName` para el expediente y `name` para los módulos
+        // operativos (asistencia, grupos y carnet QR).
+        name: student.fullName,
         fullName: student.fullName,
         idType: (student.birthDate && student.age >= 12) ? student.idType : null,
         nationalId: (student.birthDate && student.age >= 12) ? student.nationalId : null,
@@ -533,13 +544,16 @@ export default function EnrollmentView({
       if (paymentOption === 'MATRICULA_LIBRO') {
         bookPaid = true;
         contributionAmount = Math.max(0, customAmount - bookPrice);
+      } else if (paymentOption === 'LIBRO') {
+        bookPaid = true;
+        contributionAmount = 0;
       }
 
       const paymentRecord = {
         studentId: registeredStudentId,
         studentName: student.fullName,
         receiptNumber: receiptNum,
-        concept: paymentOption === 'MATRICULA' ? 'Pago de matrícula' : 'Pago de matrícula + libro',
+        concept: getPaymentConcept(),
         totalAmount: Number(customAmount),
         contributionAmount: contributionAmount,
         bookAmount: bookPaid ? bookPrice : 0,
@@ -605,7 +619,7 @@ export default function EnrollmentView({
             studentName: student.fullName,
             invoiceName: student.fullName,
             groupName: '',
-            concept: paymentOption === 'MATRICULA' ? 'Pago de matrícula' : 'Pago de matrícula + libro',
+            concept: getPaymentConcept(),
             amount: Number(customAmount),
             paymentMethod: paymentMethod,
             dateTime: new Date().toISOString(),
@@ -768,7 +782,7 @@ export default function EnrollmentView({
         receiptNumber: formattedNum,
         amount: customAmount,
         paymentMethod: paymentMethod,
-        concept: paymentOption === 'MATRICULA' ? 'Pago de matrícula' : 'Pago de matrícula + libro',
+        concept: getPaymentConcept(),
         cycle: cycle,
         parish: parishName,
         pdfBase64: pdfBase64
@@ -1287,6 +1301,7 @@ export default function EnrollmentView({
                   <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Concepto de Cobro</label>
                   <select value={paymentOption} onChange={(e) => setPaymentOption(e.target.value)} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
                     <option value="MATRICULA">Solo Matrícula (₡3,000)</option>
+                    <option value="LIBRO">Solo Libro ({['Sexto Nivel', 'Septimo Nivel', 'Confirma'].includes(student.level) ? '₡4,000' : '₡3,500'})</option>
                     <option value="MATRICULA_LIBRO">Matrícula + Libro ({['Sexto Nivel', 'Septimo Nivel', 'Confirma'].includes(student.level) ? '₡7,000' : '₡6,500'})</option>
                   </select>
                 </div>
@@ -1340,6 +1355,14 @@ export default function EnrollmentView({
 
                         const matchedParroquia = parroquias.find(p => p.id === selectedParroquiaId);
                         const parishName = matchedParroquia ? matchedParroquia.name : '';
+                        const isHighLevel = ['Sexto Nivel', 'Septimo Nivel', 'Confirma'].includes(student.level);
+                        const bookPrice = isHighLevel ? 4000 : 3500;
+                        const includesBook = paymentOption === 'LIBRO' || paymentOption === 'MATRICULA_LIBRO';
+                        const contributionAmount = paymentOption === 'LIBRO'
+                          ? 0
+                          : paymentOption === 'MATRICULA_LIBRO'
+                            ? Math.max(0, Number(customAmount) - bookPrice)
+                            : Number(customAmount);
 
                         const newPaymentRecord = {
                           id: `payment-${Date.now()}`,
@@ -1350,8 +1373,11 @@ export default function EnrollmentView({
                           groupId: '',
                           groupName: student.level,
                           parish: parishName,
-                          concept: paymentOption === 'MATRICULA' ? 'Pago de matrícula' : 'Pago de matrícula + libro',
+                          concept: getPaymentConcept(),
                           amount: Number(customAmount),
+                          contributionAmount,
+                          bookAmount: includesBook ? bookPrice : 0,
+                          bookPaid: includesBook,
                           currency: 'CRC',
                           paymentMethod: paymentMethod === 'EFECTIVO' ? 'Efectivo' : 'Sinpe',
                           dateTime: now.toISOString(),

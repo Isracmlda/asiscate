@@ -14,7 +14,7 @@ import { ReportsView } from './components/Views/ReportsView';
 import { InventoryView } from './components/Views/InventoryView';
 import { PaymentsView } from './components/Views/PaymentsView';
 import { UserManagementView } from './components/Views/UserManagementView';
-import { levelOptions } from './utils/constants';
+import { APPS_SCRIPT_URL, levelOptions } from './utils/constants';
 import EnrollmentView from './components/Views/EnrollmentView';
 import EnrollmentDashboardView from './components/Views/EnrollmentDashboardView';
 import { validatePhoneNumber, COUNTRY_CODES } from './utils/validators';
@@ -71,6 +71,7 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine !== false);
   
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [openNavMenu, setOpenNavMenu] = useState(null);
 
   // Estados para Modal de Onboarding
   const [modalParroquiaId, setModalParroquiaId] = useState('');
@@ -128,6 +129,7 @@ export default function App() {
   const [maintenanceMode, setMaintenanceMode] = useState('view');
   const [isAddStudentFormOpen, setIsAddStudentFormOpen] = useState(false);
   const [messageModal, setMessageModal] = useState(null);
+  const [isSendingAttendanceEmail, setIsSendingAttendanceEmail] = useState(false);
   const [reportSubTab, setReportSubTab] = useState('asistencia');
   const [reportFilters, setReportFilters] = useState({ dateFrom: '', dateTo: '', search: '' });
   const [reportAttendanceType, setReportAttendanceType] = useState('all');
@@ -291,6 +293,17 @@ export default function App() {
       window.removeEventListener('online', handleConnectionChange);
       window.removeEventListener('offline', handleConnectionChange);
     };
+  }, []);
+
+  useEffect(() => {
+    const handleOutsideNavbarMenuClick = (event) => {
+      if (!event.target.closest('[data-navbar-menu]')) {
+        setOpenNavMenu(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideNavbarMenuClick);
+    return () => document.removeEventListener('mousedown', handleOutsideNavbarMenuClick);
   }, []);
 
   useEffect(() => {
@@ -518,8 +531,30 @@ export default function App() {
       setGroups(nextGroups);
 
       const studentsSnap = await getDocs(collection(db, 'students'));
-      const nextStudents = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const nextStudents = studentsSnap.docs.map(d => {
+        const student = d.data();
+        const family = student.family || {};
+        const contacts = [family.guardian, family.mother, family.father].filter(Boolean);
+        const familyEmail = contacts.find(contact => contact.email?.trim())?.email?.trim() || '';
+        const familyPhone = contacts.find(contact => contact.phone1?.trim() || contact.phone?.trim());
+
+        return {
+          id: d.id,
+          ...student,
+          // Los expedientes de Matrículación guardan el contacto dentro de `family`.
+          // Se normaliza para que asistencia y mensajería usen la misma estructura.
+          name: student.name || student.fullName || '',
+          parentEmail: student.parentEmail || familyEmail,
+          parentPhone: student.parentPhone || familyPhone?.phone1?.trim() || familyPhone?.phone?.trim() || ''
+        };
+      });
       setStudents(nextStudents);
+
+      const paymentsSnap = await getDocs(collection(db, 'payments'));
+      const nextPaymentRecords = paymentsSnap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => new Date(b.dateTime || b.date || 0) - new Date(a.dateTime || a.date || 0));
+      setPaymentRecords(nextPaymentRecords);
 
       const inventoryItemsSnap = await getDocs(collection(db, 'inventoryItems'));
       const inventoryAssetsSnap = await getDocs(collection(db, 'inventoryAssets'));
@@ -579,6 +614,15 @@ export default function App() {
         console.warn('Error escuchando certificados en tiempo real:', error);
       });
 
+      const unsubPayments = onSnapshot(collection(db, 'payments'), (snap) => {
+        const payments = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => new Date(b.dateTime || b.date || 0) - new Date(a.dateTime || a.date || 0));
+        setPaymentRecords(payments);
+      }, (error) => {
+        console.warn('Error escuchando pagos en tiempo real:', error);
+      });
+
       const unsubConfig = onSnapshot(doc(db, 'config', 'enrollment'), (docSnap) => {
         if (docSnap.exists()) {
           setIsEnrollmentEnabled(docSnap.data().enabled !== false);
@@ -589,6 +633,7 @@ export default function App() {
 
       return () => {
         unsubCerts();
+        unsubPayments();
         unsubConfig();
       };
     } catch (err) {
@@ -1393,21 +1438,24 @@ export default function App() {
   };
 
   const handleGenerateStudentQr = (student) => {
+    const studentName = student.name || student.fullName || 'Catequizando';
     const payload = JSON.stringify({
       type: 'student',
       studentId: student.id,
-      name: student.name,
-      groupId: student.groupId
+      name: studentName,
+      groupId: student.groupId || ''
     });
 
     const group = groups.find(item => item.id === student.groupId);
-    const parroquia = parroquias.find(item => item.id === group?.parroquiaId)?.name || 'Parroquia';
+    const parroquia = parroquias.find(item => item.id === (group?.parroquiaId || student.parroquiaId))?.name
+      || student.parish
+      || 'Parroquia';
 
     setQrCardLoading(true);
     setQrModal({
-      title: student.name,
-      name: student.name,
-      level: group?.level || 'Cate-Kinder',
+      title: studentName,
+      name: studentName,
+      level: group?.level || student.level || 'Sin nivel asignado',
       parroquia,
       imageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(payload)}`,
       payload
@@ -1689,6 +1737,50 @@ Atentamente,
 ${catechistName}`;
 
     setMessageModal({ student, channel, message });
+  };
+
+  const handleSendAttendanceEmail = async () => {
+    const recipient = messageModal?.student?.parentEmail?.trim();
+    if (!recipient || !messageModal?.message) {
+      alert('Este catequizando no tiene un correo electrónico registrado.');
+      return;
+    }
+
+    if (!APPS_SCRIPT_URL) {
+      alert('El servicio de correo no está configurado.');
+      return;
+    }
+
+    try {
+      setIsSendingAttendanceEmail(true);
+      const studentName = messageModal.student.fullName || messageModal.student.name || 'Catequizando';
+      const response = await fetch(APPS_SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify({
+          action: 'sendAttendanceEmail',
+          recipients: [recipient],
+          subject: `AsisCate — Registro de asistencia de ${studentName}`,
+          message: messageModal.message,
+          studentName,
+          attendanceDate,
+          attendanceType
+        })
+      });
+
+      const result = await response.json().catch(() => null);
+      if (!response.ok || result?.status === 'error') {
+        throw new Error(result?.message || 'El servicio de correo no pudo completar el envío.');
+      }
+
+      alert(`Correo enviado correctamente a ${recipient}.`);
+      setMessageModal(null);
+    } catch (error) {
+      console.error('Error enviando mensaje de asistencia por correo:', error);
+      alert('No se pudo enviar el correo. Verifica la configuración del Apps Script e inténtalo de nuevo.');
+    } finally {
+      setIsSendingAttendanceEmail(false);
+    }
   };
 
   const getAttendanceReportView = (groupId) => {
@@ -3612,6 +3704,10 @@ ${catechistName}`;
       ? allUsers.filter(u => u.parroquiaId === userData?.parroquiaId)
       : allUsers;
   const legacyPanelEnabled = userRole === '__legacy__';
+  const canAccessEnrollment = isEnrollmentEnabled && userData?.canEnroll !== false;
+  const canAccessEnrollmentDashboard = ['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode);
+  const canAccessUserManagement = canAccessEnrollmentDashboard;
+  const showPreferencesMenu = activeViewMode === 'admin';
 
   if (loading) {
     return (
@@ -3696,17 +3792,7 @@ ${catechistName}`;
                       : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
                   }`}
                 >
-                  Panel
-                </button>
-                <button
-                  onClick={() => setActiveTab('history')}
-                  className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
-                    activeTab === 'history' 
-                      ? 'bg-white text-red-900 font-bold'
-                      : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                  }`}
-                >
-                  Reportes
+                  Inicio
                 </button>
                 <button
                   onClick={() => setActiveTab('groups')}
@@ -3718,74 +3804,44 @@ ${catechistName}`;
                 >
                   Grupos
                 </button>
-                {(isEnrollmentEnabled && userData?.canEnroll !== false) && (
-                  <button
-                    onClick={() => setActiveTab('enrollment')}
-                    className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
-                      activeTab === 'enrollment' 
-                        ? 'bg-white text-red-900 font-bold'
-                        : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                    }`}
-                  >
-                    Matriculación
-                  </button>
+                {(canAccessEnrollment || canAccessEnrollmentDashboard) && (
+                  <div className="relative" data-navbar-menu>
+                    {canAccessEnrollment && canAccessEnrollmentDashboard ? (
+                      <button onClick={() => setOpenNavMenu(openNavMenu === 'enrollment' ? null : 'enrollment')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['enrollment', 'enrollmentDashboard'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Matrículas ▾</button>
+                    ) : (
+                      <button onClick={() => setActiveTab(canAccessEnrollment ? 'enrollment' : 'enrollmentDashboard')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['enrollment', 'enrollmentDashboard'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>{canAccessEnrollment ? 'Matriculas' : 'Dash. Matrículas'}</button>
+                    )}
+                    {openNavMenu === 'enrollment' && canAccessEnrollment && canAccessEnrollmentDashboard && (
+                      <div className="absolute left-0 top-full mt-1 w-48 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
+                        <button onClick={() => { setActiveTab('enrollment'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Matriculas</button>
+                        <button onClick={() => { setActiveTab('enrollmentDashboard'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Dash. Matrículas</button>
+                      </div>
+                    )}
+                  </div>
                 )}
-                <button
-                  onClick={() => setActiveTab('inventario')}
-                  className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
-                    activeTab === 'inventario' 
-                      ? 'bg-white text-red-900 font-bold'
-                      : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                  }`}
-                >
-                  Inventario
-                </button>
-                <button
-                  onClick={() => setActiveTab('pagos')}
-                  className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
-                    activeTab === 'pagos' 
-                      ? 'bg-white text-red-900 font-bold'
-                      : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                  }`}
-                >
-                  Pagos
-                </button>
-                {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
-                  <button
-                    onClick={() => setActiveTab('enrollmentDashboard')}
-                    className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
-                      activeTab === 'enrollmentDashboard' 
-                        ? 'bg-white text-red-900 font-bold' 
-                        : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                    }`}
-                  >
-                    Dash. Matrícula
-                  </button>
+                <div className="relative" data-navbar-menu>
+                  <button onClick={() => setOpenNavMenu(openNavMenu === 'tools' ? null : 'tools')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['history', 'inventario', 'pagos'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Herramientas ▾</button>
+                  {openNavMenu === 'tools' && (
+                    <div className="absolute left-0 top-full mt-1 w-40 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
+                      <button onClick={() => { setActiveTab('history'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Reportes</button>
+                      <button onClick={() => { setActiveTab('pagos'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Pagos</button>
+                      <button onClick={() => { setActiveTab('inventario'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Inventario</button>
+                    </div>
+                  )}
+                </div>
+                {showPreferencesMenu && (
+                  <div className="relative" data-navbar-menu>
+                    <button onClick={() => setOpenNavMenu(openNavMenu === 'preferences' ? null : 'preferences')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['parroquias', 'admin'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Preferencias ▾</button>
+                    {openNavMenu === 'preferences' && (
+                      <div className="absolute right-0 top-full mt-1 w-48 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
+                        {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Parroquias y diaconías</button>}
+                        <button onClick={() => { setActiveTab('admin'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Usuarios</button>
+                      </div>
+                    )}
+                  </div>
                 )}
-                {activeViewMode === 'admin' && (
-                  <button
-                    onClick={() => setActiveTab('parroquias')}
-                    className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
-                      activeTab === 'parroquias' 
-                        ? 'bg-emerald-600 text-white font-bold' 
-                        : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                    }`}
-                  >
-                    Parroquias
-                  </button>
-                )}
-
-                {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
-                  <button
-                    onClick={() => setActiveTab('admin')}
-                    className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
-                      activeTab === 'admin' 
-                        ? 'bg-rose-600 text-white font-bold' 
-                        : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
-                    }`}
-                  >
-                    Usuarios
-                  </button>
+                {!showPreferencesMenu && canAccessUserManagement && (
+                  <button onClick={() => setActiveTab('admin')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${activeTab === 'admin' ? 'bg-rose-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Usuarios</button>
                 )}
               </nav>
 
@@ -3876,53 +3932,33 @@ ${catechistName}`;
                 Panel Principal
               </button>
               <button
-                onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }}
-                className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'history' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-              >
-                Reportes
-              </button>
-              <button
                 onClick={() => { setActiveTab('groups'); setIsMobileMenuOpen(false); }}
                 className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'groups' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
               >
                 Grupos
               </button>
-              {(isEnrollmentEnabled && userData?.canEnroll !== false) && (
-                <button
-                  onClick={() => { setActiveTab('enrollment'); setIsMobileMenuOpen(false); }}
-                  className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'enrollment' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-                >
-                  Matriculación
-                </button>
+              {(canAccessEnrollment || canAccessEnrollmentDashboard) && (
+                <div className="rounded-lg border border-slate-700/60 overflow-hidden">
+                  {canAccessEnrollment && canAccessEnrollmentDashboard ? <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Matrículas</div> : null}
+                  {canAccessEnrollment && <button onClick={() => { setActiveTab('enrollment'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">{canAccessEnrollmentDashboard ? '↳ Matriculas' : 'Matriculas'}</button>}
+                  {canAccessEnrollmentDashboard && <button onClick={() => { setActiveTab('enrollmentDashboard'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">{canAccessEnrollment ? '↳ Dash. Matrículas' : 'Dash. Matrículas'}</button>}
+                </div>
               )}
-              <button
-                onClick={() => { setActiveTab('inventario'); setIsMobileMenuOpen(false); }}
-                className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'inventario' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-              >
-                Inventario
-              </button>
-              <button
-                onClick={() => { setActiveTab('pagos'); setIsMobileMenuOpen(false); }}
-                className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'pagos' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-              >
-                Pagos
-              </button>
-              {activeViewMode === 'admin' && (
-                <button
-                  onClick={() => { setActiveTab('parroquias'); setIsMobileMenuOpen(false); }}
-                  className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'parroquias' ? 'bg-emerald-600 text-white font-bold' : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-                >
-                  Parroquias & Diaconías
-                </button>
+              <div className="rounded-lg border border-slate-700/60 overflow-hidden">
+                <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Herramientas</div>
+                <button onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Reportes</button>
+                <button onClick={() => { setActiveTab('pagos'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Pagos</button>
+                <button onClick={() => { setActiveTab('inventario'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Inventario</button>
+              </div>
+              {showPreferencesMenu && (
+                <div className="rounded-lg border border-slate-700/60 overflow-hidden">
+                  <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Preferencias</div>
+                  {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Parroquias y diaconías</button>}
+                  <button onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Usuarios</button>
+                </div>
               )}
-
-              {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
-                <button
-                  onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }}
-                  className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'admin' ? 'bg-rose-600 text-white font-bold' : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-                >
-                  Gestión Usuarios
-                </button>
+              {!showPreferencesMenu && canAccessUserManagement && (
+                <button onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className="px-3 py-2 rounded-lg text-left font-medium text-sm text-slate-300 hover:bg-slate-700/50">Usuarios</button>
               )}
             </div>
 
@@ -4809,15 +4845,24 @@ ${catechistName}`;
           <div className={`${cardBgClass} rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4`}>
             <div className="flex justify-between items-start gap-3">
               <div>
-                <h3 className="text-lg font-bold">Mensaje para {messageModal.student.name}</h3>
-                <p className="text-xs text-slate-400">Copia el mensaje y pégalo en el canal seleccionado.</p>
+                <h3 className="text-lg font-bold">Mensaje para {messageModal.student.fullName || messageModal.student.name}</h3>
+                <p className="text-xs text-slate-400">Puedes copiarlo o enviarlo directamente por el canal seleccionado.</p>
               </div>
               <button onClick={() => setMessageModal(null)} className="bg-red-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold">Cancelar</button>
             </div>
             <textarea readOnly value={messageModal.message} rows="9" className={`w-full rounded-lg px-3 py-2 text-sm resize-none ${inputBgClass}`} />
             <div className="flex flex-wrap justify-end gap-2">
               <button onClick={() => navigator.clipboard.writeText(messageModal.message)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold">Copiar mensaje</button>
-              {messageModal.channel === 'email' && <a href={`mailto:${messageModal.student.parentEmail}`} className="bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded-lg text-xs font-bold">Abrir correo</a>}
+              {messageModal.channel === 'email' && (
+                <button
+                  type="button"
+                  onClick={handleSendAttendanceEmail}
+                  disabled={isSendingAttendanceEmail}
+                  className="bg-sky-600 hover:bg-sky-700 disabled:bg-slate-700 text-white px-4 py-2 rounded-lg text-xs font-bold"
+                >
+                  {isSendingAttendanceEmail ? 'Enviando...' : 'Enviar correo'}
+                </button>
+              )}
               {messageModal.channel === 'phone' && <a href={buildWhatsAppLink(messageModal.student.parentPhone, messageModal.message)} target="_blank" rel="noreferrer" className="bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-2 rounded-lg text-xs font-bold">Abrir WhatsApp</a>}
             </div>
           </div>
