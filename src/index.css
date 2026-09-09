@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+.theme-light .text-slate-200 { color: #334155; }
+.theme-light .text-slate-300 { color: #334155; }
+.theme-light .text-slate-400 { color: #475569; }
+.theme-light .text-slate-500 { color: #64748b; }
+.theme-light .text-slate-600 { color: #475569; }
+.theme-light .text-slate-700 { color: #334155; }
+.theme-light .bg-slate-700 { background-color: #e2e8f0; }
+.theme-light .hover\:bg-slate-700\/50:hover { background-color: #cbd5e1; }
+.theme-light .border-slate-700,
+.theme-light .divide-slate-700 > :not(:last-child) { border-color: #cbd5e1; }
+
+.theme-dark .text-slate-200 { color: #f1f5f9; }
+.theme-dark .text-slate-300 { color: #e2e8f0; }
+.theme-dark .text-slate-400 { color: #cbd5e1; }
+.theme-dark .text-slate-500 { color: #94a3b8; }
+.theme-dark .text-slate-600 { color: #cbd5e1; }
+.theme-dark .text-slate-700 { color: #e2e8f0; }
+.theme-dark .border-slate-700,
+.theme-dark .divide-slate-700 > :not(:last-child) { border-color: #334155; }
