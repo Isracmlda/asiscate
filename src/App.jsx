@@ -139,6 +139,7 @@ export default function App() {
   const [groupScheduleOptionsByDiaconia, setGroupScheduleOptionsByDiaconia] = useState({});
   const [scheduleOptionsDraft, setScheduleOptionsDraft] = useState(DEFAULT_GROUP_SCHEDULE_OPTIONS);
   const [scheduleOptionInputs, setScheduleOptionInputs] = useState({ days: '', times: '', rooms: '' });
+  const [editingScheduleOption, setEditingScheduleOption] = useState(null);
   const [groups, setGroups] = useState([]);
   const [students, setStudents] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -1134,21 +1135,63 @@ export default function App() {
     }
   };
 
-  const addScheduleOption = (field) => {
+  const persistScheduleOptions = async (nextOptions) => {
+    const targetDiaconiaId = effectiveDiaconiaId || userData?.diaconiaId || '';
+    if (!targetDiaconiaId) {
+      alert('Selecciona una diaconía antes de modificar sus horarios y salones.');
+      return false;
+    }
+    if (!nextOptions.days.length || !nextOptions.times.length || !nextOptions.rooms.length) {
+      alert('Debes conservar al menos una opción de día, horario y salón.');
+      return false;
+    }
+    try {
+      await setDoc(doc(db, 'diaconiaSchedules', targetDiaconiaId), { ...nextOptions, diaconiaId: targetDiaconiaId, updatedAt: new Date().toISOString(), updatedBy: user?.uid || '' }, { merge: true });
+      setGroupScheduleOptionsByDiaconia(previous => ({ ...previous, [targetDiaconiaId]: nextOptions }));
+      setGroupScheduleOptions(nextOptions);
+      setScheduleOptionsDraft(nextOptions);
+      notify('Opción guardada automáticamente.', 'success');
+      return true;
+    } catch (error) {
+      console.error('Error guardando opciones de horarios:', error);
+      alert('No se pudo guardar la opción automáticamente.');
+      return false;
+    }
+  };
+
+  const addScheduleOption = async (field) => {
     const value = String(scheduleOptionInputs[field] || '').trim();
     if (!value) return;
-    setScheduleOptionsDraft(previous => ({
-      ...previous,
-      [field]: [...new Set([...(previous[field] || []), value])]
-    }));
+    const nextOptions = { ...scheduleOptionsDraft, [field]: [...new Set([...(scheduleOptionsDraft[field] || []), value])] };
+    await persistScheduleOptions(nextOptions);
     setScheduleOptionInputs(previous => ({ ...previous, [field]: '' }));
   };
 
-  const removeScheduleOption = (field, value) => {
-    setScheduleOptionsDraft(previous => ({
-      ...previous,
-      [field]: (previous[field] || []).filter(item => item !== value)
-    }));
+  const removeScheduleOption = async (field, value) => {
+    const nextOptions = { ...scheduleOptionsDraft, [field]: (scheduleOptionsDraft[field] || []).filter(item => item !== value) };
+    await persistScheduleOptions(nextOptions);
+  };
+
+  const startScheduleOptionEdit = (field, index, value) => {
+    setEditingScheduleOption({ field, index, value });
+    setScheduleOptionInputs(previous => ({ ...previous, [field]: value }));
+  };
+
+  const saveScheduleOptionEdit = async (field) => {
+    if (!editingScheduleOption || editingScheduleOption.field !== field) return;
+    const value = String(scheduleOptionInputs[field] || '').trim();
+    if (!value) return;
+    const nextValues = [...(scheduleOptionsDraft[field] || [])];
+    if (nextValues.some((item, index) => item === value && index !== editingScheduleOption.index)) {
+      alert('Esa opción ya existe en esta sección.');
+      return;
+    }
+    nextValues[editingScheduleOption.index] = value;
+    const nextOptions = { ...scheduleOptionsDraft, [field]: nextValues };
+    if (await persistScheduleOptions(nextOptions)) {
+      setEditingScheduleOption(null);
+      setScheduleOptionInputs(previous => ({ ...previous, [field]: '' }));
+    }
   };
 
   const handleCreateGroup = async (e) => {
@@ -5067,7 +5110,7 @@ ${catechistName}`;
                 <span className="font-bold">Diaconía activa: </span>
                 {diaconias.find(item => item.id === effectiveDiaconiaId)?.name || 'Selecciona una diaconía en el navbar'}
               </div>
-              <form onSubmit={handleSaveGroupScheduleOptions} className="space-y-4">
+              <div className="space-y-4">
                 {[
                   { field: 'days', label: 'Día disponible', placeholder: 'Selecciona un día' },
                   { field: 'times', label: 'Horarios disponibles', placeholder: 'Ej: 08:00-10:00' },
@@ -5082,22 +5125,21 @@ ${catechistName}`;
                           {['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map(day => <option key={day} value={day}>{day}</option>)}
                         </select>
                       ) : (
-                        <input value={scheduleOptionInputs[field]} onChange={event => setScheduleOptionInputs(previous => ({ ...previous, [field]: event.target.value }))} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addScheduleOption(field); } }} placeholder={placeholder} className={`flex-1 rounded-lg px-4 py-2 text-sm ${inputBgClass}`} />
+                        <input value={scheduleOptionInputs[field]} onChange={event => setScheduleOptionInputs(previous => ({ ...previous, [field]: event.target.value }))} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); editingScheduleOption?.field === field ? saveScheduleOptionEdit(field) : addScheduleOption(field); } }} placeholder={placeholder} className={`flex-1 rounded-lg px-4 py-2 text-sm ${inputBgClass}`} />
                       )}
-                      <button type="button" onClick={() => addScheduleOption(field)} className="rounded-lg bg-sky-600 hover:bg-sky-700 px-4 py-2 text-xs font-bold text-white">Agregar</button>
+                      <button type="button" onClick={() => editingScheduleOption?.field === field ? saveScheduleOptionEdit(field) : addScheduleOption(field)} className="rounded-lg bg-sky-600 hover:bg-sky-700 px-4 py-2 text-xs font-bold text-white">{editingScheduleOption?.field === field ? 'Guardar' : 'Agregar'}</button>
                     </div>
                     <div className="flex flex-wrap gap-2 mt-2">
-                      {(scheduleOptionsDraft[field] || []).map(option => (
-                        <span key={option} className="inline-flex items-center gap-1 rounded-full border border-slate-300 dark:border-slate-600 px-3 py-1 text-xs">
+                      {(scheduleOptionsDraft[field] || []).map((option, optionIndex) => (
+                        <span key={option} onClick={() => startScheduleOptionEdit(field, optionIndex, option)} className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-3 py-1 text-xs ${editingScheduleOption?.field === field && editingScheduleOption.index === optionIndex ? 'border-sky-500 bg-sky-500/10' : 'border-slate-300 dark:border-slate-600'}`} title="Toca para editar">
                           {option}
-                          <button type="button" onClick={() => removeScheduleOption(field, option)} className="font-bold text-rose-500" aria-label={`Eliminar ${option}`}>×</button>
+                          <button type="button" onClick={(event) => { event.stopPropagation(); removeScheduleOption(field, option); }} className="font-bold text-rose-500" aria-label={`Eliminar ${option}`}>×</button>
                         </span>
                       ))}
                     </div>
                   </div>
                 ))}
-                <button type="submit" className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white">Guardar configuración de esta diaconía</button>
-              </form>
+              </div>
             </div>
           </div>
         )}
