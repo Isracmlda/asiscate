@@ -82,6 +82,9 @@ const getScheduleGroupLabel = (group) => {
   let name = String(group?.name || 'Grupo').trim();
   name = name.replace(/\s*\(\s*\d{4}\s*-\s*\d{4}\s*\)\s*$/, '').trim();
   const level = String(group?.level || '').trim();
+  if (level && name.toLowerCase() === level.toLowerCase()) {
+    return name;
+  }
   if (level && name.toLowerCase().startsWith(level.toLowerCase())) {
     name = name.slice(level.length).replace(/^\s*[-–—:]\s*/, '').trim();
   }
@@ -3821,8 +3824,11 @@ ${catechistName}`;
     } catch (error) { console.error('Error exportando horario:', error); alert('No se pudo generar el horario.'); }
   };
 
-  const buildScheduleHtml = () => {
-    const scheduledGroups = visibleGroups.filter(group => group.scheduleDay && group.scheduleTime && group.room);
+  const buildScheduleHtml = (cycleFilter = '') => {
+    const scheduledGroups = visibleGroups.filter(group => (
+      (!cycleFilter || String(group.year || '').trim() === cycleFilter) &&
+      group.scheduleDay && group.scheduleTime && group.room
+    ));
     if (!scheduledGroups.length) return '';
     const levelClasses = { 'Cate-Kinder': 'nivel-kinder', 'Primer Nivel': 'nivel-primero', 'Segundo Nivel': 'nivel-segundo', 'Tercer Nivel (Primera Comunión)': 'nivel-tercero', 'Cuarto Nivel': 'nivel-cuarto', 'Quinto Nivel': 'nivel-quinto', 'Sexto Nivel': 'nivel-sexto', 'Septimo Nivel': 'nivel-septimo', 'Confirma': 'nivel-confirma' };
     const days = [...new Set(scheduledGroups.map(group => group.scheduleDay))];
@@ -3851,15 +3857,18 @@ ${catechistName}`;
     </style></head><body><div class="banner-card"><div class="banner-left"><div class="logo-placeholder">${logoSvg}</div><div class="banner-title"><h1>AsisCate - Sistema Parroquial</h1><p>Horario de Grupos</p></div></div><div class="banner-meta">Emitido: ${escapeHtml(new Date().toLocaleDateString('es-CR'))}</div></div>${tables}</body></html>`;
   };
 
-  const handleOpenSchedulePreview = async () => {
-    const html = buildScheduleHtml();
+  const handleOpenSchedulePreview = async (cycleFilter = '') => {
+    const html = buildScheduleHtml(cycleFilter);
     if (!html) { alert('No hay grupos con horario y salón asignados.'); return; }
     setSchedulePreviewHtml(html);
     setIsSchedulePreviewOpen(true);
   };
 
-  const handleExportGroupScheduleImage = async () => {
-    const scheduledGroups = visibleGroups.filter(group => group.scheduleDay && group.scheduleTime && group.room);
+  const handleExportGroupScheduleImage = async (cycleFilter = '') => {
+    const scheduledGroups = visibleGroups.filter(group => (
+      (!cycleFilter || String(group.year || '').trim() === cycleFilter) &&
+      group.scheduleDay && group.scheduleTime && group.room
+    ));
     if (!scheduledGroups.length) { alert('No hay grupos con horario y salón asignados.'); return; }
     const levelStyles = { 'Cate-Kinder': ['#16a34a', '#ffffff'], 'Primer Nivel': ['#2563eb', '#ffffff'], 'Segundo Nivel': ['#7c3aed', '#ffffff'], 'Tercer Nivel (Primera Comunión)': ['#ffffff', '#111827'], 'Cuarto Nivel': ['#facc15', '#ffffff'], 'Quinto Nivel': ['#f97316', '#ffffff'], 'Sexto Nivel': ['#7c2d12', '#ffffff'], 'Septimo Nivel': ['#38bdf8', '#ffffff'], 'Confirma': ['#dc2626', '#ffffff'] };
     const days = [...new Set(scheduledGroups.map(group => group.scheduleDay))];
@@ -5773,10 +5782,6 @@ ${catechistName}`;
                   {groupScheduleOptions.rooms.map(room => <option key={room} value={room}>{room}</option>)}
                 </select>
               </div>
-
-              <p className="text-xs text-slate-400 bg-slate-800/40 p-2.5 rounded-lg border border-slate-700">
-                El grupo se creará automáticamente asignado a tu parroquia y diaconía.
-              </p>
 
               <div className="pt-2 flex gap-2 justify-end border-t border-slate-700">
                 <button type="button" onClick={() => setIsCreateGroupModalOpen(false)} className="px-4 py-2 text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-white rounded-lg">

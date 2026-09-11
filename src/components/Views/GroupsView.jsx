@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ExpedienteMigrationModal } from '../Modals/ExpedienteMigrationModal';
 
 export function GroupsView({
@@ -77,6 +77,31 @@ export function GroupsView({
 }) {
   const [selectedStudentForMigration, setSelectedStudentForMigration] = useState(null);
 
+  // El ciclo actual sigue la misma regla utilizada en Matrículas: de enero a
+  // abril se mantiene el ciclo que inició el año anterior; desde mayo inicia
+  // el ciclo del año en curso.
+  const currentDate = new Date();
+  const currentYear = currentDate.getFullYear();
+  const currentCycle = currentDate.getMonth() <= 3
+    ? `${currentYear - 1}-${currentYear}`
+    : `${currentYear}-${currentYear + 1}`;
+  const registeredCycles = Array.from(new Set(
+    visibleGroups.map(group => String(group.year || currentCycle).trim()).filter(Boolean)
+  ));
+  // Siempre dejamos disponible el ciclo actual para que quede seleccionado,
+  // incluso cuando todavía no hay grupos creados en él.
+  const cycleOptions = Array.from(new Set([currentCycle, ...registeredCycles]));
+  const [selectedCycle, setSelectedCycle] = useState(currentCycle);
+
+  useEffect(() => {
+    setSelectedCycle(previousCycle => {
+      if (cycleOptions.includes(previousCycle)) return previousCycle;
+      return cycleOptions.includes(currentCycle) ? currentCycle : (cycleOptions[0] || currentCycle);
+    });
+  }, [visibleGroups, currentCycle]);
+
+  const filteredGroups = visibleGroups.filter(group => String(group.year || currentCycle).trim() === selectedCycle);
+
   const isExpedienteIncomplete = (student) => {
     if (!student) return true;
     if (student.expedienteStatus === 'COMPLETED') return false;
@@ -99,6 +124,15 @@ export function GroupsView({
         </div>
 
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <select
+            id="groups-cycle-filter"
+            aria-label="Filtrar por ciclo catequético"
+            value={selectedCycle}
+            onChange={event => setSelectedCycle(event.target.value)}
+            className={`w-full sm:w-auto sm:min-w-40 rounded-xl px-3 py-2.5 text-xs font-bold ${inputBgClass}`}
+          >
+            {cycleOptions.map(cycle => <option key={cycle} value={cycle}>{cycle}</option>)}
+          </select>
           {typeof setIsCreateGroupModalOpen === 'function' && (
             <button
               onClick={() => setIsCreateGroupModalOpen(true)}
@@ -115,7 +149,7 @@ export function GroupsView({
           </button>
           {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
             <>
-              <button type="button" onClick={handleExportGroupScheduleImage} className="bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow">📅 Generar horario</button>
+              <button type="button" onClick={() => handleExportGroupScheduleImage(selectedCycle)} className="bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow">📅 Generar horario</button>
             </>
           )}
         </div>
@@ -124,7 +158,7 @@ export function GroupsView({
       {/* VISTA DE TARJETAS DE GRUPOS */}
       <div className="space-y-4">
 
-        {visibleGroups.length === 0 ? (
+        {filteredGroups.length === 0 ? (
           <div className={`${cardBgClass} p-8 sm:p-12 rounded-2xl border text-center space-y-4 shadow-sm`}>
             <div className="w-16 h-16 sm:w-20 sm:h-20 mx-auto bg-red-900/20 text-red-500 rounded-full flex items-center justify-center text-3xl sm:text-4xl">
               📁
@@ -138,13 +172,13 @@ export function GroupsView({
           </div>
         ) : (
           <div className={`grid gap-4 ${
-            visibleGroups.length === 1
+            filteredGroups.length === 1
               ? 'grid-cols-1'
-              : visibleGroups.length === 2
+              : filteredGroups.length === 2
               ? 'grid-cols-1 md:grid-cols-2'
               : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3'
           }`}>
-            {visibleGroups.map(group => {
+            {filteredGroups.map(group => {
               const isEditing = editingGroupId === group.id;
               const assignedCatechists = group.catechistIds && group.catechistIds.length > 0
                 ? allUsers.filter(u => group.catechistIds.includes(u.id)).map(u => u.name).join(', ')
