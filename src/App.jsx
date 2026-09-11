@@ -343,6 +343,7 @@ export default function App() {
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
   const [editingEnrollmentStudent, setEditingEnrollmentStudent] = useState(null);
+  const [editingEnrollmentReadOnly, setEditingEnrollmentReadOnly] = useState(false);
 
   // Autenticación extendida (Correo/Contraseña, Microsoft, Google)
   const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
@@ -1393,10 +1394,17 @@ export default function App() {
 
   const handleStartEditStudent = (student) => {
     setEditingEnrollmentStudent(student);
+    setEditingEnrollmentReadOnly(false);
     setEditingStudentId(student.id);
     setEditStudentName(student.fullName || student.name || '');
     setEditStudentParentEmail(student.parentEmail || student.family?.guardian?.email || '');
     setEditStudentParentPhone(student.parentPhone || student.family?.guardian?.phone1 || '');
+  };
+
+  const handleOpenStudentReadOnly = (student) => {
+    setEditingEnrollmentStudent(student);
+    setEditingEnrollmentReadOnly(true);
+    setEditingStudentId(null);
   };
 
   const handleSaveStudentEdit = async (student) => {
@@ -3691,6 +3699,82 @@ ${catechistName}`;
     }
   };
 
+  const handleDownloadEnrollmentExpediente = async (studentRecord) => {
+    if (!studentRecord) return;
+    try {
+      const jsPdfModule = await import('jspdf');
+      const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
+      const pdf = new JsPdf({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const margin = 14;
+      const line = (label, value, x, y, maxWidth = 178) => {
+        pdf.setFont('helvetica', 'bold');
+        const labelText = `${label}: `;
+        const labelWidth = pdf.getTextWidth(labelText);
+        pdf.text(labelText, x, y);
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(pdf.splitTextToSize(String(value || 'N/A'), maxWidth - labelWidth), x + labelWidth, y);
+      };
+      const section = (title, y) => {
+        pdf.setFillColor(241, 245, 249);
+        pdf.rect(margin, y - 5, pageWidth - margin * 2, 8, 'F');
+        pdf.setTextColor(127, 29, 29);
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(10);
+        pdf.text(title, margin + 3, y);
+        pdf.setTextColor(30, 41, 59);
+        pdf.setFontSize(8.5);
+        return y + 12;
+      };
+      pdf.setFillColor(127, 29, 29);
+      pdf.rect(0, 0, pageWidth, 24, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(15);
+      pdf.text('EXPEDIENTE DIGITAL DE MATRÍCULA', margin, 11);
+      pdf.setFontSize(8.5);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('AsisCate · Sistema Parroquial', margin, 18);
+      pdf.setTextColor(30, 41, 59);
+      let y = 36;
+      y = section('I. DATOS DEL CATEQUIZANDO', y);
+      line('Nombre completo', studentRecord.fullName || studentRecord.name, margin, y); line('Nivel', studentRecord.level, 110, y, 82); y += 9;
+      line('Fecha de nacimiento', `${studentRecord.birthDate || 'N/A'} (${studentRecord.age ?? 'N/A'} años)`, margin, y); line('Identificación', `${studentRecord.idType || 'NACIONAL'} · ${studentRecord.nationalId || 'N/A'}`, 110, y, 82); y += 9;
+      line('Ciclo', studentRecord.cycle, margin, y); line('Teléfono', studentRecord.phone, 110, y, 82); y += 9;
+      line('Dirección', studentRecord.address, margin, y); y += 11;
+      line('Datos adicionales', `Género: ${studentRecord.gender || 'N/A'} · Lugar de nacimiento: ${studentRecord.birthPlace || 'N/A'} · Centro educativo: ${studentRecord.educationCenter || 'N/A'} · Grado: ${studentRecord.schoolGrade || 'N/A'}`, margin, y); y += 16;
+      line('Preguntas de salud', `Adecuación: ${studentRecord.curricularAdaptation || 'NO'} · Conducta: ${studentRecord.behaviorIssue || 'NO'} · Impedimento físico: ${studentRecord.physicalImpairment || 'NO'}`, margin, y); y += 12;
+      line('Notas médicas', studentRecord.medicalNotes, margin, y); y += 14;
+      y = section('II. FAMILIARES Y ENCARGADOS', y);
+      const family = studentRecord.family || {};
+      [ ['Madre', family.mother], ['Padre', family.father], ['Encargado', family.guardian] ].forEach(([label, person]) => {
+        if (!person?.fullName) return;
+        line(label, `${person.fullName} · Cédula: ${person.nationalId || 'N/A'} · Tel: ${person.phone1 || 'N/A'} · Correo: ${person.email || 'N/A'}`, margin, y);
+        y += 9;
+      });
+      line('Estado civil', studentRecord.maritalStatus, margin, y); line('Hermanos', `${studentRecord.siblingCount || 'N/A'}${studentRecord.siblingDetails ? ` · ${studentRecord.siblingDetails}` : ''}`, 110, y, 82); y += 13;
+      y = section('III. ESTADO DE DOCUMENTACIÓN', y);
+      const documentStatus = (item) => item?.status === 'COMPLETED' || item?.url ? 'ADJUNTO' : 'PENDIENTE';
+      line('Cédula menor', documentStatus(studentRecord.documents?.minorId), margin, y); line('Bautismo', documentStatus(studentRecord.documents?.bautismo), 110, y, 82); y += 9;
+      line('Primera comunión', documentStatus(studentRecord.documents?.comunion), margin, y); line('Firma', studentRecord.family?.guardian?.signatureUrl || studentRecord.family?.guardian?.signatureData ? 'REGISTRADA' : 'PENDIENTE', 110, y, 82); y += 13;
+      y = section('IV. COMPROMISO DE FORMACIÓN EN LA FE', y);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`Estado: ${studentRecord.acceptsCatechesisCommitment ? 'ACEPTADO' : 'PENDIENTE DE ACEPTACIÓN'}`, margin + 3, y);
+      y += 7;
+      pdf.setFont('helvetica', 'normal');
+      const commitmentText = 'ME COMPROMETO A CUMPLIR CON LA FORMACIÓN EN LA FE Y PARTICIPAR EN LO QUE SE REQUIERE EN LA CATEQUESIS, ENCUENTROS FAMILIARES Y MISAS DE NIÑOS, PARA QUE MI HIJO O HIJA CREZCA ESPIRITUALMENTE COMO HIJO DE DIOS Y APRENDA A VIVIR CRISTIANAMENTE.';
+      const commitmentLines = pdf.splitTextToSize(commitmentText, pageWidth - margin * 2 - 6);
+      pdf.text(commitmentLines, margin + 3, y);
+      pdf.setTextColor(100, 116, 139); pdf.setFontSize(7.5);
+      pdf.text(`Emitido el ${new Date().toLocaleDateString('es-CR')} · AsisCate Parroquial`, margin, 285);
+      pdf.save(`Expediente_${(studentRecord.fullName || studentRecord.name || 'Catequizando').replace(/\s+/g, '_')}.pdf`);
+    } catch (error) {
+      console.error('Error generando PDF del expediente:', error);
+      alert('No se pudo generar el PDF del expediente.');
+    }
+  };
+
   const handleExportGroupRosterToPdf = async (groupId) => {
     const group = groups.find(item => item.id === groupId);
     const groupStudents = getGroupReportStudents(groupId);
@@ -3731,29 +3815,6 @@ ${catechistName}`;
       console.error("Error exportando padrón a PDF:", error);
       alert("No se pudo generar el padrón en PDF.");
     }
-  };
-
-  const handleExportGroupNamesToPdf = async (groupId) => {
-    const group = groups.find(item => item.id === groupId);
-    const groupStudents = getGroupReportStudents(groupId);
-    if (!groupStudents.length) { alert('No hay catequizandos registrados en este grupo.'); return; }
-    try {
-      const jsPdfModule = await import('jspdf');
-      const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
-      const doc = new JsPdf({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-      doc.setFillColor(127, 29, 29); doc.rect(0, 0, 210, 36, 'F');
-      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.text('Lista de Catequizandos', 18, 17);
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.text(`${group?.name || 'Grupo'} · ${group?.year || '2026-2027'}`, 18, 27);
-      doc.setTextColor(31, 41, 55); doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('#', 22, 48); doc.text('Nombre del catequizando', 38, 48);
-      doc.setDrawColor(203, 213, 225); doc.line(18, 52, 192, 52);
-      doc.setFont('helvetica', 'normal');
-      groupStudents.forEach((student, index) => {
-        const y = 62 + (index % 30) * 7;
-        if (index > 0 && index % 30 === 0) { doc.addPage(); doc.setFont('helvetica', 'bold'); doc.text('Lista de Catequizandos (continuación)', 18, 20); doc.setFont('helvetica', 'normal'); }
-        doc.text(String(index + 1), 22, y); doc.text(student.fullName || student.name || 'Sin nombre', 38, y, { maxWidth: 150 });
-      });
-      doc.save(`Lista_Nombres_${group?.name?.replace(/\s+/g, '_') || 'Grupo'}.pdf`);
-    } catch (error) { console.error('Error exportando lista de nombres:', error); alert('No se pudo generar el PDF.'); }
   };
 
   const handleExportGroupSchedulePdf = async () => {
@@ -5471,20 +5532,11 @@ ${catechistName}`;
         setMaintenanceMode={setMaintenanceMode}
         handleCloseMaintenanceModal={handleCloseMaintenanceModal}
         handleExportGroupRosterToPdf={handleExportGroupRosterToPdf}
-        handleExportGroupNamesToPdf={handleExportGroupNamesToPdf}
         handleExportGroupRosterToExcel={handleExportGroupRosterToExcel}
         visibleStudents={visibleStudents}
         handleGenerateStudentQr={handleGenerateStudentQr}
-        editingStudentId={editingStudentId}
-        setEditingStudentId={setEditingStudentId}
-        editStudentName={editStudentName}
-        setEditStudentName={setEditStudentName}
-        editStudentParentEmail={editStudentParentEmail}
-        setEditStudentParentEmail={setEditStudentParentEmail}
-        editStudentParentPhone={editStudentParentPhone}
-        setEditStudentParentPhone={setEditStudentParentPhone}
-        handleSaveStudentEdit={handleSaveStudentEdit}
         handleStartEditStudent={handleStartEditStudent}
+        handleOpenStudentReadOnly={handleOpenStudentReadOnly}
         handleDeleteStudent={handleDeleteStudent}
         setSelectedGroupForStudent={setSelectedGroupForStudent}
         setNewStudentName={setNewStudentName}
@@ -5800,13 +5852,23 @@ ${catechistName}`;
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[70] flex justify-center items-center p-3 sm:p-6 overflow-y-auto">
           <div className={`${cardBgClass} rounded-2xl max-w-4xl w-full p-4 sm:p-6 shadow-2xl space-y-4 max-h-[92vh] overflow-y-auto border border-slate-700 relative`}>
             <div className="flex justify-between items-center border-b border-slate-700 pb-3">
-              <h3 className="text-lg sm:text-xl font-bold text-amber-400">Editar Expediente / Matrícula</h3>
-              <button
-                onClick={() => setEditingEnrollmentStudent(null)}
-                className="text-slate-400 hover:text-white text-base font-bold px-3 py-1 bg-slate-800 rounded-lg"
-              >
-                ✕
-              </button>
+              <h3 className="text-lg sm:text-xl font-bold text-amber-400">{editingEnrollmentReadOnly ? 'Ver Expediente / Matrícula' : 'Editar Expediente / Matrícula'}</h3>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleDownloadEnrollmentExpediente?.(editingEnrollmentStudent)}
+                  className="rounded-lg bg-sky-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-800"
+                >
+                  📄 Generar PDF
+                </button>
+                <button
+                  onClick={() => { setEditingEnrollmentStudent(null); setEditingEnrollmentReadOnly(false); }}
+                  aria-label="Cerrar"
+                  className="rounded-lg bg-rose-700 px-2.5 py-1 text-lg font-bold leading-none text-white hover:bg-rose-800"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
             <EnrollmentView
@@ -5820,8 +5882,10 @@ ${catechistName}`;
               handleGeneratePaymentProofPdf={handleGeneratePaymentProofPdf}
               handleViewPaymentQr={handleViewPaymentQr}
               initialStudent={editingEnrollmentStudent}
+              readOnly={editingEnrollmentReadOnly}
               onNavigate={() => {
                 setEditingEnrollmentStudent(null);
+                setEditingEnrollmentReadOnly(false);
                 setEditingStudentId(null);
                 setMaintenanceMode('view');
                 fetchAllData();

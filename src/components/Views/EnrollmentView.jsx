@@ -31,7 +31,8 @@ export default function EnrollmentView({
   cardBgClass = 'bg-white border-slate-200 text-slate-800',
   inputBgClass = 'bg-white border-slate-300 text-slate-800',
   initialStudent = null,
-  themeMode = 'light'
+  themeMode = 'light',
+  readOnly = false
 }) {
   // Cálculo automático del ciclo catequético
   const currentYear = new Date().getFullYear();
@@ -148,6 +149,20 @@ export default function EnrollmentView({
 
   // Mensaje flotante / Alerta de éxito
   const [successToast, setSuccessToast] = useState(null);
+
+  const renderExistingDocumentLink = (url, label = 'Descargar archivo') => {
+    if (!readOnly || !url) return null;
+    const urls = Array.isArray(url) ? url : [url];
+    return (
+      <div className="flex flex-wrap gap-2">
+        {urls.filter(Boolean).map((item, index) => (
+          <a key={`${item}-${index}`} href={item} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-lg bg-sky-700 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-sky-800">
+            📥 {urls.length > 1 ? `${label} ${index + 1}` : label}
+          </a>
+        ))}
+      </div>
+    );
+  };
 
   // Manejar cambio de archivos y actualizar el estado de pendiente
   const handleFileChange = (setter, pendingSetter, files) => {
@@ -389,26 +404,31 @@ export default function EnrollmentView({
   // Validación y Envío del Formulario
   const handleSubmitEnrollment = async (e) => {
     e.preventDefault();
+    const isEditing = Boolean(initialStudent?.id);
 
-    // 1. Validar Nombre completo del catequizando
-    if (!student.fullName || student.fullName.trim().length < 3) {
-      alert('Por favor ingrese el nombre completo del catequizando (mínimo 3 caracteres).');
-      return;
-    }
-
-    // 2. Validar Fecha de nacimiento (>= 1900 y <= hoy)
-    const birthVal = validateBirthDate(student.birthDate);
-    if (!birthVal.valid) {
-      alert(`Fecha de nacimiento del catequizando no válida: ${birthVal.message}`);
-      return;
-    }
-
-    // 3. Validar Cédula del menor (si aplica por edad >= 12)
-    if (student.birthDate && student.age >= 12 && student.nationalId) {
-      const minorIdVal = validateNationalId(student.nationalId, student.idType, 'Cédula de Menor');
-      if (!minorIdVal.valid) {
-        alert(minorIdVal.message);
+    // En edición se permite guardar únicamente los cambios realizados, sin
+    // volver a exigir los campos obligatorios de una matrícula nueva.
+    if (!isEditing) {
+      // 1. Validar Nombre completo del catequizando
+      if (!student.fullName || student.fullName.trim().length < 3) {
+        alert('Por favor ingrese el nombre completo del catequizando (mínimo 3 caracteres).');
         return;
+      }
+
+      // 2. Validar Fecha de nacimiento (>= 1900 y <= hoy)
+      const birthVal = validateBirthDate(student.birthDate);
+      if (!birthVal.valid) {
+        alert(`Fecha de nacimiento del catequizando no válida: ${birthVal.message}`);
+        return;
+      }
+
+      // 3. Validar Cédula del menor (si aplica por edad >= 12)
+      if (student.birthDate && student.age >= 12 && student.nationalId) {
+        const minorIdVal = validateNationalId(student.nationalId, student.idType, 'Cédula de Menor');
+        if (!minorIdVal.valid) {
+          alert(minorIdVal.message);
+          return;
+        }
       }
     }
 
@@ -430,7 +450,7 @@ export default function EnrollmentView({
     const isFatherComplete = father.fullName && father.nationalId && father.phone1;
     const isGuardianComplete = guardian.fullName && guardian.nationalId && guardian.phone1;
 
-    if (!isMotherComplete && !isFatherComplete && !isGuardianComplete) {
+    if (!isEditing && !isMotherComplete && !isFatherComplete && !isGuardianComplete) {
       alert('Debe completar la información básica (Nombre completo, Cédula y Teléfono 1) de al menos uno de los tres encargados (Mamá, Papá o Encargado Legal).');
       return;
     }
@@ -496,7 +516,7 @@ export default function EnrollmentView({
     }
 
     // Validar Cédula de menor adjunta o pendiente si tiene 12+ años
-    if (student.birthDate && student.age >= 12 && minorIdFiles.length === 0 && !minorIdPending) {
+    if (!isEditing && student.birthDate && student.age >= 12 && minorIdFiles.length === 0 && !minorIdPending) {
       alert('Para mayores de 12 años debe adjuntar la Cédula de Menor o marcarla como pendiente de entregar.');
       return;
     }
@@ -504,12 +524,12 @@ export default function EnrollmentView({
     // Validar Firma
     const existingSignatureData = initialStudent?.family?.guardian?.signatureData || null;
     const existingSignatureUrl = initialStudent?.family?.guardian?.signatureUrl || null;
-    if (!signatureData && !existingSignatureData && !existingSignatureUrl) {
+    if (!isEditing && !signatureData && !existingSignatureData && !existingSignatureUrl) {
       alert('Es obligatoria la firma digital del encargado.');
       return;
     }
 
-    if (!student.acceptsCatechesisCommitment) {
+    if (!isEditing && !student.acceptsCatechesisCommitment) {
       alert('Debe aceptar el compromiso de formación en la fe para completar la matrícula.');
       return;
     }
@@ -591,7 +611,9 @@ export default function EnrollmentView({
         siblingCount: student.siblingCount || 'N/A',
         siblingDetails: student.siblingCount !== 'N/A' ? student.siblingDetails || '' : '',
         authorizedPickupPeople: student.authorizedPickupPeople || '',
-        acceptsCatechesisCommitment: true,
+        acceptsCatechesisCommitment: isEditing
+          ? Boolean(student.acceptsCatechesisCommitment || initialStudent?.acceptsCatechesisCommitment)
+          : true,
         photoUrl,
         photoData,
         cycle: cycle,
@@ -611,7 +633,7 @@ export default function EnrollmentView({
         },
         bookPaid: false,
         status: 'ACTIVO',
-        createdAt: serverTimestamp()
+        ...(isEditing ? {} : { createdAt: serverTimestamp() })
       };
 
       if (initialStudent?.id) {
@@ -932,6 +954,7 @@ export default function EnrollmentView({
       </div>
 
       <form onSubmit={handleSubmitEnrollment} className="space-y-6">
+        <fieldset disabled={readOnly} className="space-y-6">
         {/* SECCIÓN CONFIGURACIÓN GENERAL */}
         <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm grid grid-cols-1 md:grid-cols-4 gap-4`}>
           <div>
@@ -991,7 +1014,7 @@ export default function EnrollmentView({
               ) : (
                 <div className="h-28 w-24 rounded-lg bg-slate-700/70 flex items-center justify-center text-3xl" aria-label="Sin foto">👤</div>
               )}
-              <input type="file" accept="image/*" onChange={(e) => handleStudentPhotoChange(e.target.files?.[0])} className="mt-3 w-full text-xs text-slate-400" />
+              {!readOnly && <input type="file" accept="image/*" onChange={(e) => handleStudentPhotoChange(e.target.files?.[0])} className="mt-3 w-full text-xs text-slate-400" />}
               {studentPhotoPreview && <button type="button" onClick={() => handleStudentPhotoChange(null)} className="mt-2 text-xs text-rose-400 hover:underline">Quitar foto nueva</button>}
             </div>
             <div className="md:col-span-2">
@@ -1211,13 +1234,13 @@ export default function EnrollmentView({
             {/* Cédula Mamá */}
             {Boolean([mother.fullName, mother.nationalId, mother.phone1, mother.email].some(value => String(value || '').trim())) && <div className={`border border-slate-300 dark:border-slate-700/60 p-3 rounded-xl space-y-2 ${documentCardSpanClass}`}>
               <label className="block text-xs font-bold text-slate-400 uppercase">Cédula Mamá (Fotos Frente/Reverso o PDF)</label>
-              <input
+              {!readOnly && <input
                 type="file"
                 multiple
                 accept="image/*,application/pdf"
                 onChange={(e) => handleFileChange(setMotherIdFiles, setMotherIdPending, Array.from(e.target.files))}
                 className="w-full text-xs text-slate-400"
-              />
+              />}
               {motherIdFiles.length > 0 && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
@@ -1233,18 +1256,19 @@ export default function EnrollmentView({
                 </div>
               )}
               <p className={`text-xs font-semibold ${motherIdPending ? 'text-amber-400' : 'text-emerald-400'}`}>{motherIdPending ? 'Pendiente de entregar' : 'Adjunto listo'}</p>
+              {renderExistingDocumentLink(initialStudent?.family?.mother?.idCardUrl)}
             </div>}
 
             {/* Cédula Papá */}
             {Boolean([father.fullName, father.nationalId, father.phone1, father.email].some(value => String(value || '').trim())) && <div className={`border border-slate-300 dark:border-slate-700/60 p-3 rounded-xl space-y-2 ${documentCardSpanClass}`}>
               <label className="block text-xs font-bold text-slate-400 uppercase">Cédula Papá (Fotos Frente/Reverso o PDF)</label>
-              <input
+              {!readOnly && <input
                 type="file"
                 multiple
                 accept="image/*,application/pdf"
                 onChange={(e) => handleFileChange(setFatherIdFiles, setFatherIdPending, Array.from(e.target.files))}
                 className="w-full text-xs text-slate-400"
-              />
+              />}
               {fatherIdFiles.length > 0 && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
@@ -1260,18 +1284,19 @@ export default function EnrollmentView({
                 </div>
               )}
               <p className={`text-xs font-semibold ${fatherIdPending ? 'text-amber-400' : 'text-emerald-400'}`}>{fatherIdPending ? 'Pendiente de entregar' : 'Adjunto listo'}</p>
+              {renderExistingDocumentLink(initialStudent?.family?.father?.idCardUrl)}
             </div>}
 
             {/* Cédula Encargado */}
             {Boolean([guardian.fullName, guardian.nationalId, guardian.phone1, guardian.email].some(value => String(value || '').trim())) && <div className={`border border-slate-300 dark:border-slate-700/60 p-3 rounded-xl space-y-2 ${documentCardSpanClass}`}>
               <label className="block text-xs font-bold text-slate-400 uppercase">Cédula Encargado (Fotos Frente/Reverso o PDF)</label>
-              <input
+              {!readOnly && <input
                 type="file"
                 multiple
                 accept="image/*,application/pdf"
                 onChange={(e) => handleFileChange(setGuardianIdFiles, setGuardianIdPending, Array.from(e.target.files))}
                 className="w-full text-xs text-slate-400"
-              />
+              />}
               {guardianIdFiles.length > 0 && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
@@ -1287,6 +1312,7 @@ export default function EnrollmentView({
                 </div>
               )}
               <p className={`text-xs font-semibold ${guardianIdPending ? 'text-amber-400' : 'text-emerald-400'}`}>{guardianIdPending ? 'Pendiente de entregar' : 'Adjunto listo'}</p>
+              {renderExistingDocumentLink(initialStudent?.family?.guardian?.idCardUrl)}
             </div>}
 
             {/* Cédula Menor: Solo si birthDate está definida y la edad es >= 12 años */}
@@ -1295,13 +1321,13 @@ export default function EnrollmentView({
                 <label className="block text-xs font-bold text-slate-400 uppercase">
                   Cédula de Menor <span className="text-rose-400 font-bold">* (Obligatorio por edad)</span>
                 </label>
-                <input
+                {!readOnly && <input
                   type="file"
                   multiple
                   accept="image/*,application/pdf"
                   onChange={(e) => handleFileChange(setMinorIdFiles, setMinorIdPending, Array.from(e.target.files))}
                   className="w-full text-xs text-slate-400"
-                />
+                />}
                 {minorIdFiles.length > 0 && (
                   <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                     <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
@@ -1317,18 +1343,19 @@ export default function EnrollmentView({
                   </div>
                 )}
                 <p className={`text-xs font-semibold ${minorIdPending ? 'text-amber-400' : 'text-emerald-400'}`}>{minorIdPending ? 'Pendiente de entregar' : 'Adjunto listo'}</p>
+                {renderExistingDocumentLink(initialStudent?.documents?.minorId?.url)}
               </div>
             )}
 
             {/* Constancia de Bautismo */}
             <div className={`border border-slate-300 dark:border-slate-700/60 p-3 rounded-xl space-y-2 ${documentCardSpanClass}`}>
               <label className="block text-xs font-bold text-slate-400 uppercase">Constancia de Bautismo (Requerido de 1º a Confirma)</label>
-              <input
+              {!readOnly && <input
                 type="file"
                 accept="image/*,application/pdf"
                 onChange={(e) => handleFileChange(setBaptismFile, setBaptismPending, e.target.files[0])}
                 className="w-full text-xs text-slate-400"
-              />
+              />}
               {baptismFile && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[300px]">
@@ -1344,18 +1371,19 @@ export default function EnrollmentView({
                 </div>
               )}
               <p className={`text-xs font-semibold ${baptismPending ? 'text-amber-400' : 'text-emerald-400'}`}>{baptismPending ? 'Pendiente de entregar' : 'Adjunto listo'}</p>
+              {renderExistingDocumentLink(initialStudent?.documents?.bautismo?.url)}
             </div>
 
             {/* Prueba de Primera Comunión */}
             {['Cuarto Nivel', 'Quinto Nivel', 'Sexto Nivel', 'Septimo Nivel', 'Confirma'].includes(student.level) && (
               <div className={`border border-sky-500/30 bg-sky-500/10 p-3 rounded-xl space-y-2 ${documentCardSpanClass}`}>
                 <label className="block text-xs font-bold text-sky-400 uppercase">Prueba de Primera Comunión (Certificado o Foto)</label>
-                <input
+                {!readOnly && <input
                   type="file"
                   accept="image/*,application/pdf"
                   onChange={(e) => handleFileChange(setCommunionFile, setCommunionPending, e.target.files[0])}
                   className="w-full text-xs text-slate-400"
-                />
+                />}
                 {communionFile && (
                   <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                     <span className="text-emerald-400 font-semibold truncate max-w-[300px]">
@@ -1371,6 +1399,7 @@ export default function EnrollmentView({
                   </div>
                 )}
                 <p className={`text-xs font-semibold ${communionPending ? 'text-amber-400' : 'text-emerald-400'}`}>{communionPending ? 'Pendiente de entregar' : 'Adjunto listo'}</p>
+                {renderExistingDocumentLink(initialStudent?.documents?.comunion?.url)}
               </div>
             )}
           </div>
@@ -1422,16 +1451,19 @@ export default function EnrollmentView({
           </label>
         </div>
 
-        {/* BOTÓN ENVIAR */}
-        <div className="text-center pt-2">
-          <button
-            type="submit"
-            disabled={isSaving}
-            className="bg-red-800 hover:bg-red-900 disabled:bg-slate-700 text-white font-bold py-3 px-8 rounded-xl text-base shadow-lg transition duration-150 active:scale-95"
-          >
-            {isSaving ? 'Procesando Expediente...' : 'Completar Matrícula'}
-          </button>
-        </div>
+        {/* BOTÓN ENVIAR: oculto cuando el expediente está en modo solo lectura */}
+        {!readOnly && (
+          <div className="text-center pt-2">
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="bg-red-800 hover:bg-red-900 disabled:bg-slate-700 text-white font-bold py-3 px-8 rounded-xl text-base shadow-lg transition duration-150 active:scale-95"
+            >
+              {isSaving ? 'Procesando Expediente...' : (initialStudent ? 'Guardar cambios' : 'Completar Matrícula')}
+            </button>
+          </div>
+        )}
+        </fieldset>
       </form>
 
       {/* MODAL DE PAGO AUTOMÁTICO VINCULADO AL MÓDULO DE PAGOS Y RECIBOS CON QR */}
