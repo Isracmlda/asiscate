@@ -105,6 +105,8 @@ export default function App() {
   const [openNavMenu, setOpenNavMenu] = useState(null);
   const [appToasts, setAppToasts] = useState([]);
   const [appModal, setAppModal] = useState(null);
+  const [installPromptEvent, setInstallPromptEvent] = useState(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
 
   const notify = useCallback((message, type = 'info') => {
     const id = `${Date.now()}-${Math.random()}`;
@@ -115,6 +117,42 @@ export default function App() {
   const showAppModal = useCallback((message, options = {}) => {
     setAppModal({ message: String(message), title: options.title || 'Aviso', confirm: options.confirm === true, onConfirm: options.onConfirm });
   }, []);
+
+  // Captura la invitación nativa del navegador para instalar AsisCate como aplicación.
+  useEffect(() => {
+    const isStandalone = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    setIsAppInstalled(Boolean(isStandalone));
+
+    const handleBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      setInstallPromptEvent(event);
+    };
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true);
+      setInstallPromptEvent(null);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!installPromptEvent) {
+      showAppModal('El navegador todavía no ha habilitado la instalación automática. Abre esta página en Chrome o Edge, espera unos segundos y usa el icono de instalación de la barra de direcciones o el menú “Instalar AsisCate”.', { title: 'Instalar AsisCate' });
+      return;
+    }
+    installPromptEvent.prompt();
+    try {
+      const choice = await installPromptEvent.userChoice;
+      if (choice?.outcome === 'accepted') setIsAppInstalled(true);
+    } finally {
+      setInstallPromptEvent(null);
+    }
+  };
 
   useEffect(() => {
     const nativeAlert = window.alert;
@@ -4726,6 +4764,9 @@ ${catechistName}`;
             cardBgClass={cardBgClass}
             dashboardPanelOpen={dashboardPanelOpen}
             setDashboardPanelOpen={setDashboardPanelOpen}
+            installPromptEvent={installPromptEvent}
+            isAppInstalled={isAppInstalled}
+            handleInstallApp={handleInstallApp}
             attendanceType={attendanceType}
             setAttendanceType={setAttendanceType}
             dashboardGroupId={dashboardGroupId}

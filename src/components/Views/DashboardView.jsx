@@ -8,6 +8,9 @@ export function DashboardView({
   cardBgClass,
   dashboardPanelOpen,
   setDashboardPanelOpen,
+  installPromptEvent,
+  isAppInstalled,
+  handleInstallApp,
   attendanceType,
   setAttendanceType,
   dashboardGroupId,
@@ -109,13 +112,25 @@ export function DashboardView({
             <h3 className="text-lg font-bold">Panel inteligente</h3>
             <p className="text-xs text-slate-400">Ausencias y asistente IA</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setDashboardPanelOpen(prev => !prev)}
-            className="dashboard-toggle-button px-3 py-2 text-xs font-bold rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
-          >
-            {dashboardPanelOpen ? 'Ocultar' : 'Mostrar'}
-          </button>
+          <div className="flex items-center gap-2">
+            {!isAppInstalled && (
+              <button
+                type="button"
+                onClick={handleInstallApp}
+                className="px-3 py-2 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
+                title="Instalar AsisCate como aplicación"
+              >
+                ⬇ Instalar app
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setDashboardPanelOpen(prev => !prev)}
+              className="dashboard-toggle-button px-3 py-2 text-xs font-bold rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
+            >
+              {dashboardPanelOpen ? 'Ocultar' : 'Mostrar'}
+            </button>
+          </div>
         </div>
 
         {dashboardPanelOpen && (
