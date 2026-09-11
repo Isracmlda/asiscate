@@ -2044,8 +2044,8 @@ ${catechistName}`;
   const getAttendanceReportView = (groupId) => {
     const groupStudents = visibleStudents.filter(student => (
       student.groupId === groupId &&
-      (!reportFilters.search || student.name.toLowerCase().includes(reportFilters.search.toLowerCase()))
-    ));
+      (!reportFilters.search || String(student.name || student.fullName || '').toLowerCase().includes(reportFilters.search.toLowerCase()))
+    )).sort((a, b) => String(a.name || a.fullName || '').localeCompare(String(b.name || b.fullName || ''), 'es', { sensitivity: 'base' }));
     const selectedStudents = reportStudentIds === null
       ? groupStudents
       : groupStudents.filter(student => reportStudentIds.includes(student.id));
@@ -2206,8 +2206,9 @@ ${catechistName}`;
     }
 
     try {
-      const jsPdfModule = await import('jspdf');
+      const [jsPdfModule, autoTableModule] = await Promise.all([import('jspdf'), import('jspdf-autotable')]);
       const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
+      const autoTable = autoTableModule.default || autoTableModule.autoTable;
       const { dateMap, sortedDates } = reportView;
       const headers = sortedDates.map(date => {
         const label = dateMap.get(date);
@@ -2261,7 +2262,9 @@ ${catechistName}`;
     }
   };
 
-  const getGroupReportStudents = (groupId) => students.filter(student => student.groupId === groupId);
+  const getGroupReportStudents = (groupId) => students
+    .filter(student => student.groupId === groupId)
+    .sort((a, b) => String(a.name || a.fullName || '').localeCompare(String(b.name || b.fullName || ''), 'es', { sensitivity: 'base' }));
 
   const getFilteredReportAttendance = (student) => (student.attendance || []).filter(record => {
     const matchesType = reportAttendanceType === 'all' || (record.type || 'encuentro') === reportAttendanceType;

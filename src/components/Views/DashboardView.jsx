@@ -71,6 +71,9 @@ export function DashboardView({
   setSelectedGroupForStudent
 }) {
   const [hoveredDonutSegment, setHoveredDonutSegment] = useState(null);
+  const sortedAttendanceStudents = visibleStudents
+    .filter(student => student.groupId === selectedGroupId)
+    .sort((a, b) => String(a.name || a.fullName || '').localeCompare(String(b.name || b.fullName || ''), 'es', { sensitivity: 'base' }));
   const donutSegments = [
     { key: 'present', label: 'Presentes', value: dashboardAttendanceStats.present, color: '#10b981' },
     { key: 'justified', label: 'Justificados', value: dashboardAttendanceStats.justified, color: '#f59e0b' },
@@ -214,7 +217,7 @@ export function DashboardView({
                 onChange={(e) => {
                   const date = e.target.value;
                   setAttendanceDate(date);
-                  setAttendanceLabel(getAttendanceLabel(visibleStudents.filter(student => student.groupId === selectedGroupId), date, attendanceType));
+                  setAttendanceLabel(getAttendanceLabel(sortedAttendanceStudents, date, attendanceType));
                 }}
                 className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
               />
@@ -227,7 +230,7 @@ export function DashboardView({
                 onChange={(e) => {
                   const nextType = e.target.value;
                   setAttendanceType(nextType);
-                  setAttendanceLabel(getAttendanceLabel(visibleStudents.filter(student => student.groupId === selectedGroupId), attendanceDate, nextType));
+                  setAttendanceLabel(getAttendanceLabel(sortedAttendanceStudents, attendanceDate, nextType));
                 }}
                 className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
               >
@@ -324,14 +327,12 @@ export function DashboardView({
           <div className={`${cardBgClass} rounded-xl border shadow-sm overflow-hidden`}>
             {/* VISTA EN TARJETAS PARA PANTALLAS PEQUEÑAS */}
             <div className="block md:hidden divide-y divide-slate-700">
-              {visibleStudents.filter(s => s.groupId === selectedGroupId).length === 0 ? (
+              {sortedAttendanceStudents.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400 italic">
                   No hay Catequizandos matriculados en este grupo.
                 </div>
               ) : (
-                visibleStudents
-                  .filter(s => s.groupId === selectedGroupId)
-                  .map(student => {
+                sortedAttendanceStudents.map(student => {
                     const status = getAttendanceStatus(student, attendanceDate);
                     const displayEmail = student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
                     const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
@@ -400,14 +401,12 @@ export function DashboardView({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-700">
-                  {visibleStudents.filter(s => s.groupId === selectedGroupId).length === 0 ? (
+                  {sortedAttendanceStudents.length === 0 ? (
                     <tr>
                       <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic">No hay Catequizandos matriculados en este grupo.</td>
                     </tr>
                   ) : (
-                    visibleStudents
-                      .filter(s => s.groupId === selectedGroupId)
-                      .map(student => {
+                    sortedAttendanceStudents.map(student => {
                         const status = getAttendanceStatus(student, attendanceDate);
                         const displayEmail = student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
                         const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
