@@ -3,6 +3,23 @@ import { collection, addDoc, doc, updateDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { jsPDF } from 'jspdf';
 
+const loadFaviconAsPng = async () => {
+  const response = await fetch('/favicon.svg');
+  if (!response.ok) return null;
+  const svgText = await response.text();
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128; canvas.height = 128;
+      canvas.getContext('2d').drawImage(image, 0, 0, 128, 128);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    image.onerror = () => resolve(null);
+    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}`;
+  });
+};
+
 export default function EnrollmentDashboardView({
   currentUser,
   userRole,
@@ -20,7 +37,8 @@ export default function EnrollmentDashboardView({
   handleDeleteStudent,
   handleStartEditStudent,
   allUsers = [],
-  fetchAllData
+  fetchAllData,
+  groupScheduleOptions = { days: [], times: [], rooms: [] }
 }) {
   const currentYear = new Date().getFullYear();
   const [selectedCycle, setSelectedCycle] = useState(`${currentYear}-${currentYear + 1}`);
@@ -31,12 +49,15 @@ export default function EnrollmentDashboardView({
   // Modales
   const [selectedLevelModal, setSelectedLevelModal] = useState(null);
   const [selectedStudentDetail, setSelectedStudentDetail] = useState(null);
+  const [showBookControl, setShowBookControl] = useState(false);
 
   // Asistente de Creación/Asignación Masiva
   const [targetLevel, setTargetLevel] = useState('Primer Nivel');
   const [groupChoiceMode, setGroupChoiceMode] = useState('NEW'); // 'NEW' | 'EXISTING'
   const [selectedExistingGroupId, setSelectedExistingGroupId] = useState('');
   const [groupNameSuffix, setGroupNameSuffix] = useState('Sección A');
+  const [massGroupCount, setMassGroupCount] = useState(1);
+  const [massGroupSchedules, setMassGroupSchedules] = useState([{ day: 'Sábado', time: '', room: '' }]);
   const [isCreatingGroups, setIsCreatingGroups] = useState(false);
   const [creationMessage, setCreationMessage] = useState(null);
 
@@ -51,6 +72,12 @@ export default function EnrollmentDashboardView({
     'Septimo Nivel',
     'Confirma'
   ];
+
+  const updateMassGroupCount = (value) => {
+    const nextCount = Math.max(1, Math.min(20, Number(value) || 1));
+    setMassGroupCount(nextCount);
+    setMassGroupSchedules(previous => Array.from({ length: nextCount }, (_, index) => previous[index] || ({ day: 'Sábado', time: '', room: '' })));
+  };
 
   // 1. Persistencia de estado Habilitado / Deshabilitado general
   const handleToggleEnrollment = async (enabled) => {
@@ -79,10 +106,21 @@ export default function EnrollmentDashboardView({
   };
 
   // 2. Filtrar estudiantes por ciclo seleccionado
-  const cycleStudents = students.filter(s => {
+  const cycleStudentsRaw = students.filter(s => {
     if (!s.cycle) return true;
     return s.cycle === selectedCycle;
   });
+  const cycleStudents = Array.from(cycleStudentsRaw.reduce((map, student) => {
+    const normalizedName = String(student.fullName || student.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const key = `${normalizedName}|${student.level || 'Primer Nivel'}|${student.cycle || selectedCycle}`;
+    const current = map.get(key);
+    const score = Object.values(student).filter(value => value !== null && value !== undefined && String(value).trim() !== '').length;
+    const currentScore = current ? Object.values(current).filter(value => value !== null && value !== undefined && String(value).trim() !== '').length : -1;
+    const currentCreatedAt = current?.createdAt ? new Date(current.createdAt).getTime() : 0;
+    const studentCreatedAt = student?.createdAt ? new Date(student.createdAt).getTime() : 0;
+    if (!current || score > currentScore || (score === currentScore && studentCreatedAt >= currentCreatedAt)) map.set(key, student);
+    return map;
+  }, new Map()).values());
 
   // Conteo de catequizandos por Nivel
   const studentsByLevel = levelsList.reduce((acc, level) => {
@@ -96,23 +134,105 @@ export default function EnrollmentDashboardView({
   const existingGroupsForLevel = groups.filter(g => (g.level || 'Primer Nivel') === targetLevel);
 
   // 4. Recaudación Neta Parroquial (deduciendo costo de libro si aplica)
-  const calculateTotalRecaudacion = () => {
-    return paymentRecords.reduce((total, record) => {
-      const amount = Number(record.amount || record.totalAmount || 0);
-      const isHighLevel = ['Sexto Nivel', 'Septimo Nivel', 'Confirma'].includes(record.groupName || record.level);
+  const cyclePaymentRecords = paymentRecords.filter((record) => {
+    if (record.cycle && record.cycle !== selectedCycle) return false;
+    // La recaudación del dashboard de matrículas solo incluye pagos generados
+    // por el módulo de matrícula: matrícula, libro o matrícula + libro.
+    const concept = String(record.concept || '').toLowerCase();
+    return concept.includes('matrícula') || concept.includes('matricula') || concept.includes('libro');
+  });
+  const getPaymentAmount = (record) => Number(record.amount || record.totalAmount || 0);
+  const getNetContribution = (record) => {
+      const amount = getPaymentAmount(record);
+      const concept = String(record.concept || '').toLowerCase();
+      const linkedStudent = students.find(student => student.id === record.studentId);
+      const linkedGroup = groups.find(group => group.id === record.groupId);
+      const level = linkedStudent?.level || record.level || linkedGroup?.level || record.groupName || '';
+      const isHighLevel = ['Sexto Nivel', 'Septimo Nivel', 'Confirma', '6to Nivel', '7mo Nivel'].some(value => String(level).toLowerCase().includes(value.toLowerCase()));
       const bookCost = isHighLevel ? 4000 : 3500;
 
-      let contrib = amount;
-      if (record.concept && record.concept.includes('libro')) {
-        contrib = Math.max(0, amount - bookCost);
-      } else if (record.contributionAmount !== undefined) {
-        contrib = Number(record.contributionAmount);
-      }
-      return total + contrib;
-    }, 0);
+      // Un pago exclusivamente de libro no es recaudación parroquial neta.
+      if (concept.includes('libro') && !concept.includes('matrícula') && !concept.includes('matricula')) return 0;
+      if (concept.includes('libro')) return Math.max(0, amount - bookCost);
+      if (record.contributionAmount !== undefined) return Number(record.contributionAmount);
+      return amount;
   };
 
-  const totalRecaudadoContribucion = calculateTotalRecaudacion();
+  const calculateByMethod = (records, getAmount) => records.reduce((totals, record) => {
+    const method = String(record.paymentMethod || '').toUpperCase();
+    const amount = getAmount(record);
+    if (method.includes('SINPE')) totals.sinpe += amount;
+    else if (method.includes('EFECTIVO')) totals.efectivo += amount;
+    else totals.otros += amount;
+    totals.total += amount;
+    return totals;
+  }, { sinpe: 0, efectivo: 0, otros: 0, total: 0 });
+
+  const netRevenue = calculateByMethod(cyclePaymentRecords, getNetContribution);
+
+  const bookPaymentCandidates = cyclePaymentRecords.filter((record) => {
+    const hasBook = Number(record.bookAmount || 0) > 0 || /libro/i.test(record.concept || '');
+    return hasBook;
+  });
+  // Un catequizando solo aparece una vez aunque se haya corregido o reimpreso un recibo.
+  const bookPaymentsForCycle = Array.from(new Map(bookPaymentCandidates.map((record) => [record.studentId || record.studentName || record.id, record])).values());
+  const totalBooksToDeliver = bookPaymentsForCycle.length;
+  const getBookAmount = (record) => Number(record.bookAmount || 0) || (/libro/i.test(record.concept || '') ? Math.max(0, getPaymentAmount(record) - Number(record.contributionAmount || 0)) : 0);
+  const bookRevenue = calculateByMethod(bookPaymentsForCycle, getBookAmount);
+  const booksByLevel = levelsList.reduce((acc, level) => {
+    acc[level] = bookPaymentsForCycle.filter((record) => (students.find((student) => student.id === record.studentId)?.level || record.level || record.groupName) === level);
+    return acc;
+  }, {});
+
+  const addPdfHeader = async (pdf, title, subtitle) => {
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const logo = await loadFaviconAsPng();
+    if (logo) pdf.addImage(logo, 'PNG', 14, 10, 14, 14);
+    pdf.setFillColor(127, 29, 29);
+    pdf.rect(32, 10, pageWidth - 46, 14, 'F');
+    pdf.setTextColor(255, 255, 255); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(15);
+    pdf.text(title, 36, 19);
+    pdf.setTextColor(55, 65, 81); pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
+    pdf.text(subtitle, 14, 32);
+    pdf.text(`Emitido: ${new Date().toLocaleDateString('es-CR')}`, pageWidth - 55, 32);
+  };
+
+  const addPdfFooter = (pdf) => {
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    pdf.setDrawColor(203, 213, 225); pdf.line(14, pageHeight - 12, pageWidth - 14, pageHeight - 12);
+    pdf.setTextColor(100, 116, 139); pdf.setFontSize(7.5); pdf.setFont('helvetica', 'normal');
+    pdf.text('AsisCate - Sistema Parroquial', 14, pageHeight - 7);
+  };
+
+  const generateBooksSummaryPdf = async () => {
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    await addPdfHeader(pdf, 'AsisCate - Control de Libros', `Ciclo catequético: ${selectedCycle}`);
+    pdf.setFillColor(248, 250, 252); pdf.roundedRect(14, 40, 182, 18, 3, 3, 'F');
+    pdf.setTextColor(127, 29, 29); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(12); pdf.text(`Total de libros a entregar: ${totalBooksToDeliver}`, 20, 51);
+    let y = 70;
+    pdf.setFillColor(127, 29, 29); pdf.rect(14, y, 182, 8, 'F'); pdf.setTextColor(255, 255, 255); pdf.setFontSize(9); pdf.text('NIVEL', 20, y + 5.5); pdf.text('LIBROS', 175, y + 5.5, { align: 'right' }); y += 8;
+    levelsList.forEach((level, index) => { if (index % 2 === 0) { pdf.setFillColor(248, 250, 252); pdf.rect(14, y, 182, 8, 'F'); } pdf.setTextColor(55, 65, 81); pdf.setFont('helvetica', 'normal'); pdf.text(level, 20, y + 5.5); pdf.setFont('helvetica', 'bold'); pdf.text(String(booksByLevel[level].length), 175, y + 5.5, { align: 'right' }); y += 8; });
+    addPdfFooter(pdf);
+    pdf.save(`Libros_por_nivel_${selectedCycle}.pdf`);
+  };
+
+  const generateBookListPdf = async (level) => {
+    const records = booksByLevel[level] || [];
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    await addPdfHeader(pdf, 'AsisCate - Entrega de Libros', `${level} · Ciclo catequético: ${selectedCycle}`);
+    let y = 42;
+    pdf.setFillColor(127, 29, 29); pdf.rect(14, y, 182, 8, 'F'); pdf.setTextColor(255, 255, 255); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8.5); pdf.text('N°', 18, y + 5.5); pdf.text('CATEQUIZANDO', 30, y + 5.5); pdf.text('RECIBO', 175, y + 5.5, { align: 'right' }); y += 8;
+    records.forEach((record, index) => {
+      const student = students.find((item) => item.id === record.studentId);
+      if (index % 2 === 0) { pdf.setFillColor(248, 250, 252); pdf.rect(14, y, 182, 8, 'F'); }
+      pdf.setTextColor(55, 65, 81); pdf.setFont('helvetica', 'normal'); pdf.text(String(index + 1), 18, y + 5.5); pdf.text(String(record.studentName || student?.fullName || student?.name || 'Sin nombre').slice(0, 65), 30, y + 5.5); pdf.text(String(record.receiptNumber || record.receiptNum || 'N/A'), 175, y + 5.5, { align: 'right' });
+      y += 8;
+      if (y > 275 && index < records.length - 1) { addPdfFooter(pdf); pdf.addPage(); y = 18; }
+    });
+    addPdfFooter(pdf);
+    pdf.save(`Lista_libros_${level.replace(/[^a-z0-9]+/gi, '_')}_${selectedCycle}.pdf`);
+  };
 
   // 5. Asistente para creación / asignación masiva de grupos
   const handleMassiveGroupAction = async () => {
@@ -125,47 +245,52 @@ export default function EnrollmentDashboardView({
     setIsCreatingGroups(true);
     try {
       let targetGroupId = selectedExistingGroupId;
-      let targetGroupName = '';
-
       if (groupChoiceMode === 'NEW' || !targetGroupId) {
-        const fullGroupName = `${targetLevel} - ${groupNameSuffix} (${selectedCycle})`;
+        if (massGroupSchedules.slice(0, massGroupCount).some(schedule => !schedule.day || !schedule.time || !schedule.room)) {
+          alert('Completa el día, horario y salón de cada grupo antes de continuar.');
+          setIsCreatingGroups(false);
+          return;
+        }
         const matchedParroquia = currentUser?.parroquiaId || (parroquias[0]?.id || '');
         const matchedDiaconia = currentUser?.diaconiaId || (diaconias[0]?.id || '');
-
-        const newGroupData = {
-          name: fullGroupName,
-          level: targetLevel,
-          year: selectedCycle,
-          parroquiaId: matchedParroquia,
-          diaconiaId: matchedDiaconia,
-          createdBy: currentUser?.uid || currentUser?.id || 'system',
-          createdAt: new Date().toISOString()
-        };
-
-        const groupDocRef = await addDoc(collection(db, 'groups'), newGroupData);
-        targetGroupId = groupDocRef.id;
-        targetGroupName = fullGroupName;
-
-        if (typeof setGroups === 'function') {
-          setGroups(prev => [...prev, { id: targetGroupId, ...newGroupData }]);
+        const groupCount = Math.min(massGroupCount, unassignedStudents.length);
+        const chunkSize = Math.ceil(unassignedStudents.length / groupCount);
+        const createdGroups = [];
+        for (let index = 0; index < groupCount; index += 1) {
+          const schedule = massGroupSchedules[index];
+          const sectionName = groupCount === 1 ? groupNameSuffix : `${groupNameSuffix} ${index + 1}`;
+          const newGroupData = {
+            name: `${targetLevel} - ${sectionName}`,
+            level: targetLevel,
+            year: selectedCycle,
+            parroquiaId: matchedParroquia,
+            diaconiaId: matchedDiaconia,
+            scheduleDay: schedule.day,
+            scheduleTime: schedule.time,
+            room: schedule.room,
+            createdBy: currentUser?.uid || currentUser?.id || 'system',
+            createdAt: new Date().toISOString()
+          };
+          const groupDocRef = await addDoc(collection(db, 'groups'), newGroupData);
+          const chunk = unassignedStudents.slice(index * chunkSize, (index + 1) * chunkSize);
+          await Promise.all(chunk.map(student => updateDoc(doc(db, 'students', student.id), { groupId: groupDocRef.id })));
+          createdGroups.push({ id: groupDocRef.id, ...newGroupData, studentIds: chunk.map(student => student.id) });
         }
+        if (typeof setGroups === 'function') setGroups(prev => [...prev, ...createdGroups.map(({ studentIds, ...group }) => group)]);
+        if (typeof setStudents === 'function') {
+          setStudents(prev => prev.map(student => {
+            const assignedGroup = createdGroups.find(group => group.studentIds.includes(student.id));
+            return assignedGroup ? { ...student, groupId: assignedGroup.id } : student;
+          }));
+        }
+        setCreationMessage(`¡Se distribuyeron ${unassignedStudents.length} catequizandos en ${createdGroups.length} grupo(s)!`);
       } else {
         const matched = groups.find(g => g.id === targetGroupId);
-        targetGroupName = matched ? matched.name : 'Grupo existente';
+        if (!matched) throw new Error('Grupo existente no encontrado');
+        await Promise.all(unassignedStudents.map(student => updateDoc(doc(db, 'students', student.id), { groupId: targetGroupId })));
+        if (typeof setStudents === 'function') setStudents(prev => prev.map(student => unassignedStudents.some(item => item.id === student.id) ? { ...student, groupId: targetGroupId } : student));
+        setCreationMessage(`¡Se asignaron ${unassignedStudents.length} catequizandos con éxito al grupo "${matched.name}"!`);
       }
-
-      // Actualizar estudiantes en Firestore
-      const updatePromises = unassignedStudents.map(student =>
-        updateDoc(doc(db, 'students', student.id), { groupId: targetGroupId })
-      );
-
-      await Promise.all(updatePromises);
-
-      if (typeof setStudents === 'function') {
-        setStudents(prev => prev.map(s => unassignedStudents.some(u => u.id === s.id) ? { ...s, groupId: targetGroupId } : s));
-      }
-
-      setCreationMessage(`¡Se asignaron ${unassignedStudents.length} catequizandos con éxito al grupo "${targetGroupName}"!`);
       setTimeout(() => setCreationMessage(null), 6000);
     } catch (err) {
       console.error('Error en asignación de grupos:', err);
@@ -175,11 +300,46 @@ export default function EnrollmentDashboardView({
     }
   };
 
+  const handleChangeStudentGroup = async (student, nextGroupId) => {
+    const nextGroup = groups.find(group => group.id === nextGroupId);
+    if (!student?.id || !nextGroup) return;
+    try {
+      await updateDoc(doc(db, 'students', student.id), { groupId: nextGroup.id, level: nextGroup.level || student.level || 'Primer Nivel' });
+      const updatedStudent = { ...student, groupId: nextGroup.id, level: nextGroup.level || student.level || 'Primer Nivel' };
+      if (typeof setStudents === 'function') setStudents(previous => previous.map(item => item.id === student.id ? updatedStudent : item));
+      setSelectedStudentDetail(updatedStudent);
+    } catch (error) {
+      console.error('Error cambiando grupo del expediente:', error);
+      alert('No se pudo cambiar el grupo del catequizando.');
+    }
+  };
+
   // 6. Generador de Expediente PDF (Una sola página con la imagen de la firma incrustada)
   const generateSinglePageExpedientePdf = async (st) => {
     const docPdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const pageWidth = docPdf.internal.pageSize.getWidth();
     const margin = 12;
+
+    const loadImageAsCleanPng = (srcUrl) => new Promise((resolve) => {
+      if (!srcUrl) return resolve(null);
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width || 300;
+          canvas.height = img.naturalHeight || img.height || 150;
+          canvas.getContext('2d').drawImage(img, 0, 0);
+          resolve(canvas.toDataURL('image/png'));
+        } catch (err) {
+          console.warn('No se pudo preparar la imagen para el PDF:', err);
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = srcUrl;
+      setTimeout(() => resolve(null), 1500);
+    });
 
     // Encabezado estilizado
     docPdf.setFillColor(127, 29, 29); // Red-800
@@ -208,25 +368,48 @@ export default function EnrollmentDashboardView({
 
     const leftX = margin + 3;
     const rightX = pageWidth / 2 + 5;
+    const photoData = st.photoData || (st.photoUrl ? await loadImageAsCleanPng(st.photoUrl) : null);
+    const studentInfoX = photoData ? leftX + 31 : leftX;
 
-    docPdf.setFont('helvetica', 'bold'); docPdf.text('Nombre completo:', leftX, y);
-    docPdf.setFont('helvetica', 'normal'); docPdf.text(String(st.fullName || st.name || 'N/A'), leftX + 32, y);
+    if (photoData) {
+      try {
+        docPdf.addImage(photoData, 'PNG', leftX, y - 2, 25, 31);
+      } catch (imgErr) {
+        console.warn('No se pudo incluir la foto en el PDF:', imgErr);
+      }
+    }
+
+    docPdf.setFont('helvetica', 'bold'); docPdf.text('Nombre completo:', studentInfoX, y);
+    docPdf.setFont('helvetica', 'normal'); docPdf.text(String(st.fullName || st.name || 'N/A'), studentInfoX + 32, y);
     docPdf.setFont('helvetica', 'bold'); docPdf.text('Nivel:', rightX, y);
     docPdf.setFont('helvetica', 'normal'); docPdf.text(String(st.level || 'N/A'), rightX + 14, y);
     y += 6;
 
-    docPdf.setFont('helvetica', 'bold'); docPdf.text('Fecha nacimiento:', leftX, y);
-    docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.birthDate || 'N/A'} (${st.age ?? 'N/A'} años)`, leftX + 32, y);
+    docPdf.setFont('helvetica', 'bold'); docPdf.text('Fecha nacimiento:', studentInfoX, y);
+    docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.birthDate || 'N/A'} (${st.age ?? 'N/A'} años)`, studentInfoX + 32, y);
     docPdf.setFont('helvetica', 'bold'); docPdf.text('Identificación:', rightX, y);
     docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.idType || 'NACIONAL'}: ${st.nationalId || 'N/A'}`, rightX + 24, y);
     y += 6;
 
-    docPdf.setFont('helvetica', 'bold'); docPdf.text('Ciclo / Parroquia:', leftX, y);
-    docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.cycle || '2026-2027'} | ${st.parish || 'El Carmen'} (${st.diocesis || 'General'})`, leftX + 32, y);
+    docPdf.setFont('helvetica', 'bold'); docPdf.text('Ciclo / Parroquia:', studentInfoX, y);
+    docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.cycle || '2026-2027'} | ${st.parish || 'El Carmen'} (${st.diocesis || 'General'})`, studentInfoX + 32, y);
     y += 6;
 
-    docPdf.setFont('helvetica', 'bold'); docPdf.text('Dirección / Notas:', leftX, y);
-    docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.address || 'Sin dirección'} | Med: ${st.medicalNotes || 'N/A'}`, leftX + 32, y);
+    docPdf.setFont('helvetica', 'bold'); docPdf.text('Dirección / Notas:', studentInfoX, y);
+    docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.address || 'Sin dirección'} | Med: ${st.medicalNotes || 'N/A'}`, studentInfoX + 32, y);
+    y = Math.max(y + 10, photoData ? 73 : y + 10);
+
+    docPdf.setFontSize(8);
+    docPdf.setFont('helvetica', 'normal');
+    const educationalInfo = `Género: ${st.gender || 'N/A'} | Nacimiento: ${st.birthPlace || 'N/A'} | Centro educativo: ${st.educationCenter || 'N/A'} | Grado: ${st.schoolGrade || 'N/A'}`;
+    docPdf.text(docPdf.splitTextToSize(educationalInfo, pageWidth - margin * 2 - 6), leftX, y);
+    y += 8;
+    const specialNeeds = [
+      ['Adecuación curricular', st.curricularAdaptation, st.curricularAdaptationDetails],
+      ['Conducta', st.behaviorIssue, st.behaviorIssueDetails],
+      ['Impedimento físico', st.physicalImpairment, st.physicalImpairmentDetails]
+    ].map(([label, value, details]) => `${label}: ${value === 'SI' ? `Sí${details ? ` (${details})` : ''}` : 'No'}`).join(' | ');
+    docPdf.text(docPdf.splitTextToSize(specialNeeds, pageWidth - margin * 2 - 6), leftX, y);
     y += 10;
 
     // Sección II: Encargados
@@ -260,6 +443,14 @@ export default function EnrollmentDashboardView({
       docPdf.setFont('helvetica', 'normal'); docPdf.text(`Céd: ${g.nationalId || 'N/A'} | Tel: ${g.phone1 || 'N/A'} | ${g.email || ''}`, leftX + 45, y);
       y += 5.5;
     }
+    const familyDetails = `Estado civil: ${st.maritalStatus || 'N/A'} | Hermanos: ${st.siblingCount || 'N/A'}${st.siblingDetails ? ` (${st.siblingDetails})` : ''}`;
+    docPdf.setFont('helvetica', 'normal');
+    docPdf.text(docPdf.splitTextToSize(familyDetails, pageWidth - margin * 2 - 6), leftX, y);
+    y += 5.5;
+    if (st.authorizedPickupPeople) {
+      docPdf.text(docPdf.splitTextToSize(`Autorizados para retirar: ${st.authorizedPickupPeople}`, pageWidth - margin * 2 - 6), leftX, y);
+      y += 9;
+    }
     y += 4;
 
     // Sección III: Estado Documentos
@@ -272,9 +463,9 @@ export default function EnrollmentDashboardView({
     y += 11;
 
     docPdf.setFontSize(8.5);
-    const docM = st.documents?.minorId?.status === 'COMPLETED' ? 'COMPLETADO' : (st.documents?.minorId?.status === 'PENDING' ? 'PENDIENTE' : 'N/A');
-    const docB = st.documents?.bautismo?.status === 'COMPLETED' ? 'COMPLETADO' : (st.documents?.bautismo?.status === 'PENDING' ? 'PENDIENTE' : 'N/A');
-    const docC = st.documents?.comunion?.status === 'COMPLETED' ? 'COMPLETADO' : (st.documents?.comunion?.status === 'PENDING' ? 'PENDIENTE' : 'N/A');
+    const docM = st.documents?.minorId?.status === 'COMPLETED' ? 'COMPLETADO' : 'PENDIENTE';
+    const docB = st.documents?.bautismo?.status === 'COMPLETED' ? 'COMPLETADO' : 'PENDIENTE';
+    const docC = st.documents?.comunion?.status === 'COMPLETED' ? 'COMPLETADO' : 'PENDIENTE';
 
     docPdf.setFont('helvetica', 'normal');
     docPdf.text(`• Cédula Menor: ${docM}    • Constancia Bautismo: ${docB}    • Comprobante Comunión: ${docC}`, leftX, y);
@@ -289,34 +480,13 @@ export default function EnrollmentDashboardView({
     docPdf.text('IV. FIRMA DE CONFORMIDAD Y DECLARACIÓN JURADA', margin + 3, y + 5);
     y += 12;
 
+    docPdf.setFont('helvetica', 'normal');
+    docPdf.setFontSize(7.5);
+    docPdf.text('Compromiso de formación en la fe: ' + (st.acceptsCatechesisCommitment ? 'ACEPTADO' : 'No registrado'), leftX, y);
+    y += 5;
+
     const signatureData = st.family?.guardian?.signatureData;
     const signatureUrl = st.family?.guardian?.signatureUrl;
-
-    const loadImageAsCleanPng = (srcUrl) => {
-      return new Promise((resolve) => {
-        if (!srcUrl) return resolve(null);
-        const img = new Image();
-        img.crossOrigin = 'Anonymous';
-        img.src = srcUrl;
-        img.onload = () => {
-          try {
-            const canvas = document.createElement('canvas');
-            canvas.width = img.naturalWidth || img.width || 300;
-            canvas.height = img.naturalHeight || img.height || 150;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            resolve(canvas.toDataURL('image/png'));
-          } catch (err) {
-            console.warn('Canvas conversion error:', err);
-            resolve(null);
-          }
-        };
-        img.onerror = () => {
-          resolve(null);
-        };
-        setTimeout(() => resolve(null), 1500);
-      });
-    };
 
     let cleanSigB64 = null;
     if (signatureData && signatureData.startsWith('data:image/')) {
@@ -382,19 +552,21 @@ export default function EnrollmentDashboardView({
     }
   };
 
+  const formatDocumentStatus = (status) => status === 'COMPLETED' ? 'COMPLETADO' : 'PENDIENTE';
+
   return (
     <div className="space-y-6">
       {/* Encabezado y Control General de Apertura de Matrículas */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-800/40 border border-slate-700/60 p-5 rounded-2xl">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-100 dark:bg-slate-800/40 border border-slate-300 dark:border-slate-700/60 p-5 rounded-2xl">
         <div>
-          <h2 className="text-xl sm:text-2xl font-black text-white">Dashboard Administrativo de Matrícula</h2>
+          <h2 className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">Dashboard Administrativo de Matrícula</h2>
           <p className="text-xs sm:text-sm text-slate-400">Control general de matrículas, recaudación y asignación de grupos.</p>
         </div>
 
         {/* Switch Control Habilitar / Deshabilitar Módulo de Matrículas (Persistido) & Permisos de Usuarios */}
         <div className="flex flex-col gap-2 items-end">
-          <div className="flex items-center gap-3 bg-slate-900/80 px-4 py-2.5 rounded-xl border border-slate-700">
-            <span className="text-xs font-bold text-slate-300">
+          <div className="flex items-center gap-3 bg-white dark:bg-slate-900/80 px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700">
+            <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
               Módulo de Matrículas:
             </span>
             <label className="relative inline-flex items-center cursor-pointer">
@@ -450,9 +622,9 @@ export default function EnrollmentDashboardView({
       </div>
 
       {/* Filtro de Ciclo Catequético */}
-      <div className={`${cardBgClass} p-4 rounded-xl border border-slate-700/60 flex items-center justify-between gap-4 flex-wrap`}>
+      <div className={`${cardBgClass} p-4 rounded-xl border border-slate-300 dark:border-slate-700/60 flex items-center justify-between gap-4 flex-wrap`}>
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-slate-300">📅 Ciclo Catequético:</span>
+          <span className="text-sm font-bold text-slate-700 dark:text-slate-300">📅 Ciclo Catequético:</span>
           <select
             value={selectedCycle}
             onChange={(e) => setSelectedCycle(e.target.value)}
@@ -470,25 +642,25 @@ export default function EnrollmentDashboardView({
       </div>
 
       {/* Métricas de Recaudación y Matrícula */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recaudación por Contribución/Matrícula Exclusiva */}
-        <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-700/60 space-y-3 relative overflow-hidden`}>
+        <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-3 relative overflow-hidden`}>
           <div className="flex justify-between items-center">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Recaudación Neta Parroquial</span>
             <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
               Contribución/Matrícula
             </span>
           </div>
-          <div className="text-3xl sm:text-4xl font-black text-emerald-400">
-            ₡{totalRecaudadoContribucion.toLocaleString('es-CR')}
+          <div className="text-3xl sm:text-4xl font-black text-emerald-400">₡{netRevenue.total.toLocaleString('es-CR')}</div>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded-lg bg-slate-100 dark:bg-slate-900/60 p-2"><span className="block text-slate-500 dark:text-slate-400">SINPE</span><strong className="text-emerald-600 dark:text-emerald-300">₡{netRevenue.sinpe.toLocaleString('es-CR')}</strong></div>
+            <div className="rounded-lg bg-slate-100 dark:bg-slate-900/60 p-2"><span className="block text-slate-500 dark:text-slate-400">Efectivo</span><strong className="text-emerald-600 dark:text-emerald-300">₡{netRevenue.efectivo.toLocaleString('es-CR')}</strong></div>
           </div>
-          <p className="text-xs text-slate-400">
-            Monto acumulado deduciendo automáticamente el costo del libro en inscripciones combinadas.
-          </p>
+          {netRevenue.otros > 0 && <p className="text-xs text-slate-400">Otros medios: ₡{netRevenue.otros.toLocaleString('es-CR')}</p>}
         </div>
 
         {/* Total de Catequizandos Inscritos */}
-        <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-700/60 space-y-3`}>
+        <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-3`}>
           <div className="flex justify-between items-center">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total de Catequizandos</span>
             <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-sky-500/10 text-sky-400 border border-sky-500/20">
@@ -505,9 +677,9 @@ export default function EnrollmentDashboardView({
       </div>
 
       {/* Desglose Gráfico de Matriculados por Nivel */}
-      <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-700/60 space-y-4`}>
+      <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-4`}>
         <div className="flex justify-between items-center border-b border-slate-700/60 pb-2">
-          <h3 className="text-base font-bold text-white">
+          <h3 className="text-base font-bold text-slate-800 dark:text-white">
             Matriculados por Nivel ({selectedCycle})
           </h3>
           <span className="text-xs text-slate-400">Toca cualquier nivel para explorar sus expedientes</span>
@@ -522,7 +694,7 @@ export default function EnrollmentDashboardView({
               <div
                 key={lvl}
                 onClick={() => setSelectedLevelModal(lvl)}
-                className="bg-slate-900/80 p-4 rounded-xl border border-slate-800 hover:border-amber-500/50 transition cursor-pointer group space-y-2"
+                className="bg-slate-100 dark:bg-slate-900/80 p-4 rounded-xl border border-slate-300 dark:border-slate-800 hover:border-amber-500/50 transition cursor-pointer group space-y-2"
               >
                 <div className="flex justify-between items-center">
                   <span className="text-xs font-bold text-slate-300 group-hover:text-amber-400 transition truncate max-w-[170px]">
@@ -534,7 +706,7 @@ export default function EnrollmentDashboardView({
                 </div>
 
                 {/* Barra gráfica de progreso */}
-                <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                <div className="w-full bg-slate-200 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
                   <div
                     className="bg-gradient-to-r from-amber-500 to-red-600 h-full rounded-full transition-all duration-500"
                     style={{ width: `${count > 0 ? Math.max(pct, 6) : 0}%` }}
@@ -551,8 +723,8 @@ export default function EnrollmentDashboardView({
       </div>
 
       {/* Asistente de Creación Masiva / Asignación a Grupo */}
-      <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-700/60 space-y-4`}>
-        <div className="border-b border-slate-700/60 pb-2">
+      <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-4`}>
+        <div className="border-b border-slate-300 dark:border-slate-700/60 pb-2">
           <h3 className="text-lg font-bold text-red-700 dark:text-red-400">⚡ Asistente de Asignación y Creación Masiva de Grupos</h3>
           <p className="text-xs text-slate-400">Agrupa automáticamente a los catequizandos sin grupo en el nivel seleccionado.</p>
         </div>
@@ -588,7 +760,7 @@ export default function EnrollmentDashboardView({
                   className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold transition border ${
                     groupChoiceMode === 'NEW'
                       ? 'bg-red-800 text-white border-red-700'
-                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
                   }`}
                 >
                   + Crear Nuevo Grupo
@@ -599,7 +771,7 @@ export default function EnrollmentDashboardView({
                   className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold transition border ${
                     groupChoiceMode === 'EXISTING'
                       ? 'bg-red-800 text-white border-red-700'
-                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700'
                   }`}
                 >
                   Usar Grupo Existente
@@ -637,6 +809,25 @@ export default function EnrollmentDashboardView({
             </div>
           </div>
 
+          {groupChoiceMode === 'NEW' && (
+            <div className="space-y-3 rounded-xl border border-slate-300 dark:border-slate-700 p-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <label className="text-xs font-bold text-slate-400 uppercase">Cantidad de grupos a crear</label>
+                <input type="number" min="1" max="20" value={massGroupCount} onChange={event => updateMassGroupCount(event.target.value)} className={`w-28 rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+              </div>
+              <div className="space-y-2">
+                {massGroupSchedules.slice(0, massGroupCount).map((schedule, index) => (
+                  <div key={index} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center">
+                    <span className="text-xs font-bold text-slate-400">Grupo {index + 1}</span>
+                    <select value={schedule.day} onChange={event => setMassGroupSchedules(previous => previous.map((item, itemIndex) => itemIndex === index ? { ...item, day: event.target.value } : item))} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}><option value="">Día...</option>{groupScheduleOptions.days.map(day => <option key={day} value={day}>{day}</option>)}</select>
+                    <select value={schedule.time} onChange={event => setMassGroupSchedules(previous => previous.map((item, itemIndex) => itemIndex === index ? { ...item, time: event.target.value } : item))} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}><option value="">Horario...</option>{groupScheduleOptions.times.map(time => <option key={time} value={time}>{time}</option>)}</select>
+                    <select value={schedule.room} onChange={event => setMassGroupSchedules(previous => previous.map((item, itemIndex) => itemIndex === index ? { ...item, room: event.target.value } : item))} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}><option value="">Salón...</option>{groupScheduleOptions.rooms.map(room => <option key={room} value={room}>{room}</option>)}</select>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end pt-2">
             <button
               type="button"
@@ -648,6 +839,32 @@ export default function EnrollmentDashboardView({
             </button>
           </div>
         </div>
+      </div>
+
+      <div className={`${cardBgClass} rounded-2xl border border-slate-300 dark:border-slate-700/60 overflow-hidden`}>
+        <button type="button" onClick={() => setShowBookControl((visible) => !visible)} className="w-full flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-5 text-left hover:bg-slate-100 dark:hover:bg-slate-800/30 transition">
+          <div><h3 className="text-base font-bold text-slate-800 dark:text-white">📚 Control de libros por entregar</h3><p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Oculto por defecto; se genera desde los recibos con libro del ciclo.</p></div>
+          <span className="text-xs font-bold text-amber-400">{showBookControl ? 'Ocultar ▲' : `Mostrar (${totalBooksToDeliver}) ▼`}</span>
+        </button>
+        {showBookControl && (
+          <div className="border-t border-slate-300 dark:border-slate-700/60 p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
+              <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 px-4 py-2"><span className="text-xs text-amber-300">Total de libros a entregar/comprar: </span><strong className="text-xl text-amber-400">{totalBooksToDeliver}</strong></div>
+              <button type="button" onClick={generateBooksSummaryPdf} className="bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold px-3 py-2 rounded-lg text-xs">📄 PDF: total por nivel</button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3"><span className="block text-slate-400">Recaudado por libros</span><strong className="text-lg text-emerald-400">₡{bookRevenue.total.toLocaleString('es-CR')}</strong></div>
+              <div className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 p-3"><span className="block text-slate-500 dark:text-slate-400">SINPE</span><strong className="text-lg text-sky-600 dark:text-sky-300">₡{bookRevenue.sinpe.toLocaleString('es-CR')}</strong></div>
+              <div className="rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 p-3"><span className="block text-slate-500 dark:text-slate-400">Efectivo</span><strong className="text-lg text-amber-600 dark:text-amber-300">₡{bookRevenue.efectivo.toLocaleString('es-CR')}</strong></div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[570px] text-left text-xs">
+                <thead className="text-slate-500 dark:text-slate-400 uppercase border-b border-slate-300 dark:border-slate-700"><tr><th className="px-3 py-2">Nivel</th><th className="px-3 py-2 text-center">Libros</th><th className="px-3 py-2 text-right">Lista</th></tr></thead>
+                <tbody>{levelsList.map((level) => <tr key={level} className="border-b border-slate-200 dark:border-slate-800/80 text-slate-700 dark:text-slate-200"><td className="px-3 py-2 font-semibold">{level}</td><td className="px-3 py-2 text-center text-amber-500 dark:text-amber-400 font-bold">{booksByLevel[level].length}</td><td className="px-3 py-2 text-right"><button type="button" disabled={!booksByLevel[level].length} onClick={() => generateBookListPdf(level)} className="text-sky-600 dark:text-sky-300 hover:text-sky-700 dark:hover:text-sky-200 disabled:text-slate-400 dark:disabled:text-slate-600 disabled:cursor-not-allowed">📄 PDF de catequizandos</button></td></tr>)}</tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* MODAL 1: Lista de Expedientes por Nivel */}
@@ -731,28 +948,60 @@ export default function EnrollmentDashboardView({
               {/* Sección I */}
               <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800 space-y-2">
                 <h4 className="font-bold text-red-400 uppercase text-xs">I. Datos del Catequizando</h4>
-                <div className="grid grid-cols-2 gap-2 text-slate-300">
+                <div className="flex gap-3 items-start">
+                  {(selectedStudentDetail.photoData || selectedStudentDetail.photoUrl) && (
+                    <img src={selectedStudentDetail.photoData || selectedStudentDetail.photoUrl} alt={`Foto de ${selectedStudentDetail.fullName || selectedStudentDetail.name || 'catequizando'}`} className="h-28 w-24 rounded-lg object-cover border border-slate-600 bg-slate-800" />
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-300 flex-1">
                   <div><strong>Nombre:</strong> {selectedStudentDetail.fullName || selectedStudentDetail.name}</div>
                   <div><strong>Nivel:</strong> {selectedStudentDetail.level}</div>
                   <div><strong>Fecha de Nacimiento:</strong> {selectedStudentDetail.birthDate || 'N/A'} ({selectedStudentDetail.age} años)</div>
                   <div><strong>Identificación:</strong> {selectedStudentDetail.idType || 'NACIONAL'} - {selectedStudentDetail.nationalId || 'N/A'}</div>
+                  <div><strong>Género:</strong> {selectedStudentDetail.gender || 'N/A'}</div>
+                  <div><strong>Lugar de nacimiento:</strong> {selectedStudentDetail.birthPlace || 'N/A'}</div>
+                  <div><strong>Centro educativo:</strong> {selectedStudentDetail.educationCenter || 'N/A'}</div>
+                  <div><strong>Grado:</strong> {selectedStudentDetail.schoolGrade || 'N/A'}</div>
                   <div><strong>Ciclo:</strong> {selectedStudentDetail.cycle || '2026-2027'}</div>
                   <div><strong>Parroquia / Diaconía:</strong> {selectedStudentDetail.parish || 'El Carmen'} ({selectedStudentDetail.diocesis || 'General'})</div>
+                  <div className="sm:col-span-2"><strong>Grupo:</strong> {groups.find(group => group.id === selectedStudentDetail.groupId)?.name || 'Sin grupo'}
+                    {groups.filter(group => {
+                      const sameLevel = !selectedStudentDetail.level || !group.level || group.level === selectedStudentDetail.level;
+                      const sameCycle = !selectedStudentDetail.cycle || !group.year || group.year === selectedStudentDetail.cycle;
+                      return sameLevel && sameCycle;
+                    }).length > 1 && (
+                      <select value={selectedStudentDetail.groupId || ''} onChange={event => handleChangeStudentGroup(selectedStudentDetail, event.target.value)} className="ml-2 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-white">
+                        <option value="">Cambiar grupo...</option>
+                        {groups.filter(group => {
+                          const sameLevel = !selectedStudentDetail.level || !group.level || group.level === selectedStudentDetail.level;
+                          const sameCycle = !selectedStudentDetail.cycle || !group.year || group.year === selectedStudentDetail.cycle;
+                          return sameLevel && sameCycle;
+                        }).map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-300 pt-1">
+                  <div><strong>Adecuación curricular:</strong> {selectedStudentDetail.curricularAdaptation === 'SI' ? `Sí. ${selectedStudentDetail.curricularAdaptationDetails || ''}` : 'No'}</div>
+                  <div><strong>Conducta:</strong> {selectedStudentDetail.behaviorIssue === 'SI' ? `Sí. ${selectedStudentDetail.behaviorIssueDetails || ''}` : 'No'}</div>
+                  <div><strong>Impedimento físico:</strong> {selectedStudentDetail.physicalImpairment === 'SI' ? `Sí. ${selectedStudentDetail.physicalImpairmentDetails || ''}` : 'No'}</div>
                 </div>
               </div>
 
               {/* Sección II */}
               <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800 space-y-2">
                 <h4 className="font-bold text-red-400 uppercase text-xs">II. Familiares y Encargados</h4>
-                <div className="space-y-1 text-slate-300">
+                  <div className="space-y-1 text-slate-700 dark:text-slate-300">
+                  <div><strong>Estado civil:</strong> {selectedStudentDetail.maritalStatus || 'N/A'} · <strong>Hermanos:</strong> {selectedStudentDetail.siblingCount || 'N/A'}{selectedStudentDetail.siblingDetails ? ` (${selectedStudentDetail.siblingDetails})` : ''}</div>
+                  {selectedStudentDetail.authorizedPickupPeople && <div><strong>Autorizados para retirar:</strong> {selectedStudentDetail.authorizedPickupPeople}</div>}
                   {selectedStudentDetail.family?.mother?.fullName && (
-                    <div><strong>Madre:</strong> {selectedStudentDetail.family.mother.fullName} (Céd: {selectedStudentDetail.family.mother.nationalId}) · Tel: {selectedStudentDetail.family.mother.phone1}</div>
+                    <div><strong className="text-slate-900 dark:text-white">Madre:</strong> {selectedStudentDetail.family.mother.fullName} (Céd: {selectedStudentDetail.family.mother.nationalId}) · Tel: {selectedStudentDetail.family.mother.phone1}</div>
                   )}
                   {selectedStudentDetail.family?.father?.fullName && (
-                    <div><strong>Padre:</strong> {selectedStudentDetail.family.father.fullName} (Céd: {selectedStudentDetail.family.father.nationalId}) · Tel: {selectedStudentDetail.family.father.phone1}</div>
+                    <div><strong className="text-slate-900 dark:text-white">Padre:</strong> {selectedStudentDetail.family.father.fullName} (Céd: {selectedStudentDetail.family.father.nationalId}) · Tel: {selectedStudentDetail.family.father.phone1}</div>
                   )}
                   {selectedStudentDetail.family?.guardian?.fullName && (
-                    <div><strong>Encargado Legal:</strong> {selectedStudentDetail.family.guardian.fullName} ({selectedStudentDetail.family.guardian.relationship}) · Tel: {selectedStudentDetail.family.guardian.phone1}</div>
+                    <div><strong className="text-slate-900 dark:text-white">Encargado Legal:</strong> {selectedStudentDetail.family.guardian.fullName} ({selectedStudentDetail.family.guardian.relationship}) · Tel: {selectedStudentDetail.family.guardian.phone1}</div>
                   )}
                 </div>
               </div>
@@ -761,15 +1010,21 @@ export default function EnrollmentDashboardView({
               <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800 space-y-2">
                 <h4 className="font-bold text-red-400 uppercase text-xs">III. Documentos Faltantes y Estado</h4>
                 <div className="flex gap-4 text-slate-300">
-                  <div><strong>Cédula Menor:</strong> {selectedStudentDetail.documents?.minorId?.status || 'COMPLETED'}</div>
-                  <div><strong>Bautismo:</strong> {selectedStudentDetail.documents?.bautismo?.status || 'COMPLETED'}</div>
-                  <div><strong>Comunión:</strong> {selectedStudentDetail.documents?.comunion?.status || 'COMPLETED'}</div>
+                  <div><strong>Cédula Menor:</strong> {formatDocumentStatus(selectedStudentDetail.documents?.minorId?.status)}</div>
+                  <div><strong>Bautismo:</strong> {formatDocumentStatus(selectedStudentDetail.documents?.bautismo?.status)}</div>
+                  <div><strong>Comunión:</strong> {formatDocumentStatus(selectedStudentDetail.documents?.comunion?.status)}</div>
                 </div>
               </div>
 
               {/* Sección IV: Firma */}
               <div className="bg-slate-900/60 p-3 rounded-xl border border-slate-800 space-y-2 text-center">
                 <h4 className="font-bold text-red-400 uppercase text-xs">IV. Firma Digital Registrada</h4>
+                <p className={`text-xs font-semibold ${selectedStudentDetail.acceptsCatechesisCommitment ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  Compromiso de formación en la fe: {selectedStudentDetail.acceptsCatechesisCommitment ? 'Aceptado' : 'No registrado'}
+                </p>
+                <p className="commitment-text text-left text-xs leading-relaxed">
+                  ME COMPROMETO A CUMPLIR CON LA FORMACIÓN EN LA FE Y PARTICIPAR EN LO QUE SE REQUIERE EN LA CATEQUESIS, ENCUENTROS FAMILIARES Y MISAS DE NIÑOS, PARA QUE MI HIJO O HIJA CREZCA ESPIRITUALMENTE COMO HIJO DE DIOS Y APRENDA A VIVIR CRISTIANAMENTE.
+                </p>
                 {selectedStudentDetail.family?.guardian?.signatureData || selectedStudentDetail.family?.guardian?.signatureUrl ? (
                   <img
                     src={selectedStudentDetail.family?.guardian?.signatureData || selectedStudentDetail.family?.guardian?.signatureUrl}

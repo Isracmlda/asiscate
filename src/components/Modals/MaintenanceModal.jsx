@@ -29,9 +29,11 @@ export function MaintenanceModal({
   handleDeleteStudent,
   handleAddStudent,
   handleGenerateStudentQr,
+  handleExportGroupNamesToPdf,
   buildWhatsAppLink,
   cardBgClass,
-  inputBgClass
+  inputBgClass,
+  themeMode = 'dark'
 }) {
   if (!maintenanceGroup) return null;
 
@@ -46,9 +48,10 @@ export function MaintenanceModal({
           <button onClick={() => { if (handleCloseMaintenanceModal) handleCloseMaintenanceModal(); else if (setMaintenanceGroup) setMaintenanceGroup(null); }} className="bg-red-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold">Cerrar</button>
         </div>
 
-        <div className="flex gap-2 border-b border-slate-700 pb-2">
+        <div className="flex flex-wrap gap-2 border-b border-slate-700 pb-2">
           <button onClick={() => setMaintenanceMode('view')} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${maintenanceMode === 'view' ? 'bg-red-800 text-white' : 'bg-slate-700 text-slate-300'}`}>Ver Datos de Contacto</button>
           <button onClick={() => setMaintenanceMode('edit')} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${maintenanceMode === 'edit' ? 'bg-red-800 text-white' : 'bg-slate-700 text-slate-300'}`}>Gestión de Lista</button>
+          <button type="button" onClick={() => handleExportGroupNamesToPdf?.(maintenanceGroup.id)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-sky-700 hover:bg-sky-800 text-white">📄 PDF nombres</button>
         </div>
 
         {maintenanceMode === 'view' ? (
@@ -61,7 +64,7 @@ export function MaintenanceModal({
               return (
                 <div key={student.id} className="border border-slate-700 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <p className="font-bold text-sm text-white">{displayName}</p>
+                    <p className={`font-bold text-sm ${themeMode === 'dark' ? 'text-white' : 'text-slate-900'}`}>{displayName}</p>
                     <div className="flex flex-wrap gap-3 text-xs mt-1">
                       {displayEmail ? <span className="flex items-center gap-1"><a className="text-sky-400 hover:underline" href={`mailto:${displayEmail}`}>{displayEmail}</a><button title="Copiar correo" onClick={() => navigator.clipboard.writeText(displayEmail)}>📋</button></span> : <span className="text-slate-500 italic">Sin Correo</span>}
                       {displayPhone ? <span className="flex items-center gap-1"><a className="text-emerald-400 hover:underline" href={buildWhatsAppLink ? buildWhatsAppLink(displayPhone) : `https://wa.me/${displayPhone}`} target="_blank" rel="noreferrer">{displayPhone}</a><button title="Copiar teléfono" onClick={() => navigator.clipboard.writeText(displayPhone)}>📋</button></span> : <span className="text-slate-500 italic">Sin Teléfono</span>}
@@ -86,7 +89,7 @@ export function MaintenanceModal({
                   <div className="sm:col-span-3 flex gap-2 justify-end"><button onClick={() => handleSaveStudentEdit(student)} className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg">Guardar</button><button onClick={() => setEditingStudentId(null)} className="px-3 py-1.5 text-xs text-slate-400">Cancelar</button></div>
                 </div>
               ) : (
-                <div key={student.id} className="flex items-center justify-between border-b border-slate-700 pb-2"><span className="text-sm font-semibold">{displayName}</span><div className="flex gap-2"><button onClick={() => handleStartEditStudent(student)} className="px-3 py-1.5 text-xs bg-slate-700 rounded-lg">Editar</button><button onClick={() => handleDeleteStudent(student.id)} className="px-3 py-1.5 text-xs text-rose-400 bg-rose-500/10 rounded-lg">Eliminar</button></div></div>
+                <div key={student.id} className="flex items-center justify-between border-b border-slate-700 pb-2"><span className="text-sm font-semibold">{displayName}</span><div className="flex gap-2"><button onClick={() => handleStartEditStudent(student)} className="px-3 py-1.5 text-xs bg-slate-700 text-white hover:bg-slate-600 rounded-lg font-bold">Editar</button><button onClick={() => handleDeleteStudent(student.id)} className="px-3 py-1.5 text-xs text-rose-700 dark:text-rose-300 bg-rose-100 dark:bg-rose-500/10 rounded-lg font-bold">Eliminar</button></div></div>
               );
             })}
             <button onClick={() => { setSelectedGroupForStudent(maintenanceGroup.id); setNewStudentName(''); setNewStudentParentEmail(''); setNewStudentParentPhone(''); setIsAddStudentFormOpen(!isAddStudentFormOpen); }} className="bg-red-800 hover:bg-red-900 text-white px-4 py-2 rounded-lg text-xs font-bold">Añadir catequizando</button>

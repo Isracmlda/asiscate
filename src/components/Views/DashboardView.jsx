@@ -48,6 +48,13 @@ export function DashboardView({
   setNewGroupName,
   newGroupYear,
   setNewGroupYear,
+  newGroupDay,
+  setNewGroupDay,
+  newGroupTime,
+  setNewGroupTime,
+  newGroupRoom,
+  setNewGroupRoom,
+  groupScheduleOptions = { days: [], times: [], rooms: [] },
   newGroupParroquia,
   setNewGroupParroquia,
   newGroupDiaconia,
@@ -89,7 +96,7 @@ export function DashboardView({
           <button
             type="button"
             onClick={() => setDashboardPanelOpen(prev => !prev)}
-            className="px-3 py-2 text-xs font-bold rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
+            className="dashboard-toggle-button px-3 py-2 text-xs font-bold rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
           >
             {dashboardPanelOpen ? 'Ocultar' : 'Mostrar'}
           </button>
@@ -262,15 +269,6 @@ export function DashboardView({
                 </button>
               </div>
             )}
-            {activeViewMode === 'coordinadorGeneral' && (
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Filtrar por Diaconía</label>
-                <select value={generalDiaconiaId} onChange={e => { setGeneralDiaconiaId(e.target.value); setSelectedGroupId(''); }} className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}>
-                  <option value="">Todas las diaconías</option>
-                  {diaconias.filter(d => userRole === 'admin' || d.parroquiaId === userData?.parroquiaId).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-                </select>
-              </div>
-            )}
           </div>
         </div>
 
@@ -300,8 +298,8 @@ export function DashboardView({
                             </p>
                           </div>
                           <div className="flex gap-1">
-                            <button disabled={!displayEmail} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={displayEmail || 'Correo no registrado'} className="max-w-36 truncate text-[11px] bg-sky-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold px-2 py-1 rounded-md">✉ {displayEmail || 'Sin correo'}</button>
-                            <button disabled={!displayPhone} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={displayPhone || 'Teléfono no registrado'} className="max-w-36 truncate text-[11px] bg-emerald-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold px-2 py-1 rounded-md">☎ {displayPhone || 'Sin teléfono'}</button>
+                            <button disabled={!displayEmail} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={displayEmail || 'Correo no registrado'} className="attendance-email-button max-w-36 truncate text-[11px] font-semibold px-2 py-1 rounded-md">✉ {displayEmail || 'Sin correo'}</button>
+                            <button disabled={!displayPhone} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={displayPhone || 'Teléfono no registrado'} className="attendance-phone-button max-w-36 truncate text-[11px] font-semibold px-2 py-1 rounded-md">☎ {displayPhone || 'Sin teléfono'}</button>
                           </div>
                         </div>
 
@@ -311,7 +309,7 @@ export function DashboardView({
                             className={`py-2 text-xs font-bold rounded-lg transition-all border ${
                               status === 'present'
                                 ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
-                                : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-neutral-400 hover:text-white' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-800')
+                                : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100')
                             }`}
                           >
                             Presente
@@ -321,7 +319,7 @@ export function DashboardView({
                             className={`py-2 text-xs font-bold rounded-lg transition-all border ${
                               status === 'justified'
                                 ? 'bg-amber-500 border-amber-400 text-white shadow-sm'
-                                : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-neutral-400 hover:text-white' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-800')
+                                : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100')
                             }`}
                           >
                             Justificada
@@ -331,7 +329,7 @@ export function DashboardView({
                             className={`py-2 text-xs font-bold rounded-lg transition-all border ${
                               status === 'absent'
                                 ? 'bg-rose-600 border-rose-500 text-white shadow-sm'
-                                : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-neutral-400 hover:text-white' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-800')
+                                : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-rose-400 hover:bg-rose-500/10 hover:text-rose-300' : 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100')
                             }`}
                           >
                             Ausente
@@ -379,7 +377,7 @@ export function DashboardView({
                                   className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
                                     status === 'present'
                                       ? 'bg-emerald-600 text-white shadow-sm'
-                                      : 'text-slate-400 hover:text-white'
+                                      : (themeMode === 'dark' ? 'text-emerald-400 hover:bg-emerald-500/10' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100')
                                   }`}
                                 >
                                   Presente
@@ -389,7 +387,7 @@ export function DashboardView({
                                   className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
                                     status === 'justified'
                                       ? 'bg-amber-500 text-white shadow-sm'
-                                      : 'text-slate-400 hover:text-white'
+                                      : (themeMode === 'dark' ? 'text-amber-400 hover:bg-amber-500/10' : 'bg-amber-50 text-amber-700 hover:bg-amber-100')
                                   }`}
                                 >
                                   Justificada
@@ -399,7 +397,7 @@ export function DashboardView({
                                   className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${
                                     status === 'absent'
                                       ? 'bg-rose-600 text-white shadow-sm'
-                                      : 'text-slate-400 hover:text-white'
+                                      : (themeMode === 'dark' ? 'text-rose-400 hover:bg-rose-500/10' : 'bg-rose-50 text-rose-700 hover:bg-rose-100')
                                   }`}
                                 >
                                   Ausente
@@ -412,7 +410,7 @@ export function DashboardView({
                                   disabled={!displayEmail}
                                   onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')}
                                   title={displayEmail || 'Correo no registrado'}
-                                  className="max-w-64 truncate text-xs bg-sky-600 hover:bg-sky-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold px-3 py-1.5 rounded-lg border border-sky-500 disabled:border-slate-600 transition-colors"
+                                  className="attendance-email-button max-w-64 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
                                 >
                                   {displayEmail ? `✉ ${displayEmail}` : 'Correo no registrado'}
                                 </button>
@@ -420,7 +418,7 @@ export function DashboardView({
                                   disabled={!displayPhone}
                                   onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')}
                                   title={displayPhone || 'Teléfono no registrado'}
-                                  className="max-w-52 truncate text-xs bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold px-3 py-1.5 rounded-lg border border-emerald-500 disabled:border-slate-600 transition-colors"
+                                  className="attendance-phone-button max-w-52 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
                                 >
                                   {displayPhone ? `☎ ${displayPhone}` : 'Teléfono no registrado'}
                                 </button>
@@ -492,6 +490,12 @@ export function DashboardView({
                     Se asignará a tu Parroquia y Diaconía registrada.
                   </p>
                 )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <select value={newGroupDay || ''} onChange={event => setNewGroupDay(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}><option value="">Día...</option>{groupScheduleOptions.days.map(day => <option key={day} value={day}>{day}</option>)}</select>
+                  <select value={newGroupTime || ''} onChange={event => setNewGroupTime(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}><option value="">Horario...</option>{groupScheduleOptions.times.map(time => <option key={time} value={time}>{time}</option>)}</select>
+                  <select value={newGroupRoom || ''} onChange={event => setNewGroupRoom(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}><option value="">Salón...</option>{groupScheduleOptions.rooms.map(room => <option key={room} value={room}>{room}</option>)}</select>
+                </div>
 
                 <button
                   type="submit"

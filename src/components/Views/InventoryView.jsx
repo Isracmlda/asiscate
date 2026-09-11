@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export function InventoryView({
   cardBgClass,
@@ -41,6 +41,7 @@ export function InventoryView({
   handleInventoryAssetStockChange,
   handleDeleteInventoryAsset
 }) {
+  const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -51,7 +52,7 @@ export function InventoryView({
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm`}>
+        <div className={`${cardBgClass} hidden p-4 sm:p-6 rounded-xl border shadow-sm`}>
           <div className="flex items-center justify-between gap-3 mb-4">
             <h3 className="text-base sm:text-lg font-bold">Materiales</h3>
             {activeViewMode !== 'catequista' && (
@@ -68,7 +69,7 @@ export function InventoryView({
               {inventoryDateFilteredItems.length} material(es) registrado(s) en el intervalo seleccionado.
             </div>
           )}
-          <form onSubmit={handleAddInventoryItem} className="space-y-3">
+          <form onSubmit={handleAddInventoryItem} className="hidden">
             <input value={inventoryForm.name} onChange={(event) => setInventoryForm(prev => ({ ...prev, name: event.target.value }))} placeholder="Nombre del material" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
             <input type="number" min="0" value={inventoryForm.stock} onChange={(event) => setInventoryForm(prev => ({ ...prev, stock: event.target.value }))} placeholder="Cantidad inicial" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
             <div className="flex gap-2">
@@ -83,10 +84,10 @@ export function InventoryView({
             {visibleInventoryItems.length === 0 ? (
               <p className="text-sm text-slate-400">No hay materiales.</p>
             ) : visibleInventoryItems.map(item => {
-              const canDeleteItem = activeViewMode === 'admin' || item.createdBy === currentUserKey;
-              const canEditItem = activeViewMode === 'admin' || item.createdBy === currentUserKey;
+              const canDeleteItem = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';
+              const canEditItem = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';
               return (
-                <div key={item.id} className="border border-slate-700 rounded-xl p-3 cursor-pointer" onClick={() => canEditItem && startInventoryItemEdit(item)}>
+                <div key={item.id} className="border border-slate-700 rounded-xl p-3 cursor-pointer" onClick={() => { if (canEditItem) { startInventoryItemEdit(item); setIsMaterialModalOpen(true); } }}>
                   <div className="flex justify-between gap-2 items-center">
                     <div>
                       <p className="font-bold text-sm">{item.name}</p>
@@ -144,9 +145,9 @@ export function InventoryView({
           </form>
 
           <div className="mt-5 space-y-3">
-            {(activeViewMode === 'admin' ? inventoryReservations : visibleInventoryReservations).length === 0 ? (
+            {visibleInventoryReservations.length === 0 ? (
               <p className="text-sm text-slate-400">No hay reservas registradas.</p>
-            ) : (activeViewMode === 'admin' ? inventoryReservations : visibleInventoryReservations).map(reservation => {
+            ) : visibleInventoryReservations.map(reservation => {
               const canDeleteReservation = activeViewMode === 'admin' || reservation.createdBy === currentUserKey;
               const canEditReservation = activeViewMode === 'admin' || reservation.createdBy === currentUserKey;
               return (
@@ -154,7 +155,7 @@ export function InventoryView({
                   <div>
                     <p className="font-bold text-sm">{reservation.itemName}</p>
                     <p className="text-xs text-slate-400">{reservation.date} · {reservation.slot}{getReservationAssetConfig(reservation.itemId)?.showTogether === true ? ` · ${reservation.quantity} reservado(s)` : ''}</p>
-                    {activeViewMode !== 'catequista' && <p className="text-[11px] text-slate-500">Reservado por: {reservation.reservedBy || 'Usuario'}</p>}
+                    <p className="text-[11px] text-slate-500">Reservado por: {reservation.reservedBy || 'Usuario'}</p>
                   </div>
                   <div className="flex gap-2" onClick={(event) => event.stopPropagation()}>
                     {canDeleteReservation && (
@@ -166,10 +167,9 @@ export function InventoryView({
             })}
           </div>
         </div>
-      </div>
 
-      {activeViewMode === 'admin' && (
-        <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm mt-6`}>
+      {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
+        <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm`}>
           <div className="flex items-center justify-between gap-3 mb-4">
             <h3 className="text-base sm:text-lg font-bold">Activos</h3>
           </div>
@@ -213,6 +213,27 @@ export function InventoryView({
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+      </div>
+      <button type="button" onClick={() => setIsMaterialModalOpen(true)} className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full bg-red-800 hover:bg-red-900 text-white text-3xl font-light shadow-xl" title="Añadir material faltante" aria-label="Añadir material faltante">+</button>
+      {isMaterialModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/70 p-4" onMouseDown={event => event.target === event.currentTarget && setIsMaterialModalOpen(false)}>
+          <div className={`${cardBgClass} w-full max-w-md rounded-2xl border p-5 shadow-2xl`}>
+            <div className="flex items-center justify-between mb-4"><h3 className="text-lg font-bold">Añadir material faltante</h3><button type="button" onClick={() => setIsMaterialModalOpen(false)} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-bold text-white">Cerrar</button></div>
+            <form onSubmit={event => { handleAddInventoryItem(event); setIsMaterialModalOpen(false); }} className="space-y-3">
+              <input required value={inventoryForm.name} onChange={event => setInventoryForm(prev => ({ ...prev, name: event.target.value }))} placeholder="Nombre del material" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+              <button className="w-full bg-red-800 hover:bg-red-900 text-white font-semibold py-2 rounded-lg text-sm">{editingInventoryItemId ? 'Guardar cambios' : 'Guardar material'}</button>
+            </form>
+            <div className="mt-5 space-y-2 max-h-72 overflow-y-auto">
+              <div className="flex items-center justify-between"><h4 className="text-sm font-bold">Materiales registrados</h4>{activeViewMode !== 'catequista' && <button type="button" onClick={handleExportInventoryPdf} className="rounded-lg bg-red-800 px-3 py-1.5 text-xs font-bold text-white">Generar PDF</button>}</div>
+              {visibleInventoryItems.length === 0 ? <p className="text-sm text-slate-400">No hay materiales.</p> : visibleInventoryItems.map(item => {
+                const canDeleteItem = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';
+                const canEditItem = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';
+                return <div key={item.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-700 p-2"><p className="text-sm font-bold">{item.name}</p><div className="flex gap-1">{canEditItem && <button type="button" onClick={() => startInventoryItemEdit(item)} className="rounded bg-slate-700 px-2 py-1 text-xs text-white">Editar</button>}{canDeleteItem && <button type="button" onClick={() => handleDeleteInventoryItem(item.id)} className="rounded bg-rose-700 px-2 py-1 text-xs text-white">Eliminar</button>}</div></div>;
+              })}
+            </div>
           </div>
         </div>
       )}

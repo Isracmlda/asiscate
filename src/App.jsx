@@ -60,6 +60,34 @@ const loadFaviconAsPng = async () => {
   });
 };
 
+const DEFAULT_GROUP_SCHEDULE_OPTIONS = {
+  days: ['Sábado'],
+  times: ['08:00-10:00', '10:30-12:30'],
+  rooms: ['Salón principal']
+};
+
+const normalizeLoadedScheduleDays = (days) => {
+  const standardDays = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  const values = Array.isArray(days) ? days.filter(Boolean) : [];
+  // Migra la configuración predeterminada anterior (los siete días) al sábado.
+  return values.length === standardDays.length && standardDays.every(day => values.includes(day)) ? ['Sábado'] : values;
+};
+
+const normalizeLoadedScheduleTimes = (times) => {
+  const values = Array.isArray(times) ? times.filter(time => time && time !== '14:00-16:00') : [];
+  return values.length ? values : DEFAULT_GROUP_SCHEDULE_OPTIONS.times;
+};
+
+const getScheduleGroupLabel = (group) => {
+  let name = String(group?.name || 'Grupo').trim();
+  name = name.replace(/\s*\(\s*\d{4}\s*-\s*\d{4}\s*\)\s*$/, '').trim();
+  const level = String(group?.level || '').trim();
+  if (level && name.toLowerCase().startsWith(level.toLowerCase())) {
+    name = name.slice(level.length).replace(/^\s*[-–—:]\s*/, '').trim();
+  }
+  return name || 'Grupo';
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [userData, setUserData] = useState(null);
@@ -89,6 +117,10 @@ export default function App() {
   const [isEnrollmentEnabled, setIsEnrollmentEnabled] = useState(true);
   const [parroquias, setParroquias] = useState([]);
   const [diaconias, setDiaconias] = useState([]);
+  const [groupScheduleOptions, setGroupScheduleOptions] = useState(DEFAULT_GROUP_SCHEDULE_OPTIONS);
+  const [groupScheduleOptionsByDiaconia, setGroupScheduleOptionsByDiaconia] = useState({});
+  const [scheduleOptionsDraft, setScheduleOptionsDraft] = useState(DEFAULT_GROUP_SCHEDULE_OPTIONS);
+  const [scheduleOptionInputs, setScheduleOptionInputs] = useState({ days: '', times: '', rooms: '' });
   const [groups, setGroups] = useState([]);
   const [students, setStudents] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -110,6 +142,12 @@ export default function App() {
   const [newGroupYear, setNewGroupYear] = useState('2026-2027');
   const [newGroupParroquia, setNewGroupParroquia] = useState('');
   const [newGroupDiaconia, setNewGroupDiaconia] = useState('');
+  const [newGroupDay, setNewGroupDay] = useState('Sábado');
+  const [newGroupTime, setNewGroupTime] = useState('');
+  const [newGroupRoom, setNewGroupRoom] = useState('');
+  const [schedulePreviewSvg, setSchedulePreviewSvg] = useState('');
+  const [schedulePreviewHtml, setSchedulePreviewHtml] = useState('');
+  const [isSchedulePreviewOpen, setIsSchedulePreviewOpen] = useState(false);
   const [selectedGroupForStudent, setSelectedGroupForStudent] = useState('');
   const [newStudentName, setNewStudentName] = useState('');
   const [newStudentParentEmail, setNewStudentParentEmail] = useState('');
@@ -124,6 +162,16 @@ export default function App() {
   const [attendanceLabel, setAttendanceLabel] = useState('');
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const [generalDiaconiaId, setGeneralDiaconiaId] = useState('');
+  const diaconiaSelectorModeRef = useRef(null);
+  // El coordinador general trabaja como un coordinador de la diaconía
+  // seleccionada en el navbar. La ubicación real de su usuario no se cambia.
+  const effectiveDiaconiaId = activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin'
+    ? generalDiaconiaId
+    : userData?.diaconiaId || '';
+  const effectiveParroquiaId = (activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && effectiveDiaconiaId
+    ? diaconias.find(diaconia => diaconia.id === effectiveDiaconiaId)?.parroquiaId || userData?.parroquiaId || ''
+    : userData?.parroquiaId || '';
+  const canManageScheduleOptions = ['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode);
   const [reportStudentIds, setReportStudentIds] = useState(null);
   const [maintenanceGroup, setMaintenanceGroup] = useState(null);
   const [maintenanceMode, setMaintenanceMode] = useState('view');
@@ -225,18 +273,12 @@ export default function App() {
   const [editingInventoryItemId, setEditingInventoryItemId] = useState(null);
   const [editingInventoryAssetId, setEditingInventoryAssetId] = useState(null);
   const [editingInventoryReservationId, setEditingInventoryReservationId] = useState(null);
-  const [paymentRecords, setPaymentRecords] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asiscate-payments');
-      return saved ? JSON.parse(saved) : [
-        { id: 'demo-pay-1', studentName: 'Ana López', concept: 'Matrícula', amount: 250, date: new Date().toISOString().split('T')[0], status: 'pagado' }
-      ];
-    } catch {
-      return [
-        { id: 'demo-pay-1', studentName: 'Ana López', concept: 'Matrícula', amount: 250, date: new Date().toISOString().split('T')[0], status: 'pagado' }
-      ];
-    }
-  });
+  const [paymentRecords, setPaymentRecords] = useState([]);
+  useEffect(() => {
+    // Los pagos dejaron de utilizar almacenamiento local; elimina cualquier
+    // caché antiguo que pudiera mezclarse con la colección de Firestore.
+    localStorage.removeItem('asiscate-payments');
+  }, []);
   const [inventoryForm, setInventoryForm] = useState({ name: '', stock: '1' });
   const [inventoryDateFilters, setInventoryDateFilters] = useState({ dateFrom: '', dateTo: '' });
   const [inventoryShowDateSummary, setInventoryShowDateSummary] = useState(false);
@@ -268,6 +310,9 @@ export default function App() {
   const [editGroupName, setEditGroupName] = useState('');
   const [editGroupLevel, setEditGroupLevel] = useState('Cate-Kinder');
   const [editGroupYear, setEditGroupYear] = useState('2026-2027');
+  const [editGroupDay, setEditGroupDay] = useState('');
+  const [editGroupTime, setEditGroupTime] = useState('');
+  const [editGroupRoom, setEditGroupRoom] = useState('');
   const [editGroupCatechists, setEditGroupCatechists] = useState([]);
   const [editGroupVisibleForCatechists, setEditGroupVisibleForCatechists] = useState(true);
 
@@ -357,14 +402,6 @@ export default function App() {
       console.warn('No se pudieron guardar las reservas de inventario:', error);
     }
   }, [inventoryReservations]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('asiscate-payments', JSON.stringify(paymentRecords));
-    } catch (error) {
-      console.warn('No se pudieron guardar los pagos:', error);
-    }
-  }, [paymentRecords]);
 
   const cachePrimaryData = useCallback(() => {
     try {
@@ -497,6 +534,38 @@ export default function App() {
         }
       } catch (cErr) {
         console.warn('No se pudo cargar estado de matrícula:', cErr);
+      }
+
+      try {
+        const scheduleSnap = await getDoc(doc(db, 'config', 'groupSchedule'));
+        if (scheduleSnap.exists()) {
+          const savedOptions = scheduleSnap.data();
+          const nextOptions = {
+            days: normalizeLoadedScheduleDays(savedOptions.days).length ? normalizeLoadedScheduleDays(savedOptions.days) : DEFAULT_GROUP_SCHEDULE_OPTIONS.days,
+            times: normalizeLoadedScheduleTimes(savedOptions.times),
+            rooms: Array.isArray(savedOptions.rooms) && savedOptions.rooms.length ? savedOptions.rooms : DEFAULT_GROUP_SCHEDULE_OPTIONS.rooms
+          };
+          setGroupScheduleOptions(nextOptions);
+          setScheduleOptionsDraft(nextOptions);
+        }
+      } catch (scheduleError) {
+        console.warn('No se pudieron cargar las opciones de horarios:', scheduleError);
+      }
+
+      try {
+        const diaconiaSchedulesSnap = await getDocs(collection(db, 'diaconiaSchedules'));
+        const scheduleMap = {};
+        diaconiaSchedulesSnap.docs.forEach(scheduleDoc => {
+          const saved = scheduleDoc.data() || {};
+          scheduleMap[scheduleDoc.id] = {
+            days: normalizeLoadedScheduleDays(saved.days).length ? normalizeLoadedScheduleDays(saved.days) : DEFAULT_GROUP_SCHEDULE_OPTIONS.days,
+            times: normalizeLoadedScheduleTimes(saved.times),
+            rooms: Array.isArray(saved.rooms) && saved.rooms.length ? saved.rooms : DEFAULT_GROUP_SCHEDULE_OPTIONS.rooms
+          };
+        });
+        setGroupScheduleOptionsByDiaconia(scheduleMap);
+      } catch (scheduleError) {
+        console.warn('No se pudieron cargar los horarios por diaconía:', scheduleError);
       }
 
       const parroquiasSnap = await getDocs(collection(db, 'parroquias'));
@@ -665,6 +734,35 @@ export default function App() {
     return () => unsubscribe();
   }, [fetchAllData]);
 
+  useEffect(() => {
+    const selectedOptions = effectiveDiaconiaId
+      ? groupScheduleOptionsByDiaconia[effectiveDiaconiaId]
+      : null;
+    const nextOptions = selectedOptions || DEFAULT_GROUP_SCHEDULE_OPTIONS;
+    setGroupScheduleOptions(nextOptions);
+    setScheduleOptionsDraft(nextOptions);
+    setScheduleOptionInputs({ days: '', times: '', rooms: '' });
+  }, [effectiveDiaconiaId, groupScheduleOptionsByDiaconia]);
+
+  // Mantiene una diaconía válida para el selector del coordinador general.
+  // Si se eliminó la selección o cambió la parroquia disponible, se toma la
+  // primera diaconía permitida sin modificar la ubicación del usuario.
+  useEffect(() => {
+    if (activeViewMode !== 'coordinadorGeneral' && activeViewMode !== 'admin') return;
+    if (!userData) return;
+    const availableDiaconias = diaconias.filter(diaconia => (
+      userRole === 'admin' || !userData?.parroquiaId || diaconia.parroquiaId === userData.parroquiaId
+    ));
+    const modeChanged = diaconiaSelectorModeRef.current !== activeViewMode;
+    if (modeChanged || !availableDiaconias.some(diaconia => diaconia.id === generalDiaconiaId)) {
+      const preferredDiaconiaId = userData.diaconiaId && availableDiaconias.some(diaconia => diaconia.id === userData.diaconiaId)
+        ? userData.diaconiaId
+        : availableDiaconias[0]?.id || '';
+      setGeneralDiaconiaId(preferredDiaconiaId);
+    }
+    diaconiaSelectorModeRef.current = activeViewMode;
+  }, [activeViewMode, diaconias, generalDiaconiaId, userData?.diaconiaId, userData?.parroquiaId, userRole]);
+
   const handleSaveInitialTerritory = async (e) => {
     e.preventDefault();
     if (!modalParroquiaId || !modalDiaconiaId) {
@@ -815,11 +913,15 @@ export default function App() {
     setNavbarColor(nextColor);
   };
 
-  const handleToggleViewMode = (mode) => {
+  const handleToggleViewMode = async (mode) => {
     setActiveViewMode(mode);
-    if (mode === 'catequista' && (activeTab === 'parroquias' || activeTab === 'admin')) {
+    if ((mode === 'coordinadorGeneral' || mode === 'admin') && userData?.diaconiaId) {
+      setGeneralDiaconiaId(userData.diaconiaId);
+    }
+    if (mode === 'catequista' && (activeTab === 'parroquias' || activeTab === 'horarios' || activeTab === 'admin')) {
       setActiveTab('dashboard');
     }
+    await fetchAllData();
   };
 
   const handleToggleTheme = async () => {
@@ -948,7 +1050,7 @@ export default function App() {
         createdAt: new Date().toISOString()
       });
       setNewParroquiaName('');
-      fetchAllData();
+      await fetchAllData();
     } catch (error) {
       console.error("Error creando parroquia:", error);
     }
@@ -971,6 +1073,57 @@ export default function App() {
     }
   };
 
+  const handleSaveGroupScheduleOptions = async (event) => {
+    event.preventDefault();
+    const normalize = (values) => [...new Set(String(values || '').split(',').map(value => value.trim()).filter(Boolean))];
+    const nextOptions = {
+      days: normalize(scheduleOptionsDraft.days),
+      times: normalize(scheduleOptionsDraft.times),
+      rooms: normalize(scheduleOptionsDraft.rooms)
+    };
+    if (!nextOptions.days.length || !nextOptions.times.length || !nextOptions.rooms.length) {
+      alert('Debes conservar al menos una opción de día, horario y salón.');
+      return;
+    }
+    const targetDiaconiaId = effectiveDiaconiaId || userData?.diaconiaId || '';
+    if (!targetDiaconiaId) {
+      alert('Selecciona una diaconía antes de guardar sus horarios y salones.');
+      return;
+    }
+    try {
+      await setDoc(doc(db, 'diaconiaSchedules', targetDiaconiaId), {
+        ...nextOptions,
+        diaconiaId: targetDiaconiaId,
+        updatedAt: new Date().toISOString(),
+        updatedBy: user?.uid || ''
+      }, { merge: true });
+      setGroupScheduleOptionsByDiaconia(previous => ({ ...previous, [targetDiaconiaId]: nextOptions }));
+      setGroupScheduleOptions(nextOptions);
+      setScheduleOptionsDraft(nextOptions);
+      alert('Opciones guardadas para la diaconía seleccionada.');
+    } catch (error) {
+      console.error('Error guardando opciones de horarios:', error);
+      alert('No se pudieron guardar las opciones de horarios.');
+    }
+  };
+
+  const addScheduleOption = (field) => {
+    const value = String(scheduleOptionInputs[field] || '').trim();
+    if (!value) return;
+    setScheduleOptionsDraft(previous => ({
+      ...previous,
+      [field]: [...new Set([...(previous[field] || []), value])]
+    }));
+    setScheduleOptionInputs(previous => ({ ...previous, [field]: '' }));
+  };
+
+  const removeScheduleOption = (field, value) => {
+    setScheduleOptionsDraft(previous => ({
+      ...previous,
+      [field]: (previous[field] || []).filter(item => item !== value)
+    }));
+  };
+
   const handleCreateGroup = async (e) => {
     e.preventDefault();
     if (!newGroupName.trim()) return;
@@ -990,8 +1143,10 @@ export default function App() {
       }
     }
 
-    const groupParroquia = userData?.parroquiaId || newGroupParroquia || (parroquias[0]?.id || '');
-    const groupDiaconia = userData?.diaconiaId || newGroupDiaconia || (diaconias[0]?.id || '');
+    const groupParroquia = effectiveParroquiaId || newGroupParroquia || (parroquias[0]?.id || '');
+    const groupDiaconia = (activeViewMode === 'coordinadorGeneral'
+      ? effectiveDiaconiaId
+      : userData?.diaconiaId || newGroupDiaconia || (diaconias[0]?.id || ''));
 
     try {
       const groupData = {
@@ -1000,6 +1155,9 @@ export default function App() {
         year: newGroupYear || '2026-2027',
         parroquiaId: groupParroquia,
         diaconiaId: groupDiaconia,
+        scheduleDay: newGroupDay,
+        scheduleTime: newGroupTime,
+        room: newGroupRoom,
         catechistIds: [user.uid],
         catechistNames: [user.displayName],
         isVisibleForCatechists: true,
@@ -1010,6 +1168,9 @@ export default function App() {
       setNewGroupName('');
       setNewGroupLevel('Cate-Kinder');
       setNewGroupYear('2026-2027');
+      setNewGroupDay('Sábado');
+      setNewGroupTime('');
+      setNewGroupRoom('');
       setIsCreateGroupModalOpen(false);
       fetchAllData();
     } catch (error) {
@@ -1023,9 +1184,13 @@ export default function App() {
     try {
       const duplicateGroupRef = await addDoc(collection(db, 'groups'), {
         name: `${group.name || 'Grupo'} (Copia)`,
+        level: group.level || 'Cate-Kinder',
         year: group.year || '2026-2027',
         parroquiaId: group.parroquiaId,
         diaconiaId: group.diaconiaId,
+        scheduleDay: group.scheduleDay || '',
+        scheduleTime: group.scheduleTime || '',
+        room: group.room || '',
         catechistIds: group.catechistIds || [],
         catechistNames: group.catechistNames || [],
         isVisibleForCatechists: group.isVisibleForCatechists !== false,
@@ -1035,10 +1200,13 @@ export default function App() {
       const studentsToDuplicate = students.filter(student => student.groupId === group.id);
       for (const student of studentsToDuplicate) {
         await addDoc(collection(db, 'students'), {
+          ...student,
           name: student.name,
           parentEmail: student.parentEmail || '',
           parentPhone: student.parentPhone || '',
           groupId: duplicateGroupRef.id,
+          level: group.level || student.level || 'Primer Nivel',
+          cycle: student.cycle || group.year || '2026-2027',
           parroquiaId: student.parroquiaId || group.parroquiaId || '',
           diaconiaId: student.diaconiaId || group.diaconiaId || '',
           catechistId: student.catechistId || user?.uid || '',
@@ -1062,6 +1230,9 @@ export default function App() {
     setEditGroupName(group.name);
     setEditGroupLevel(group.level || 'Cate-Kinder');
     setEditGroupYear(group.year || '2026-2027');
+    setEditGroupDay(group.scheduleDay || 'Sábado');
+    setEditGroupTime(group.scheduleTime || '');
+    setEditGroupRoom(group.room || '');
     const existingIds = group.catechistIds || (group.catechistId ? [group.catechistId] : []);
     setEditGroupCatechists(existingIds);
     setEditGroupVisibleForCatechists(group.isVisibleForCatechists !== false);
@@ -1071,6 +1242,7 @@ export default function App() {
     if (!editingGroupId || !editGroupName.trim()) return;
 
     try {
+      const previousGroup = groups.find(group => group.id === editingGroupId);
       const selectedUsers = allUsers.filter(u => editGroupCatechists.includes(u.id));
       const names = selectedUsers.map(u => u.name || u.email);
 
@@ -1079,10 +1251,19 @@ export default function App() {
         name: editGroupName,
         level: editGroupLevel,
         year: editGroupYear || '2026-2027',
+        scheduleDay: editGroupDay,
+        scheduleTime: editGroupTime,
+        room: editGroupRoom,
         catechistIds: editGroupCatechists,
         catechistNames: names,
         isVisibleForCatechists: editGroupVisibleForCatechists
       });
+
+      if (previousGroup && previousGroup.level !== editGroupLevel) {
+        const groupStudents = students.filter(student => student.groupId === editingGroupId);
+        await Promise.all(groupStudents.map(student => updateDoc(doc(db, 'students', student.id), { level: editGroupLevel })));
+        setStudents(prev => prev.map(student => student.groupId === editingGroupId ? { ...student, level: editGroupLevel } : student));
+      }
 
       setEditingGroupId(null);
       fetchAllData();
@@ -1122,7 +1303,7 @@ export default function App() {
         parentPhone: newStudentParentPhone.trim(),
         groupId: selectedGroupForStudent,
         parroquiaId: groupObj?.parroquiaId || userData?.parroquiaId || '',
-        diaconiaId: groupObj?.diaconiaId || userData?.diaconiaId || '',
+        diaconiaId: groupObj?.diaconiaId || effectiveDiaconiaId,
         catechistId: user.uid,
         attendance: [],
         createdAt: new Date().toISOString()
@@ -1276,7 +1457,7 @@ export default function App() {
           parentPhone: st.parentPhone || '',
           groupId: excelTargetGroupId,
           parroquiaId: groupObj?.parroquiaId || userData?.parroquiaId || '',
-          diaconiaId: groupObj?.diaconiaId || userData?.diaconiaId || '',
+          diaconiaId: groupObj?.diaconiaId || effectiveDiaconiaId,
           catechistId: user.uid,
           attendance: [],
           createdAt: new Date().toISOString()
@@ -1948,12 +2129,8 @@ ${catechistName}`;
     }
 
     try {
-      const [jsPdfModule, autoTableModule] = await Promise.all([
-        import('jspdf'),
-        import('jspdf-autotable')
-      ]);
+      const jsPdfModule = await import('jspdf');
       const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
-      const autoTable = autoTableModule.default || autoTableModule.autoTable;
       const { dateMap, sortedDates } = reportView;
       const headers = sortedDates.map(date => {
         const label = dateMap.get(date);
@@ -2151,12 +2328,10 @@ ${catechistName}`;
     doc.text('Ausentes', 150, 150, { align: 'center' });
 
     doc.setDrawColor(203, 213, 225);
-    doc.line(28, 200, 92, 200);
-    doc.line(118, 200, 182, 200);
+    doc.line(68, 200, 142, 200);
     doc.setTextColor(71, 85, 105);
     doc.setFontSize(9);
-    doc.text('Firma del Coordinador', 35, 206);
-    doc.text('Firma del Catequista', 130, 206);
+    doc.text('Firma del Catequista', 105, 206, { align: 'center' });
 
     doc.setTextColor(107, 114, 128);
     doc.setFontSize(8);
@@ -2234,44 +2409,42 @@ ${catechistName}`;
 
       const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       const faviconPng = await loadFaviconAsPng();
-      doc.setFillColor(255, 255, 255);
-      doc.rect(0, 0, 210, 297, 'F');
-      doc.addImage(faviconPng, 'PNG', 14, 10, 14, 14);
       doc.setFillColor(127, 29, 29);
-      doc.rect(32, 10, 164, 14, 'F');
+      doc.rect(0, 0, 210, 44, 'F');
+      doc.addImage(faviconPng, 'PNG', 18, 9, 18, 18);
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.text('AsisCate - Constancia de asistencia', 36, 19);
-      doc.setTextColor(55, 65, 81);
+      doc.setFontSize(20);
+      doc.text('Carta de Asistencia', 44, 20);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(10);
-      doc.text(`Grupo: ${group.name}`, 18, 38);
-      doc.text(`Ciclo Catequético: ${group.year || '2026-2027'}`, 18, 45);
+      doc.text('AsisCate • Ministerio de catequesis', 44, 29);
       doc.setFillColor(248, 250, 252);
-      doc.roundedRect(18, 56, 174, 112, 6, 6, 'F');
+      doc.roundedRect(18, 52, 174, 126, 7, 7, 'F');
       doc.setDrawColor(203, 213, 225);
-      doc.roundedRect(18, 56, 174, 112, 6, 6, 'S');
+      doc.roundedRect(18, 52, 174, 126, 7, 7, 'S');
       doc.setTextColor(31, 41, 55);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(18);
-      doc.text(student.name, 28, 78);
+      doc.setFontSize(24);
+      doc.text(student.name, 24, 76);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(12);
+      doc.text(`Participó en el grupo ${group.name}`, 24, 90);
+      doc.text(`Ciclo catequético: ${group.year || '2026-2027'}`, 24, 100);
       const body = [
-        `Por medio de la presente, se constata que ${student.name}`,
+        `Por medio de la presente, se hace constar que ${student.name}`,
         `el día ${dateStr}, ${statusLabel} al encuentro de catequesis correspondiente a ${description}.`,
-        `Esta constancia se emite para respaldar la participación del proceso formativo de la comunidad parroquial.`,
+        `Esta carta respalda su participación en el proceso formativo de la comunidad parroquial.`,
         ``,
         `En la ciudad de Alajuela, ${new Date().toLocaleDateString('es-MX', { day: '2-digit', month: 'long', year: 'numeric' })}.`
       ];
       body.forEach((line, index) => {
-        doc.text(line, 28, 96 + index * 11, { maxWidth: 154 });
+        doc.text(line, 24, 120 + index * 10, { maxWidth: 154 });
       });
       doc.setDrawColor(127, 29, 29);
-      doc.line(30, 190, 90, 190);
+      doc.line(68, 200, 142, 200);
       doc.setFont('helvetica', 'bold');
-      doc.text('Firma del catequista', 60, 198, { align: 'center' });
+      doc.text('Firma del catequista', 105, 206, { align: 'center' });
       doc.setTextColor(75, 85, 105);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
@@ -2670,13 +2843,13 @@ ${catechistName}`;
   };
 
   const startInventoryItemEdit = (item) => {
-    const canEdit = activeViewMode === 'admin' || item.createdBy === currentUserKey;
+    const canEdit = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';
     if (!canEdit) {
       alert('Solo puedes modificar tus propios materiales.');
       return;
     }
     setEditingInventoryItemId(item.id);
-    setInventoryForm({ name: item.name, stock: String(item.stock || 0) });
+    setInventoryForm({ name: item.name, stock: '1' });
   };
 
   const startInventoryAssetEdit = (asset) => {
@@ -2717,9 +2890,10 @@ ${catechistName}`;
 
     const payload = {
       name: inventoryForm.name.trim(),
-      stock: Number(inventoryForm.stock) || 0,
       createdBy: user?.uid || userData?.id || userData?.fullName || 'system',
       createdByName: userData?.name || user?.displayName || 'Usuario',
+      diaconiaId: effectiveDiaconiaId,
+      diaconiaName: diaconias.find(diaconia => diaconia.id === effectiveDiaconiaId)?.name || '',
       createdAt: new Date().toISOString(),
       date: new Date().toISOString().split('T')[0],
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
@@ -2728,7 +2902,7 @@ ${catechistName}`;
     if (editingInventoryItemId) {
       const updatedItem = { id: editingInventoryItemId, ...payload };
       await setDoc(doc(db, 'inventoryItems', editingInventoryItemId), payload, { merge: true });
-      setInventoryItems(prev => prev.map(item => item.id === editingInventoryItemId ? updatedItem : item));
+      setInventoryItems(prev => prev.map(item => item.id === editingInventoryItemId ? { ...item, ...updatedItem } : item));
       setEditingInventoryItemId(null);
     } else {
       const itemId = `inventory-${Date.now()}`;
@@ -2747,6 +2921,8 @@ ${catechistName}`;
       name: inventoryAssetForm.name.trim(),
       stock: Number(inventoryAssetForm.stock) || 0,
       createdBy: user?.uid || userData?.id || userData?.fullName || 'system',
+      diaconiaId: effectiveDiaconiaId,
+      diaconiaName: diaconias.find(diaconia => diaconia.id === effectiveDiaconiaId)?.name || '',
       createdAt: new Date().toISOString(),
       showTogether: inventoryAssetForm.showTogether === true
     };
@@ -2785,8 +2961,8 @@ ${catechistName}`;
   const handleDeleteInventoryItem = async (itemId) => {
     const item = inventoryItems.find(entry => entry.id === itemId);
     if (!item) return;
-    if (activeViewMode !== 'admin' && item.createdBy !== currentUserKey) {
-      alert('Solo puedes eliminar tus propios materiales.');
+    if (activeViewMode === 'catequista') {
+      alert('Los catequistas no pueden eliminar materiales faltantes.');
       return;
     }
     await deleteDoc(doc(db, 'inventoryItems', itemId));
@@ -2876,6 +3052,8 @@ ${catechistName}`;
     const reservationPayload = {
       itemId: item.id,
       itemName: item.name,
+      diaconiaId: item.diaconiaId || effectiveDiaconiaId,
+      diaconiaName: item.diaconiaName || diaconias.find(diaconia => diaconia.id === (item.diaconiaId || effectiveDiaconiaId))?.name || '',
       reservedBy: userData?.fullName || user?.displayName || 'Usuario',
       date: inventoryReservationForm.date,
       slot: inventoryReservationForm.slot,
@@ -2908,7 +3086,13 @@ ${catechistName}`;
   const handleDeleteInventoryReservation = async (reservationId) => {
     const reservation = inventoryReservations.find(entry => entry.id === reservationId);
     if (!reservation) return;
-    if (activeViewMode !== 'admin' && reservation.createdBy !== currentUserKey) {
+    const reservationOwnerKeys = [user?.uid, userData?.id, userData?.fullName, user?.displayName].filter(Boolean);
+    const isReservationOwner = reservationOwnerKeys.includes(reservation.createdBy);
+    if (activeViewMode === 'catequista' && !isReservationOwner) {
+      alert('Solo puedes eliminar reservas creadas por ti.');
+      return;
+    }
+    if (activeViewMode !== 'admin' && !isReservationOwner) {
       alert('Solo puedes eliminar tus propias reservas.');
       return;
     }
@@ -2936,12 +3120,11 @@ ${catechistName}`;
     }
 
     try {
-      const [jsPdfModule, autoTableModule] = await Promise.all([
-        import('jspdf'),
-        import('jspdf-autotable')
-      ]);
+      // La lista de materiales se dibuja manualmente para evitar depender de
+      // la importación dinámica de jspdf-autotable (que puede fallar en Vite
+      // cuando el chunk optimizado queda desactualizado).
+      const jsPdfModule = await import('jspdf');
       const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
-      const autoTable = autoTableModule.default || autoTableModule.autoTable;
 
       const doc = new JsPdf({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       const pageWidth = doc.internal.pageSize.getWidth();
@@ -2969,9 +3152,6 @@ ${catechistName}`;
       doc.setFontSize(10);
       doc.text(`Fecha de emisión: ${new Date().toLocaleDateString('es-CR', { day: '2-digit', month: 'long', year: 'numeric' })}`, 14, 32);
       doc.text(`Total de materiales en reporte: ${itemsToExport.length}`, 14, 38);
-      const totalStock = itemsToExport.reduce((acc, item) => acc + Number(item.stock || 0), 0);
-      doc.text(`Unidades en stock total: ${totalStock}`, pageWidth - 70, 32);
-
       if (inventoryDateFilters.dateFrom || inventoryDateFilters.dateTo) {
         const fromLabel = inventoryDateFilters.dateFrom || 'Inicio';
         const toLabel = inventoryDateFilters.dateTo || 'Actualidad';
@@ -2989,50 +3169,11 @@ ${catechistName}`;
         return 'No especificado';
       };
 
-      autoTable(doc, {
-        startY: inventoryDateFilters.dateFrom || inventoryDateFilters.dateTo ? 50 : 46,
-        head: [['#', 'Material', 'Cantidad', 'Fecha de Registro', 'Ingresado por']],
-        body: itemsToExport.map((item, index) => [
-          String(index + 1),
-          String(item.name || 'Sin nombre'),
-          String(item.stock ?? 0),
-          item.date || item.createdAt?.split('T')[0] || 'Sin fecha',
-          resolveRegisteredBy(item)
-        ]),
-        theme: 'grid',
-        headStyles: {
-          fillColor: [127, 29, 29],
-          textColor: [255, 255, 255],
-          fontStyle: 'bold',
-          halign: 'center',
-          fontSize: 9,
-          cellPadding: 3
-        },
-        bodyStyles: {
-          fontSize: 8.5,
-          cellPadding: 3,
-          textColor: [31, 41, 55]
-        },
-        alternateRowStyles: {
-          fillColor: [248, 250, 252]
-        },
-        columnStyles: {
-          0: { cellWidth: 10, halign: 'center' },
-          1: { cellWidth: 62 },
-          2: { cellWidth: 20, halign: 'center' },
-          3: { cellWidth: 32, halign: 'center' },
-          4: { cellWidth: 58 }
-        },
-        didDrawPage: () => {
-          doc.setTextColor(75, 85, 105);
-          doc.setFont('helvetica', 'normal');
-          doc.setFontSize(8.5);
-          doc.text('Parroquia Nuestra Señora de El Carmen • Pastoral de Catequesis', 14, pageHeight - 10);
-          doc.setTextColor(127, 29, 29);
-          doc.setFont('helvetica', 'bold');
-          doc.text('AsisCate', pageWidth - 14, pageHeight - 10, { align: 'right' });
-        }
-      });
+      let y = inventoryDateFilters.dateFrom || inventoryDateFilters.dateTo ? 50 : 46;
+      doc.setFillColor(127, 29, 29); doc.rect(14, y, pageWidth - 28, 9, 'F');
+      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.text('#', 18, y + 6); doc.text('Material', 30, y + 6); doc.text('Diaconía', 110, y + 6); doc.text('Registrado por', 150, y + 6); y += 16;
+      doc.setTextColor(31, 41, 55); doc.setFont('helvetica', 'normal');
+      itemsToExport.forEach((item, index) => { if (y > pageHeight - 20) { doc.addPage(); y = 20; } doc.text(String(index + 1), 18, y); doc.text(String(item.name || 'Sin nombre').slice(0, 40), 30, y); doc.text(String(item.diaconiaName || 'Sin diaconía').slice(0, 22), 110, y); doc.text(resolveRegisteredBy(item).slice(0, 24), 150, y); doc.setDrawColor(226, 232, 240); doc.line(14, y + 3, pageWidth - 14, y + 3); y += 8; });
 
       doc.save(`Lista_Materiales_${new Date().toISOString().split('T')[0]}.pdf`);
     } catch (error) {
@@ -3041,10 +3182,10 @@ ${catechistName}`;
     }
   };
 
-  const handleAddPaymentRecord = (event) => {
+  const handleAddPaymentRecord = async (event) => {
     event.preventDefault();
     const selectedStudent = paymentForm.studentId ? students.find(student => student.id === paymentForm.studentId) : null;
-    const resolvedStudentName = selectedStudent?.name || paymentForm.studentName.trim();
+    const resolvedStudentName = selectedStudent?.name || selectedStudent?.fullName || paymentForm.studentName.trim();
     const finalInvoiceName = paymentForm.withoutMatricula ? paymentForm.invoiceName.trim() : (resolvedStudentName || paymentForm.studentName.trim());
 
     if (!finalInvoiceName || !paymentForm.amount || Number(paymentForm.amount) <= 0) {
@@ -3065,7 +3206,7 @@ ${catechistName}`;
       id: `payment-${Date.now()}`,
       receiptNumber: nextReceiptNum,
       groupId: paymentForm.groupId || '',
-      groupName: visibleGroups.find(group => group.id === paymentForm.groupId)?.name || '',
+      groupName: visibleGroups.find(group => group.id === paymentForm.groupId)?.name || groups.find(group => group.id === paymentForm.groupId)?.name || '',
       studentId: paymentForm.studentId || '',
       studentName: resolvedStudentName || finalInvoiceName,
       invoiceName: finalInvoiceName,
@@ -3080,21 +3221,33 @@ ${catechistName}`;
       withoutMatricula: Boolean(paymentForm.withoutMatricula)
     };
 
-    setPaymentRecords(prev => [newRecord, ...prev]);
-    setPaymentForm({
-      groupId: '',
-      studentId: '',
-      studentName: '',
-      concept: '',
-      amount: '',
-      paymentMethod: 'Efectivo',
-      withoutMatricula: false,
-      invoiceName: ''
-    });
+    try {
+      await setDoc(doc(db, 'payments', newRecord.id), newRecord);
+      setPaymentRecords(prev => [newRecord, ...prev.filter(record => record.id !== newRecord.id)]);
+      setPaymentForm({
+        groupId: '',
+        studentId: '',
+        studentName: '',
+        concept: '',
+        amount: '',
+        paymentMethod: 'Efectivo',
+        withoutMatricula: false,
+        invoiceName: ''
+      });
+    } catch (error) {
+      console.error('Error guardando pago en Firestore:', error);
+      alert('No se pudo guardar el pago en la base de datos. Verifica tus permisos e inténtalo de nuevo.');
+    }
   };
 
-  const handleDeletePaymentRecord = (paymentId) => {
-    setPaymentRecords(prev => prev.filter(record => record.id !== paymentId));
+  const handleDeletePaymentRecord = async (paymentId) => {
+    try {
+      await deleteDoc(doc(db, 'payments', paymentId));
+      setPaymentRecords(prev => prev.filter(record => record.id !== paymentId));
+    } catch (error) {
+      console.error('Error eliminando pago de Firestore:', error);
+      alert('No se pudo eliminar el pago.');
+    }
   };
 
   const formatCRC = (value) => `₡${Number(value || 0).toLocaleString('es-CR')}`;
@@ -3349,8 +3502,6 @@ ${catechistName}`;
     }
   };
 
-  const levelOptions = ['Cate-Kinder', '1er Nivel', '2do Nivel', '3er Nivel', '4to Nivel', '5to Nivel', '6to Nivel', '7mo Nivel', 'Confirma'];
-
   const handleExportGroupRosterToExcel = async (groupId) => {
     const group = groups.find(item => item.id === groupId);
     const groupStudents = getGroupReportStudents(groupId);
@@ -3457,9 +3608,207 @@ ${catechistName}`;
     }
   };
 
+  const handleExportGroupNamesToPdf = async (groupId) => {
+    const group = groups.find(item => item.id === groupId);
+    const groupStudents = getGroupReportStudents(groupId);
+    if (!groupStudents.length) { alert('No hay catequizandos registrados en este grupo.'); return; }
+    try {
+      const jsPdfModule = await import('jspdf');
+      const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
+      const doc = new JsPdf({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      doc.setFillColor(127, 29, 29); doc.rect(0, 0, 210, 36, 'F');
+      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(17); doc.text('Lista de Catequizandos', 18, 17);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.text(`${group?.name || 'Grupo'} · ${group?.year || '2026-2027'}`, 18, 27);
+      doc.setTextColor(31, 41, 55); doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text('#', 22, 48); doc.text('Nombre del catequizando', 38, 48);
+      doc.setDrawColor(203, 213, 225); doc.line(18, 52, 192, 52);
+      doc.setFont('helvetica', 'normal');
+      groupStudents.forEach((student, index) => {
+        const y = 62 + (index % 30) * 7;
+        if (index > 0 && index % 30 === 0) { doc.addPage(); doc.setFont('helvetica', 'bold'); doc.text('Lista de Catequizandos (continuación)', 18, 20); doc.setFont('helvetica', 'normal'); }
+        doc.text(String(index + 1), 22, y); doc.text(student.fullName || student.name || 'Sin nombre', 38, y, { maxWidth: 150 });
+      });
+      doc.save(`Lista_Nombres_${group?.name?.replace(/\s+/g, '_') || 'Grupo'}.pdf`);
+    } catch (error) { console.error('Error exportando lista de nombres:', error); alert('No se pudo generar el PDF.'); }
+  };
+
+  const handleExportGroupSchedulePdf = async () => {
+    const scheduledGroups = visibleGroups.filter(group => group.scheduleDay && group.scheduleTime && group.room);
+    if (!scheduledGroups.length) { alert('No hay grupos con horario y salón asignados.'); return; }
+    const levelStyles = {
+      'Cate-Kinder': { fill: [22, 163, 74], text: [255, 255, 255] },
+      'Primer Nivel': { fill: [37, 99, 235], text: [255, 255, 255] },
+      'Segundo Nivel': { fill: [124, 58, 237], text: [255, 255, 255] },
+      'Tercer Nivel (Primera Comunión)': { fill: [255, 255, 255], text: [17, 24, 39] },
+      'Cuarto Nivel': { fill: [250, 204, 21], text: [255, 255, 255] },
+      'Quinto Nivel': { fill: [249, 115, 22], text: [255, 255, 255] },
+      'Sexto Nivel': { fill: [124, 45, 18], text: [255, 255, 255] },
+      'Septimo Nivel': { fill: [56, 189, 248], text: [255, 255, 255] },
+      'Confirma': { fill: [220, 38, 38], text: [255, 255, 255] }
+    };
+    if (schedulePreviewHtml) {
+      try {
+        const pngBlob = await scheduleSvgToPngBlob();
+        if (!pngBlob) throw new Error('No se pudo renderizar el HTML del horario');
+        const dataUrl = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(pngBlob); });
+        const jsPdfModule = await import('jspdf');
+        const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
+        const pdf = new JsPdf({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+        const pageWidth = pdf.internal.pageSize.getWidth(); const pageHeight = pdf.internal.pageSize.getHeight(); const margin = 8;
+        const image = new Image(); image.src = dataUrl; await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; });
+        const ratio = Math.min((pageWidth - margin * 2) / image.width, (pageHeight - margin * 2) / image.height);
+        const imageWidth = image.width * ratio; const imageHeight = image.height * ratio;
+        pdf.addImage(dataUrl, 'PNG', (pageWidth - imageWidth) / 2, margin, imageWidth, imageHeight, undefined, 'FAST');
+        pdf.save(`Horario_Grupos_${new Date().toISOString().split('T')[0]}.pdf`);
+        return;
+      } catch (error) { console.error('Error exportando horario HTML a PDF:', error); alert('No se pudo generar el PDF del horario.'); return; }
+    }
+    const days = [...new Set(scheduledGroups.map(group => group.scheduleDay))];
+    const dayOrder = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+    days.sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+    try {
+      const jsPdfModule = await import('jspdf');
+      const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
+      const pdf = new JsPdf({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      days.forEach((day, dayIndex) => {
+        if (dayIndex > 0) pdf.addPage();
+        const dayGroups = scheduledGroups.filter(group => group.scheduleDay === day);
+        const times = [...new Set(dayGroups.map(group => group.scheduleTime))];
+        const rooms = [...new Set(dayGroups.map(group => group.room))];
+        const left = 14; const top = 48; const roomWidth = 42; const gridWidth = pageWidth - left * 2 - roomWidth; const timeWidth = gridWidth / Math.max(times.length, 1); const rowHeight = Math.max(8, Math.min(18, (pageHeight - top - 20) / Math.max(rooms.length, 1)));
+        pdf.setFillColor(127, 29, 29); pdf.roundedRect(0, 0, pageWidth, 30, 3, 3, 'F');
+        pdf.setTextColor(255, 255, 255); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(17); pdf.text(`AsisCate - Horario de grupos · ${day}`, 16, 18);
+        pdf.setFontSize(8); pdf.text(`Emitido: ${new Date().toLocaleDateString('es-CR')}`, pageWidth - 16, 18, { align: 'right' });
+        pdf.setFillColor(185, 28, 28); pdf.rect(left, top, roomWidth, 10, 'F'); pdf.setTextColor(255, 255, 255); pdf.setFontSize(8); pdf.text('Salón', left + roomWidth / 2, top + 6.5, { align: 'center' });
+        times.forEach((time, index) => { pdf.setFillColor(185, 28, 28); pdf.rect(left + roomWidth + index * timeWidth, top, timeWidth, 10, 'F'); pdf.setTextColor(255, 255, 255); pdf.text(time, left + roomWidth + index * timeWidth + timeWidth / 2, top + 6.5, { align: 'center' }); });
+        rooms.forEach((room, rowIndex) => {
+          const y = top + 10 + rowIndex * rowHeight;
+          pdf.setFillColor(185, 28, 28); pdf.rect(left, y, roomWidth, rowHeight, 'F'); pdf.setTextColor(255, 255, 255); pdf.setFontSize(7.5); pdf.text(room, left + 2, y + rowHeight / 2 + 2, { maxWidth: roomWidth - 4 });
+          times.forEach((time, colIndex) => {
+            const x = left + roomWidth + colIndex * timeWidth;
+            const cellGroups = dayGroups.filter(group => group.room === room && group.scheduleTime === time);
+            pdf.setDrawColor(203, 213, 225); pdf.setFillColor(248, 250, 252); pdf.rect(x, y, timeWidth, rowHeight, 'FD');
+            const blockHeight = rowHeight / Math.max(cellGroups.length, 1);
+            cellGroups.forEach((group, groupIndex) => { const style = levelStyles[group.level] || { fill: [71, 85, 105], text: [255, 255, 255] }; const blockY = y + groupIndex * blockHeight; pdf.setFillColor(...style.fill); pdf.roundedRect(x + 0.6, blockY + 0.6, timeWidth - 1.2, blockHeight - 1.2, 1.5, 1.5, 'F'); pdf.setTextColor(...style.text); pdf.setFontSize(7); pdf.text(getScheduleGroupLabel(group), x + timeWidth / 2, blockY + blockHeight / 2 + 1.5, { align: 'center', maxWidth: timeWidth - 3 }); });
+          });
+        });
+        pdf.setTextColor(100, 116, 139); pdf.setFontSize(7); pdf.text('AsisCate - Sistema Parroquial', left, pageHeight - 8);
+      });
+      pdf.save(`Horario_Grupos_${new Date().toISOString().split('T')[0]}.pdf`);
+    } catch (error) { console.error('Error exportando horario:', error); alert('No se pudo generar el horario.'); }
+  };
+
+  const buildScheduleHtml = () => {
+    const scheduledGroups = visibleGroups.filter(group => group.scheduleDay && group.scheduleTime && group.room);
+    if (!scheduledGroups.length) return '';
+    const levelClasses = { 'Cate-Kinder': 'nivel-kinder', 'Primer Nivel': 'nivel-primero', 'Segundo Nivel': 'nivel-segundo', 'Tercer Nivel (Primera Comunión)': 'nivel-tercero', 'Cuarto Nivel': 'nivel-cuarto', 'Quinto Nivel': 'nivel-quinto', 'Sexto Nivel': 'nivel-sexto', 'Septimo Nivel': 'nivel-septimo', 'Confirma': 'nivel-confirma' };
+    const days = [...new Set(scheduledGroups.map(group => group.scheduleDay))];
+    const dayOrder = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+    days.sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+    const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+    const tables = days.map(day => {
+      const dayGroups = scheduledGroups.filter(group => group.scheduleDay === day);
+      const times = [...new Set(dayGroups.map(group => group.scheduleTime))];
+      const rooms = [...new Set(dayGroups.map(group => group.room))];
+      const head = `<thead><tr><th>Salón</th>${times.map(time => `<th>${escapeHtml(time)}</th>`).join('')}</tr></thead>`;
+      const body = rooms.map(room => `<tr><td class="salon-header">${escapeHtml(room)}</td>${times.map(time => {
+        const cellGroups = dayGroups.filter(group => group.room === room && group.scheduleTime === time);
+        return `<td><div class="cell-container">${cellGroups.map(group => {
+          const catechistValues = Array.isArray(group.catechistNames) ? group.catechistNames : (group.catechistName ? [group.catechistName] : []);
+          const catechists = catechistValues.map(name => String(name || '').trim().split(/\s+/)[0]).filter(Boolean).join(', ');
+          return `<div class="group-card ${levelClasses[group.level] || 'nivel-default'}"><span class="group-name">${escapeHtml(getScheduleGroupLabel(group))}</span>${catechists ? `<span class="group-catechist">${escapeHtml(catechists)}</span>` : ''}</div>`;
+        }).join('')}</div></td>`;
+      }).join('')}</tr>`).join('');
+      return `<h2 class="day-title">Horario de Grupos - <strong>${escapeHtml(day)}</strong></h2><table class="schedule-table"><thead>${head.replace('<thead>', '').replace('</thead>', '')}</thead><tbody>${body}</tbody></table>`;
+    }).join('<div class="day-break"></div>');
+    const logoSvg = `<svg class="app-logo" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect width="40" height="40" rx="10" fill="#991B1B" fill-opacity="0.12"/><path d="M20 12L10 33" stroke="#991B1B" stroke-width="4" stroke-linecap="round"/><path d="M20 12L30 33" stroke="#991B1B" stroke-width="4" stroke-linecap="round"/><path d="M14 23H26" stroke="#EF4444" stroke-width="3.5" stroke-linecap="round"/><path d="M20 3V11M17 6H23" stroke="#991B1B" stroke-width="2.5" stroke-linecap="round"/><path d="M25 22L28.5 25.5L35 16" stroke="#10B981" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>AsisCate - Horario de Grupos</title><style>
+      *{box-sizing:border-box}body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;margin:20px;background:#f8fafc;color:#1e293b}.banner-card{background:#fff;border:2px solid #e2e8f0;border-radius:12px;padding:0;display:flex;align-items:stretch;justify-content:space-between;margin-bottom:24px;box-shadow:0 2px 4px rgba(0,0,0,.05);overflow:hidden}.banner-left{display:flex;align-items:center;gap:16px;background:#8b0000;color:#fff;padding:16px 24px;border-radius:10px 0 0 10px}.logo-placeholder{width:55px;height:55px;border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;flex:none}.app-logo{width:48px;height:48px}.banner-title h1{margin:0;font-size:22px;color:#fff}.banner-title p{margin:4px 0 0;color:#fff;font-size:14px;font-weight:500}.banner-meta{font-size:12px;color:#64748b;text-align:right;display:flex;align-items:center;padding:16px 24px}.day-title{margin:0 0 12px;color:#8b0000;font-size:17px}.schedule-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.08);border-radius:12px;overflow:hidden;border:1px solid #cbd5e1}.schedule-table th{background:#8b0000;color:#fff;font-weight:bold;text-align:center;padding:12px;font-size:14px}.schedule-table th:first-child{width:160px;border-top-left-radius:12px}.schedule-table th:last-child{border-top-right-radius:12px}.schedule-table td{border:1px solid #e2e8f0;padding:10px;vertical-align:top;background:#fff}.salon-header{width:160px;vertical-align:middle!important;border-right:2px solid #6b0000!important;background:#8b0000!important;color:#fff;font-weight:bold;text-align:center}.cell-container{display:flex;flex-wrap:wrap;gap:8px;min-height:55px;align-items:center;justify-content:center}.group-card{padding:8px 12px;border-radius:8px;text-align:center;box-shadow:0 2px 4px rgba(0,0,0,.12);min-width:110px;flex:1}.group-name{font-size:14px;font-weight:bold;display:block}.group-catechist{font-size:11px;font-weight:500;display:block;margin-top:3px;opacity:.95}.nivel-kinder{background:#16a34a;color:#fff}.nivel-primero{background:#2563eb;color:#fff}.nivel-segundo{background:#7c3aed;color:#fff}.nivel-tercero{background:#fff;color:#000;border:2px solid #94a3b8}.nivel-cuarto{background:#eab308;color:#fff}.nivel-quinto{background:#f97316;color:#fff}.nivel-sexto{background:#78350f;color:#fff}.nivel-septimo{background:#0ea5e9;color:#fff}.nivel-confirma{background:#dc2626;color:#fff}.nivel-default{background:#475569;color:#fff}.day-break{height:24px}
+      @media print{body{margin:12px}.banner-card,.schedule-table{break-inside:avoid}.day-break{height:12px}}
+    </style></head><body><div class="banner-card"><div class="banner-left"><div class="logo-placeholder">${logoSvg}</div><div class="banner-title"><h1>AsisCate - Sistema Parroquial</h1><p>Horario de Grupos</p></div></div><div class="banner-meta">Emitido: ${escapeHtml(new Date().toLocaleDateString('es-CR'))}</div></div>${tables}</body></html>`;
+  };
+
+  const handleOpenSchedulePreview = async () => {
+    const html = buildScheduleHtml();
+    if (!html) { alert('No hay grupos con horario y salón asignados.'); return; }
+    setSchedulePreviewHtml(html);
+    setIsSchedulePreviewOpen(true);
+  };
+
+  const handleExportGroupScheduleImage = async () => {
+    const scheduledGroups = visibleGroups.filter(group => group.scheduleDay && group.scheduleTime && group.room);
+    if (!scheduledGroups.length) { alert('No hay grupos con horario y salón asignados.'); return; }
+    const levelStyles = { 'Cate-Kinder': ['#16a34a', '#ffffff'], 'Primer Nivel': ['#2563eb', '#ffffff'], 'Segundo Nivel': ['#7c3aed', '#ffffff'], 'Tercer Nivel (Primera Comunión)': ['#ffffff', '#111827'], 'Cuarto Nivel': ['#facc15', '#ffffff'], 'Quinto Nivel': ['#f97316', '#ffffff'], 'Sexto Nivel': ['#7c2d12', '#ffffff'], 'Septimo Nivel': ['#38bdf8', '#ffffff'], 'Confirma': ['#dc2626', '#ffffff'] };
+    const days = [...new Set(scheduledGroups.map(group => group.scheduleDay))];
+    const dayOrder = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']; days.sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
+    const left = 280; const timeWidth = 360; const rowHeight = 88; const sectionHeight = 36; const maxTimes = Math.max(...days.map(day => new Set(scheduledGroups.filter(group => group.scheduleDay === day).map(group => group.scheduleTime)).size), 1); const width = Math.max(720, left + maxTimes * timeWidth);
+    const escapeXml = (value) => String(value || '').replace(/[<>&"']/g, char => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char]));
+    let cursorY = 0; let sections = '';
+    days.forEach(day => {
+      const dayGroups = scheduledGroups.filter(group => group.scheduleDay === day); const times = [...new Set(dayGroups.map(group => group.scheduleTime))]; const rooms = [...new Set(dayGroups.map(group => group.room))]; const sectionWidth = left + times.length * timeWidth;
+      sections += `<rect x="0" y="${cursorY}" width="${width}" height="62" rx="18" fill="#7f1d1d"/><text x="28" y="40" font-family="Arial" font-size="31" font-weight="700" fill="#ffffff">Horario de grupos · ${escapeXml(day)}</text>`;
+      sections += `<rect x="0" y="${cursorY + 62}" width="${left}" height="45" fill="#b91c1c"/><text x="${left / 2}" y="${cursorY + 91}" text-anchor="middle" font-family="Arial" font-size="22" font-weight="700" fill="#ffffff">Salón</text>`;
+      times.forEach((time, colIndex) => { const x = left + colIndex * timeWidth; sections += `<rect x="${x}" y="${cursorY + 62}" width="${timeWidth}" height="45" fill="#b91c1c"/><text x="${x + timeWidth / 2}" y="${cursorY + 91}" text-anchor="middle" font-family="Arial" font-size="21" font-weight="700" fill="#ffffff">${escapeXml(time)}</text>`; });
+      rooms.forEach((room, rowIndex) => { const y = cursorY + 107 + rowIndex * rowHeight; sections += `<rect x="0" y="${y}" width="${left}" height="${rowHeight}" fill="#b91c1c"/><text x="16" y="${y + 51}" font-family="Arial" font-size="20" font-weight="700" fill="#ffffff">${escapeXml(room)}</text>`; times.forEach((time, colIndex) => { const x = left + colIndex * timeWidth; const cellGroups = dayGroups.filter(group => group.room === room && group.scheduleTime === time); sections += `<rect x="${x}" y="${y}" width="${timeWidth}" height="${rowHeight}" fill="#f8fafc" stroke="#cbd5e1"/>`; const blockHeight = rowHeight / Math.max(cellGroups.length, 1); cellGroups.forEach((group, groupIndex) => { const style = levelStyles[group.level] || ['#475569', '#ffffff']; const blockY = y + groupIndex * blockHeight; sections += `<rect x="${x + 6}" y="${blockY + 5}" width="${timeWidth - 12}" height="${blockHeight - 10}" rx="12" fill="${style[0]}"/><text x="${x + timeWidth / 2}" y="${blockY + blockHeight / 2 + 7}" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="${style[1]}">${escapeXml(getScheduleGroupLabel(group))}</text>`; }); }); }); cursorY += 107 + rooms.length * rowHeight + sectionHeight;
+    });
+    const height = cursorY;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#ffffff"/>${sections}</svg>`;
+    setSchedulePreviewSvg(svg);
+    setIsSchedulePreviewOpen(true);
+  };
+
+  const scheduleSvgToPngBlob = async () => {
+    if (!schedulePreviewHtml) return null;
+    const renderTarget = document.createElement('div');
+    renderTarget.style.position = 'fixed'; renderTarget.style.left = '-100000px'; renderTarget.style.top = '0'; renderTarget.style.width = '1400px'; renderTarget.style.background = '#f8fafc';
+    const parsedHtml = new DOMParser().parseFromString(schedulePreviewHtml, 'text/html');
+    const styleMarkup = [...parsedHtml.querySelectorAll('style')].map(style => style.outerHTML).join('');
+    renderTarget.innerHTML = `${styleMarkup}<div class="schedule-render-root">${parsedHtml.body?.innerHTML || ''}</div>`;
+    document.body.appendChild(renderTarget);
+    try {
+      if (document.fonts?.ready) await document.fonts.ready;
+      const dataUrl = await toPng(renderTarget, { pixelRatio: 2, cacheBust: true, backgroundColor: '#f8fafc' });
+      const response = await fetch(dataUrl);
+      return await response.blob();
+    } finally {
+      renderTarget.remove();
+    }
+  };
+
+  const handleDownloadSchedulePng = async () => {
+    try {
+      const pngBlob = await scheduleSvgToPngBlob();
+      if (!pngBlob) throw new Error('No se pudo convertir el horario a PNG');
+      const url = URL.createObjectURL(pngBlob);
+      const link = document.createElement('a'); link.href = url; link.download = `Horario_Grupos_${new Date().toISOString().split('T')[0]}.png`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { console.error('Error descargando horario PNG:', error); alert('No se pudo descargar la imagen.'); }
+  };
+
+  const handleCopySchedulePng = async () => {
+    try {
+      const pngBlob = await scheduleSvgToPngBlob();
+      if (!pngBlob || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') throw new Error('El navegador no permite copiar imágenes');
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+      alert('Horario copiado como imagen PNG.');
+    } catch (error) { console.error('Error copiando horario PNG:', error); alert('No se pudo copiar la imagen. Puedes descargarla como PNG.'); }
+  };
+
+  const canModifyManagedUser = (targetUserObj) => {
+    if (!targetUserObj || targetUserObj.id === user?.uid) return false;
+    const targetEmail = targetUserObj.email?.toLowerCase() || '';
+    if (['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(targetEmail)) return false;
+    if (userRole === 'admin') return true;
+    if (targetUserObj.role === 'admin') return false;
+    if (userRole === 'coordinador') return targetUserObj.role === 'catequista';
+    return userRole === 'coordinadorGeneral';
+  };
+
   const handleChangeRole = async (targetUserId, newRole) => {
     if (userRole !== 'admin' && userRole !== 'coordinadorGeneral') return;
     const targetUserObj = allUsers.find(u => u.id === targetUserId);
+    if (!canModifyManagedUser(targetUserObj)) return;
     const targetEmail = targetUserObj?.email?.toLowerCase() || '';
     if (['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(targetEmail)) {
       alert("Este usuario es Administrador Principal por defecto y no se le puede cambiar el rol.");
@@ -3468,7 +3817,13 @@ ${catechistName}`;
     try {
       const userRef = doc(db, 'users', targetUserId);
       await updateDoc(userRef, { role: newRole });
-      fetchAllData();
+      await fetchAllData();
+      if (targetUserId === user?.uid) {
+        setUserRole(newRole);
+        const nextView = newRole === 'admin' ? 'admin' : newRole === 'coordinadorGeneral' ? 'coordinadorGeneral' : newRole === 'coordinador' ? 'coordinador' : 'catequista';
+        setActiveViewMode(nextView);
+        if (activeTab === 'parroquias' || activeTab === 'horarios' || activeTab === 'admin') setActiveTab('dashboard');
+      }
     } catch (error) {
       console.error("Error cambiando el rol:", error);
     }
@@ -3476,6 +3831,8 @@ ${catechistName}`;
 
   const handleApproveUser = async (targetUserId) => {
     if (userRole !== 'admin' && userRole !== 'coordinador' && userRole !== 'coordinadorGeneral') return;
+    const targetUserObj = allUsers.find(u => u.id === targetUserId);
+    if (!canModifyManagedUser(targetUserObj)) return;
     try {
       const userRef = doc(db, 'users', targetUserId);
       await updateDoc(userRef, { approved: true });
@@ -3523,6 +3880,7 @@ ${catechistName}`;
   const handleToggleActiveUser = async (targetUserId, currentActiveStatus) => {
     if (userRole !== 'admin' && userRole !== 'coordinador' && userRole !== 'coordinadorGeneral') return;
     const targetUserObj = allUsers.find(u => u.id === targetUserId);
+    if (!canModifyManagedUser(targetUserObj)) return;
     const targetEmail = targetUserObj?.email?.toLowerCase() || '';
     if (['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(targetEmail)) {
       alert("No se puede desactivar a un Administrador Principal.");
@@ -3542,15 +3900,47 @@ ${catechistName}`;
   const handleUpdateUserTerritory = async (targetUserId, pId, dId) => {
     if (userRole !== 'admin' && userRole !== 'coordinador' && userRole !== 'coordinadorGeneral') return;
     try {
+      const targetUser = allUsers.find(item => item.id === targetUserId);
+      if (!canModifyManagedUser(targetUser)) return;
+      const previousDiaconiaId = targetUser?.diaconiaId || '';
       const userRef = doc(db, 'users', targetUserId);
       await updateDoc(userRef, { parroquiaId: pId, diaconiaId: dId });
-      fetchAllData();
+
+      // Un catequista no puede conservar grupos de su diaconía anterior.
+      // Actualizamos también el arreglo de nombres para evitar asignaciones
+      // visuales obsoletas en las tarjetas de grupos.
+      if (targetUser?.role === 'catequista' && previousDiaconiaId && previousDiaconiaId !== dId) {
+        const affectedGroups = groups.filter(group => {
+          const assignedIds = Array.isArray(group.catechistIds)
+            ? group.catechistIds
+            : (group.catechistId ? [group.catechistId] : []);
+          return group.diaconiaId === previousDiaconiaId && assignedIds.includes(targetUserId);
+        });
+        await Promise.all(affectedGroups.map(group => {
+          const assignedIds = Array.isArray(group.catechistIds)
+            ? group.catechistIds
+            : (group.catechistId ? [group.catechistId] : []);
+          const nextIds = assignedIds.filter(id => id !== targetUserId);
+          const assignedNames = Array.isArray(group.catechistNames) ? group.catechistNames : [];
+          const targetName = targetUser.name || targetUser.email || '';
+          const nextNames = assignedNames.filter(name => name !== targetName && name !== targetUser.email);
+          const updates = {
+            catechistIds: nextIds,
+            catechistNames: nextNames
+          };
+          if (group.catechistId === targetUserId) updates.catechistId = nextIds[0] || '';
+          return updateDoc(doc(db, 'groups', group.id), updates);
+        }));
+      }
+
+      await fetchAllData();
     } catch (error) {
       console.error("Error asignando ubicación a usuario:", error);
     }
   };
 
   const handleDeleteUser = async (targetUser) => {
+    if (!canModifyManagedUser(targetUser)) return;
     const targetEmail = targetUser?.email?.toLowerCase() || '';
     if (['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(targetEmail)) {
       alert("No se puede eliminar a un Administrador Principal.");
@@ -3573,11 +3963,9 @@ ${catechistName}`;
   };
 
   const visibleGroups = groups.filter(g => {
-    if (activeViewMode === 'admin') return true;
-    if (activeViewMode === 'coordinador') return g.diaconiaId === userData?.diaconiaId;
-    if (activeViewMode === 'coordinadorGeneral') {
-      const sameParish = userRole === 'admin' || g.parroquiaId === userData?.parroquiaId;
-      return sameParish && (!generalDiaconiaId || g.diaconiaId === generalDiaconiaId);
+    if (activeViewMode === 'admin') return !effectiveDiaconiaId || g.diaconiaId === effectiveDiaconiaId;
+    if (activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') {
+      return Boolean(effectiveDiaconiaId) && g.diaconiaId === effectiveDiaconiaId;
     }
     
     // Vista Catequista: Debe estar asignado Y el grupo debe ser visible para catequistas
@@ -3588,8 +3976,8 @@ ${catechistName}`;
 
   const visibleGroupIds = visibleGroups.map(g => g.id);
 
-  const visibleStudents = activeViewMode === 'admin'
-    ? students 
+  const visibleStudents = activeViewMode === 'admin' && !effectiveDiaconiaId
+    ? students
     : students.filter(s => visibleGroupIds.includes(s.groupId));
 
   const latestAttendanceDate = visibleStudents
@@ -3618,18 +4006,25 @@ ${catechistName}`;
     if (inventoryDateFilters.dateTo && itemDate > inventoryDateFilters.dateTo) return false;
     return true;
   });
-  const visibleInventoryItems = activeViewMode === 'admin'
+  const visibleInventoryItems = activeViewMode === 'admin' && !effectiveDiaconiaId
     ? inventoryDateFilteredItems
-    : activeViewMode === 'catequista'
-      ? inventoryDateFilteredItems.filter(item => item.createdBy === currentUserKey)
-      : inventoryDateFilteredItems;
-  const visibleInventoryAssets = activeViewMode === 'admin'
+    : inventoryDateFilteredItems.filter(item => item.diaconiaId === effectiveDiaconiaId);
+  const visibleInventoryAssets = activeViewMode === 'admin' && !effectiveDiaconiaId
     ? inventoryAssets
-    : inventoryAssets.filter(asset => !asset.createdBy || asset.createdBy === currentUserKey);
-  const visibleInventoryReservations = activeViewMode === 'admin'
+    : inventoryAssets.filter(asset => {
+        const owner = allUsers.find(item => item.id === asset.createdBy || item.uid === asset.createdBy);
+        return (asset.diaconiaId || owner?.diaconiaId) === effectiveDiaconiaId;
+      });
+  const visibleInventoryReservations = activeViewMode === 'admin' && !effectiveDiaconiaId
     ? inventoryReservations
-    : inventoryReservations.filter(reservation => !reservation.createdBy || reservation.createdBy === currentUserKey);
-  const displayInventoryAssets = inventoryAssets.flatMap(asset => {
+    : inventoryReservations.filter(reservation => {
+        const reservationAssetId = String(reservation.itemId || '');
+        const parentAssetId = reservationAssetId.split('__unit__')[0];
+        const asset = inventoryAssets.find(item => item.id === reservationAssetId || item.id === parentAssetId);
+        const owner = asset && allUsers.find(item => item.id === asset.createdBy || item.uid === asset.createdBy);
+        return (reservation.diaconiaId || asset?.diaconiaId || owner?.diaconiaId) === effectiveDiaconiaId;
+      });
+  const displayInventoryAssets = visibleInventoryAssets.flatMap(asset => {
     const isGrouped = asset.showTogether === true;
     if (isGrouped || Number(asset.stock || 0) <= 1) return [{ ...asset, showTogether: isGrouped }];
     return Array.from({ length: Number(asset.stock || 0) }, (_, index) => ({
@@ -3643,15 +4038,18 @@ ${catechistName}`;
   });
 
   const visiblePaymentRecords = paymentRecords.filter(record => {
-    if (activeViewMode === 'admin' || userRole === 'admin' || userRole === 'coordinadorGeneral') return true;
-    if (activeViewMode === 'coordinador') {
+    if (activeViewMode === 'admin') {
+      if (!effectiveDiaconiaId) return true;
       const group = groups.find(g => g.id === record.groupId);
-      return record.createdBy === currentUserKey || (group && group.diaconiaId === userData?.diaconiaId);
+      return group?.diaconiaId === effectiveDiaconiaId || record.diaconiaId === effectiveDiaconiaId;
     }
-    // Catequista: solo información que ellos ingresen O perteneciente a los grupos que tienen a cargo
-    const isCreator = record.createdBy === currentUserKey || record.createdBy === user?.uid || record.createdBy === userData?.id;
+    if (activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') {
+      const group = groups.find(g => g.id === record.groupId);
+      return record.createdBy === currentUserKey || (group && group.diaconiaId === effectiveDiaconiaId);
+    }
+    // Catequista: únicamente pagos de grupos que tiene asignados y visibles.
     const isAssignedGroup = record.groupId && visibleGroupIds.includes(record.groupId);
-    return isCreator || isAssignedGroup;
+    return Boolean(isAssignedGroup);
   });
 
   const filteredPaymentRecords = visiblePaymentRecords.filter(record => {
@@ -3697,9 +4095,15 @@ ${catechistName}`;
   
 
   const managedUsers = activeViewMode === 'coordinadorGeneral'
-    ? allUsers.filter(u => u.parroquiaId === userData?.parroquiaId)
-    : userRole === 'coordinador'
-    ? allUsers.filter(u => u.diaconiaId === userData?.diaconiaId)
+    ? allUsers.filter(u => (
+        (u.role === 'catequista' || (u.role === 'admin' && u.email?.toLowerCase() !== 'asiscate.elcarmen@gmail.com')) &&
+        u.diaconiaId === effectiveDiaconiaId
+      ))
+    : activeViewMode === 'coordinador' || userRole === 'coordinador'
+    ? allUsers.filter(u => (
+        (u.role === 'catequista' || (u.role === 'admin' && u.email?.toLowerCase() !== 'asiscate.elcarmen@gmail.com')) &&
+        u.diaconiaId === effectiveDiaconiaId
+      ))
     : userRole === 'coordinadorGeneral'
       ? allUsers.filter(u => u.parroquiaId === userData?.parroquiaId)
       : allUsers;
@@ -3707,7 +4111,7 @@ ${catechistName}`;
   const canAccessEnrollment = isEnrollmentEnabled && userData?.canEnroll !== false;
   const canAccessEnrollmentDashboard = ['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode);
   const canAccessUserManagement = canAccessEnrollmentDashboard;
-  const showPreferencesMenu = activeViewMode === 'admin';
+  const showPreferencesMenu = canManageScheduleOptions;
 
   if (loading) {
     return (
@@ -3742,7 +4146,7 @@ ${catechistName}`;
 
   const mainBgClass = themeMode === 'dark' ? 'bg-black text-white' : 'bg-slate-50 text-slate-800';
   const cardBgClass = themeMode === 'dark' ? 'bg-black border-neutral-800 text-slate-100' : 'bg-white border-slate-200 text-slate-800';
-  const inputBgClass = themeMode === 'dark' ? 'bg-neutral-950 border-neutral-700 text-white placeholder-neutral-400' : 'bg-white border-slate-300 text-slate-800';
+  const inputBgClass = themeMode === 'dark' ? 'border bg-neutral-950 border-neutral-700 text-white placeholder-neutral-400' : 'border bg-white border-slate-300 text-slate-800 placeholder-slate-400';
   const mutedTextClass = themeMode === 'dark' ? 'text-slate-300' : 'text-slate-600';
   const softTextClass = themeMode === 'dark' ? 'text-slate-400' : 'text-slate-500';
   const labelTextClass = themeMode === 'dark' ? 'text-slate-300' : 'text-slate-600';
@@ -3771,7 +4175,7 @@ ${catechistName}`;
               <select
                 value={activeViewMode}
                 onChange={(event) => handleToggleViewMode(event.target.value)}
-                className="rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
+                className="hidden lg:block rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
                 aria-label="Seleccionar vista"
               >
                 {userRole === 'admin' && <option value="admin">Admin</option>}
@@ -3779,6 +4183,25 @@ ${catechistName}`;
                 {(userRole === 'admin' || userRole === 'coordinadorGeneral') && <option value="coordinadorGeneral">Cord. General</option>}
                 <option value="catequista">Catequista</option>
               </select>
+              {(activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
+                <select
+                  value={generalDiaconiaId}
+                  onChange={(event) => {
+                    setGeneralDiaconiaId(event.target.value);
+                    setSelectedGroupId('');
+                    setDashboardGroupId('');
+                    setSelectedGroupForStudent('');
+                    setPaymentFilters(previous => ({ ...previous, groupId: 'all' }));
+                  }}
+                  className="hidden lg:block max-w-44 rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
+                  aria-label="Seleccionar diaconía"
+                >
+                  <option value="">Selecciona diaconía</option>
+                  {diaconias
+                    .filter(diaconia => activeViewMode === 'admin' || !userData?.parroquiaId || diaconia.parroquiaId === userData.parroquiaId)
+                    .map(diaconia => <option key={diaconia.id} value={diaconia.id}>{diaconia.name}</option>)}
+                </select>
+              )}
             </div>
 
             {/* Menú Desktop */}
@@ -3831,17 +4254,15 @@ ${catechistName}`;
                 </div>
                 {showPreferencesMenu && (
                   <div className="relative" data-navbar-menu>
-                    <button onClick={() => setOpenNavMenu(openNavMenu === 'preferences' ? null : 'preferences')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['parroquias', 'admin'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Preferencias ▾</button>
+                  <button onClick={() => setOpenNavMenu(openNavMenu === 'preferences' ? null : 'preferences')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['parroquias', 'horarios', 'admin'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Preferencias ▾</button>
                     {openNavMenu === 'preferences' && (
                       <div className="absolute right-0 top-full mt-1 w-48 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
                         {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Parroquias y diaconías</button>}
-                        <button onClick={() => { setActiveTab('admin'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Usuarios</button>
+                        {canManageScheduleOptions && <button onClick={() => { setActiveTab('horarios'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Horarios y salones</button>}
+                        {canAccessUserManagement && <button onClick={() => { setActiveTab('admin'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Usuarios</button>}
                       </div>
                     )}
                   </div>
-                )}
-                {!showPreferencesMenu && canAccessUserManagement && (
-                  <button onClick={() => setActiveTab('admin')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${activeTab === 'admin' ? 'bg-rose-600 text-white font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Usuarios</button>
                 )}
               </nav>
 
@@ -3923,8 +4344,22 @@ ${catechistName}`;
 
         {/* Desplegable Móvil */}
         {isMobileMenuOpen && (
-          <div className={`lg:hidden border-b px-4 pt-2 pb-4 space-y-3 ${themeMode === 'dark' ? 'border-neutral-800 bg-black text-slate-100' : 'border-slate-200 bg-white text-slate-800'}`}>
+          <div className={`mobile-menu ${themeMode === 'light' ? 'mobile-menu-light' : ''} lg:hidden border-b px-4 pt-2 pb-4 space-y-3 ${themeMode === 'dark' ? 'border-neutral-800 bg-black text-slate-100' : 'border-slate-200 bg-white text-slate-800'}`}>
             <div className="flex flex-col space-y-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pb-2">
+                <select value={activeViewMode} onChange={(event) => handleToggleViewMode(event.target.value)} className={`w-full rounded-lg border px-3 py-2 text-xs font-bold ${themeMode === 'dark' ? 'border-red-700 bg-red-950 text-white' : 'border-slate-300 bg-white text-slate-800'}`} aria-label="Seleccionar vista">
+                  {userRole === 'admin' && <option value="admin">Admin</option>}
+                  {(userRole === 'admin' || userRole === 'coordinador') && <option value="coordinador">Coordinador</option>}
+                  {(userRole === 'admin' || userRole === 'coordinadorGeneral') && <option value="coordinadorGeneral">Coord. General</option>}
+                  <option value="catequista">Catequista</option>
+                </select>
+                {(activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
+                  <select value={generalDiaconiaId} onChange={(event) => { setGeneralDiaconiaId(event.target.value); setSelectedGroupId(''); setDashboardGroupId(''); setSelectedGroupForStudent(''); setPaymentFilters(previous => ({ ...previous, groupId: 'all' })); }} className={`w-full rounded-lg border px-3 py-2 text-xs font-bold ${themeMode === 'dark' ? 'border-red-700 bg-red-950 text-white' : 'border-slate-300 bg-white text-slate-800'}`} aria-label="Seleccionar diaconía">
+                    <option value="">Selecciona diaconía</option>
+                    {diaconias.filter(diaconia => activeViewMode === 'admin' || !userData?.parroquiaId || diaconia.parroquiaId === userData.parroquiaId).map(diaconia => <option key={diaconia.id} value={diaconia.id}>{diaconia.name}</option>)}
+                  </select>
+                )}
+              </div>
               <button
                 onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }}
                 className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'dashboard' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
@@ -3954,11 +4389,9 @@ ${catechistName}`;
                 <div className="rounded-lg border border-slate-700/60 overflow-hidden">
                   <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Preferencias</div>
                   {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Parroquias y diaconías</button>}
-                  <button onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Usuarios</button>
+                  {canManageScheduleOptions && <button onClick={() => { setActiveTab('horarios'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Horarios y salones</button>}
+                  {canAccessUserManagement && <button onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Usuarios</button>}
                 </div>
-              )}
-              {!showPreferencesMenu && canAccessUserManagement && (
-                <button onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className="px-3 py-2 rounded-lg text-left font-medium text-sm text-slate-300 hover:bg-slate-700/50">Usuarios</button>
               )}
             </div>
 
@@ -4118,6 +4551,13 @@ ${catechistName}`;
             setNewGroupName={setNewGroupName}
             newGroupYear={newGroupYear}
             setNewGroupYear={setNewGroupYear}
+            newGroupDay={newGroupDay}
+            setNewGroupDay={setNewGroupDay}
+            newGroupTime={newGroupTime}
+            setNewGroupTime={setNewGroupTime}
+            newGroupRoom={newGroupRoom}
+            setNewGroupRoom={setNewGroupRoom}
+            groupScheduleOptions={groupScheduleOptions}
             newGroupParroquia={newGroupParroquia}
             setNewGroupParroquia={setNewGroupParroquia}
             newGroupDiaconia={newGroupDiaconia}
@@ -4324,15 +4764,15 @@ ${catechistName}`;
         )}
         {activeTab === 'enrollmentDashboard' && (
           <EnrollmentDashboardView
-            currentUser={userData || user}
+            currentUser={{ ...(userData || user), parroquiaId: effectiveParroquiaId, diaconiaId: effectiveDiaconiaId }}
             userRole={userRole}
             cardBgClass={cardBgClass}
             inputBgClass={inputBgClass}
             isEnrollmentEnabled={isEnrollmentEnabled}
             setIsEnrollmentEnabled={setIsEnrollmentEnabled}
-            students={students}
-            paymentRecords={paymentRecords}
-            groups={groups}
+            students={visibleStudents}
+            paymentRecords={visiblePaymentRecords}
+            groups={visibleGroups}
             parroquias={parroquias}
             diaconias={diaconias}
             setGroups={setGroups}
@@ -4341,12 +4781,13 @@ ${catechistName}`;
             handleStartEditStudent={handleStartEditStudent}
             allUsers={allUsers}
             fetchAllData={fetchAllData}
+            groupScheduleOptions={groupScheduleOptions}
           />
         )}
         {activeTab === 'enrollment' && (
           (isEnrollmentEnabled && userData?.canEnroll !== false) ? (
             <EnrollmentView
-              currentUser={userData || user}
+              currentUser={{ ...(userData || user), parroquiaId: effectiveParroquiaId, diaconiaId: effectiveDiaconiaId }}
               parroquias={parroquias}
               diaconias={diaconias}
               groups={groups}
@@ -4358,6 +4799,7 @@ ${catechistName}`;
               onNavigate={(tab) => setActiveTab(tab)}
               cardBgClass={cardBgClass}
               inputBgClass={inputBgClass}
+              themeMode={themeMode}
             />
           ) : (
             <div className={`${cardBgClass} p-8 rounded-2xl border border-slate-700 text-center space-y-3`}>
@@ -4420,6 +4862,13 @@ ${catechistName}`;
             setEditGroupLevel={setEditGroupLevel}
             editGroupYear={editGroupYear}
             setEditGroupYear={setEditGroupYear}
+            editGroupDay={editGroupDay}
+            setEditGroupDay={setEditGroupDay}
+            editGroupTime={editGroupTime}
+            setEditGroupTime={setEditGroupTime}
+            editGroupRoom={editGroupRoom}
+            setEditGroupRoom={setEditGroupRoom}
+            groupScheduleOptions={groupScheduleOptions}
             editGroupCatechists={editGroupCatechists}
             setEditGroupCatechists={setEditGroupCatechists}
             editGroupVisibleForCatechists={editGroupVisibleForCatechists}
@@ -4430,6 +4879,8 @@ ${catechistName}`;
             handleDeleteGroup={handleDeleteGroup}
             handleDuplicateGroup={handleDuplicateGroup}
             handleOpenMaintenanceModal={handleOpenMaintenanceModal}
+            handleExportGroupSchedulePdf={handleExportGroupSchedulePdf}
+            handleExportGroupScheduleImage={handleOpenSchedulePreview}
             themeMode={themeMode}
           />
         )}
@@ -4460,8 +4911,8 @@ ${catechistName}`;
                   <p className="text-xs font-bold text-slate-400 uppercase">Parroquias Existentes</p>
                   <div className="divide-y divide-slate-700 max-h-60 overflow-y-auto">
                     {parroquias.map(p => (
-                      <div key={p.id} className="py-2 text-sm font-semibold flex justify-between">
-                        <span>{p.name}</span>
+                      <div key={p.id} className="py-2 text-sm font-semibold flex justify-between items-center gap-2">
+                        <span>{p.name}</span><button type="button" onClick={async () => { const name = window.prompt('Nuevo nombre de la parroquia', p.name); if (name?.trim()) { await updateDoc(doc(db, 'parroquias', p.id), { name: name.trim() }); await fetchAllData(); } }} className="rounded bg-slate-700 px-2 py-1 text-[10px] text-white">Editar</button>
                       </div>
                     ))}
                   </div>
@@ -4502,15 +4953,63 @@ ${catechistName}`;
                     {diaconias.map(d => {
                       const par = parroquias.find(p => p.id === d.parroquiaId);
                       return (
-                        <div key={d.id} className="py-2 text-xs flex justify-between">
+                        <div key={d.id} className="py-2 text-xs flex justify-between items-center gap-2">
                           <span className="font-semibold">{d.name}</span>
-                          <span className="text-slate-500">({par?.name || 'Sin Parroquia'})</span>
+                          <span className="text-slate-500">({par?.name || 'Sin Parroquia'})</span><span className="flex gap-1"><button type="button" onClick={async () => { const name = window.prompt('Nuevo nombre de la diaconía', d.name); if (name?.trim()) { await updateDoc(doc(db, 'diaconias', d.id), { name: name.trim() }); await fetchAllData(); } }} className="rounded bg-slate-700 px-2 py-1 text-[10px] text-white">Editar</button><button type="button" onClick={async () => { if (window.confirm('¿Eliminar esta diaconía?')) { await deleteDoc(doc(db, 'diaconias', d.id)); await fetchAllData(); } }} className="rounded bg-rose-700 px-2 py-1 text-[10px] text-white">Eliminar</button></span>
                         </div>
                       );
                     })}
                   </div>
                 </div>
               </div>
+            </div>
+
+          </div>
+        )}
+
+        {/* MANTENIMIENTO DE HORARIOS Y SALONES POR DIACONÍA */}
+        {activeTab === 'horarios' && canManageScheduleOptions && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl sm:text-2xl font-bold">Mantenimiento de horarios y salones</h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400">Configura las opciones disponibles para los grupos de la diaconía seleccionada.</p>
+            </div>
+            <div className={`${cardBgClass} rounded-xl border shadow-sm p-6 space-y-5`}>
+              <div className="rounded-lg border border-sky-300/40 bg-sky-500/10 px-4 py-3 text-sm">
+                <span className="font-bold">Diaconía activa: </span>
+                {diaconias.find(item => item.id === effectiveDiaconiaId)?.name || 'Selecciona una diaconía en el navbar'}
+              </div>
+              <form onSubmit={handleSaveGroupScheduleOptions} className="space-y-4">
+                {[
+                  { field: 'days', label: 'Día disponible', placeholder: 'Selecciona un día' },
+                  { field: 'times', label: 'Horarios disponibles', placeholder: 'Ej: 08:00-10:00' },
+                  { field: 'rooms', label: 'Salones disponibles', placeholder: 'Ej: Salón principal' }
+                ].map(({ field, label, placeholder }) => (
+                  <div key={field}>
+                    <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase mb-1">{label}</label>
+                    <div className="flex gap-2">
+                      {field === 'days' ? (
+                        <select value={scheduleOptionInputs[field]} onChange={event => setScheduleOptionInputs(previous => ({ ...previous, [field]: event.target.value }))} className={`flex-1 rounded-lg px-4 py-2 text-sm ${inputBgClass}`}>
+                          <option value="">{placeholder}</option>
+                          {['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'].map(day => <option key={day} value={day}>{day}</option>)}
+                        </select>
+                      ) : (
+                        <input value={scheduleOptionInputs[field]} onChange={event => setScheduleOptionInputs(previous => ({ ...previous, [field]: event.target.value }))} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addScheduleOption(field); } }} placeholder={placeholder} className={`flex-1 rounded-lg px-4 py-2 text-sm ${inputBgClass}`} />
+                      )}
+                      <button type="button" onClick={() => addScheduleOption(field)} className="rounded-lg bg-sky-600 hover:bg-sky-700 px-4 py-2 text-xs font-bold text-white">Agregar</button>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {(scheduleOptionsDraft[field] || []).map(option => (
+                        <span key={option} className="inline-flex items-center gap-1 rounded-full border border-slate-300 dark:border-slate-600 px-3 py-1 text-xs">
+                          {option}
+                          <button type="button" onClick={() => removeScheduleOption(field, option)} className="font-bold text-rose-500" aria-label={`Eliminar ${option}`}>×</button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <button type="submit" className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-5 py-2.5 text-sm font-bold text-white">Guardar configuración de esta diaconía</button>
+              </form>
             </div>
           </div>
         )}
@@ -4541,6 +5040,28 @@ ${catechistName}`;
         )}
 
       </main>
+
+      {isSchedulePreviewOpen && schedulePreviewHtml && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className={`${cardBgClass} flex max-h-[92vh] w-full max-w-6xl flex-col rounded-2xl border shadow-2xl`}>
+            <div className="flex items-center justify-between border-b border-slate-300 dark:border-slate-700 px-5 py-4">
+              <div>
+                <h2 className="text-lg font-bold">Horario de grupos</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Vista previa del horario por salón y hora</p>
+              </div>
+              <button type="button" onClick={() => setIsSchedulePreviewOpen(false)} className="rounded-lg bg-rose-700 px-3 py-1.5 text-xs font-bold text-white">Cerrar</button>
+            </div>
+            <div className="flex-1 overflow-auto bg-white p-3">
+              <iframe title="Vista previa del horario" srcDoc={schedulePreviewHtml} className="mx-auto h-[70vh] w-full min-w-[720px] border-0" />
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-300 dark:border-slate-700 px-5 py-4">
+              <button type="button" onClick={handleDownloadSchedulePng} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700">🖼️ Descargar imagen PNG</button>
+              <button type="button" onClick={handleExportGroupSchedulePdf} className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-bold text-white hover:bg-sky-700">📄 Descargar PDF</button>
+              <button type="button" onClick={handleCopySchedulePng} className="rounded-lg bg-violet-600 px-4 py-2 text-xs font-bold text-white hover:bg-violet-700">📋 Copiar imagen PNG</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isUserNameModalOpen && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex justify-center items-center p-4">
@@ -4811,6 +5332,7 @@ ${catechistName}`;
         setMaintenanceMode={setMaintenanceMode}
         handleCloseMaintenanceModal={handleCloseMaintenanceModal}
         handleExportGroupRosterToPdf={handleExportGroupRosterToPdf}
+        handleExportGroupNamesToPdf={handleExportGroupNamesToPdf}
         handleExportGroupRosterToExcel={handleExportGroupRosterToExcel}
         visibleStudents={visibleStudents}
         handleGenerateStudentQr={handleGenerateStudentQr}
@@ -4838,6 +5360,7 @@ ${catechistName}`;
         cardBgClass={cardBgClass}
         inputBgClass={inputBgClass}
         buildWhatsAppLink={buildWhatsAppLink}
+        themeMode={themeMode}
       />
 
       {messageModal && (
@@ -4871,7 +5394,7 @@ ${catechistName}`;
 
       {paymentProofModal && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[60] flex justify-center items-center p-3">
-          <div className={`${cardBgClass} rounded-2xl w-full max-w-sm flex flex-col shadow-2xl`} style={{ maxHeight: 'calc(100dvh - 24px)' }}>
+          <div className={`${cardBgClass} rounded-2xl w-full max-w-sm flex flex-col shadow-2xl`} style={{ height: 'min(900px, calc(100dvh - 24px))' }}>
             <div className="flex items-center justify-between px-4 pt-4 pb-3 shrink-0">
               <h3 className="text-sm font-bold truncate pr-2">{paymentProofModal.title}</h3>
               <button type="button" onClick={() => setPaymentProofModal(null)} className="bg-red-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold shrink-0">Cerrar</button>
@@ -4882,7 +5405,7 @@ ${catechistName}`;
                 src={paymentProofModal.imageUrl}
                 alt="Comprobante de pago"
                 className="rounded-lg border border-slate-700 bg-white shadow-lg"
-                style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain', display: 'block' }}
+                style={{ maxWidth: '100%', maxHeight: 'calc(100dvh - 150px)', width: 'auto', height: 'auto', objectFit: 'contain', display: 'block' }}
               />
             </div>
 
@@ -5106,6 +5629,21 @@ ${catechistName}`;
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <select value={newGroupDay} onChange={event => setNewGroupDay(event.target.value)} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
+                  <option value="">Día...</option>
+                  {groupScheduleOptions.days.map(day => <option key={day} value={day}>{day}</option>)}
+                </select>
+                <select value={newGroupTime} onChange={event => setNewGroupTime(event.target.value)} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
+                  <option value="">Horario...</option>
+                  {groupScheduleOptions.times.map(time => <option key={time} value={time}>{time}</option>)}
+                </select>
+                <select value={newGroupRoom} onChange={event => setNewGroupRoom(event.target.value)} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
+                  <option value="">Salón...</option>
+                  {groupScheduleOptions.rooms.map(room => <option key={room} value={room}>{room}</option>)}
+                </select>
+              </div>
+
               <p className="text-xs text-slate-400 bg-slate-800/40 p-2.5 rounded-lg border border-slate-700">
                 El grupo se creará automáticamente asignado a tu parroquia y diaconía.
               </p>
@@ -5149,10 +5687,13 @@ ${catechistName}`;
               initialStudent={editingEnrollmentStudent}
               onNavigate={() => {
                 setEditingEnrollmentStudent(null);
+                setEditingStudentId(null);
+                setMaintenanceMode('view');
                 fetchAllData();
               }}
               cardBgClass={cardBgClass}
               inputBgClass={inputBgClass}
+              themeMode={themeMode}
             />
           </div>
         </div>

@@ -1,5 +1,22 @@
 @import "tailwindcss";
 
+/* El menú móvil se renderiza fuera de .theme-content; estas reglas garantizan
+   contraste explícito cuando la aplicación está en tema claro. */
+.mobile-menu-light { color: #1e293b; }
+.mobile-menu-light [class*="text-slate-300"],
+.mobile-menu-light [class*="text-slate-400"],
+.mobile-menu-light [class*="text-slate-200"],
+.mobile-menu-light .text-white { color: #334155 !important; }
+.mobile-menu-light [class*="bg-slate-800"] { background-color: #e2e8f0 !important; }
+.mobile-menu-light [class*="bg-slate-700"] { background-color: #cbd5e1 !important; }
+.mobile-menu-light [class*="border-slate-700"],
+.mobile-menu-light [class*="border-slate-200"] { border-color: #94a3b8 !important; }
+.mobile-menu-light button:hover { color: #991b1b !important; }
+.theme-light .commitment-text { color: #000000 !important; }
+.theme-dark .commitment-text { color: #ffffff !important; }
+.theme-light .dashboard-toggle-button { background-color: #334155 !important; color: #ffffff !important; border: 1px solid #1e293b; }
+.theme-light .dashboard-toggle-button:hover { background-color: #1e293b !important; }
+
 .theme-light .text-slate-200 { color: #334155; }
 .theme-light .text-slate-300 { color: #334155; }
 .theme-light .text-slate-400 { color: #475569; }
@@ -10,6 +27,67 @@
 .theme-light .hover\:bg-slate-700\/50:hover { background-color: #cbd5e1; }
 .theme-light .border-slate-700,
 .theme-light .divide-slate-700 > :not(:last-child) { border-color: #cbd5e1; }
+.theme-light .border-slate-800 { border-color: #cbd5e1; }
+.theme-light .border-slate-700\/60 { border-color: #cbd5e1; }
+.theme-light .border-slate-600 { border-color: #94a3b8; }
+.theme-light .bg-slate-900,
+.theme-light .bg-slate-900\/80,
+.theme-light .bg-slate-900\/60,
+.theme-light .bg-slate-900\/50 { background-color: #f8fafc; }
+.theme-light .bg-slate-800,
+.theme-light .bg-slate-800\/60,
+.theme-light .bg-slate-800\/50,
+.theme-light .bg-slate-800\/40,
+.theme-light .bg-slate-800\/30,
+.theme-light .bg-slate-800\/20 { background-color: #f1f5f9; }
+.theme-light .bg-slate-700\/70 { background-color: #e2e8f0; }
+.theme-light .hover\:bg-slate-800:hover,
+.theme-light .hover\:bg-slate-800\/30:hover { background-color: #e2e8f0; }
+
+/* El tema claro no debe heredar superficies oscuras de componentes creados
+   originalmente para el tema oscuro. Estas reglas cubren las variantes con
+   opacidad que Tailwind genera para paneles, listas y tarjetas. */
+.theme-light [class*="bg-slate-900"] { background-color: #f8fafc; }
+.theme-light [class*="bg-slate-800"] { background-color: #f1f5f9; }
+.theme-light [class*="bg-slate-700"] { background-color: #e2e8f0; }
+.theme-light [class*="border-slate-800"] { border-color: #cbd5e1; }
+.theme-light [class*="border-slate-700"] { border-color: #cbd5e1; }
+.theme-light [class*="border-slate-600"] { border-color: #94a3b8; }
+.theme-light [class*="text-slate-100"],
+.theme-light [class*="text-slate-200"],
+.theme-light [class*="text-slate-300"] { color: #334155; }
+
+/* Encabezados: algunos módulos incluían `text-white`/`dark:text-white`.
+   En tema claro el título siempre debe conservar contraste sobre la tarjeta. */
+.theme-light h1,
+.theme-light h2,
+.theme-light h3,
+.theme-light h4,
+.theme-light h5,
+.theme-light h6 { color: #1e293b; }
+.theme-light h1.text-red-700,
+.theme-light h2.text-red-700,
+.theme-light h3.text-red-700,
+.theme-light h4.text-red-700 { color: #b91c1c; }
+
+/* Valores de método de pago: clase semántica para evitar que `dark:` del
+   sistema operativo anule el contraste cuando AsisCate está en tema claro. */
+.theme-light .payment-method-values { color: #334155 !important; }
+.theme-light .payment-method-label { color: #0f172a !important; }
+.theme-dark .payment-method-values { color: #e2e8f0 !important; }
+.theme-dark .payment-method-label { color: #ffffff !important; }
+.theme-light .payment-person-name { color: #0f172a !important; }
+.theme-dark .payment-person-name { color: #ffffff !important; }
+
+/* Acciones de contacto en asistencia: paleta fija y legible en ambos temas. */
+.attendance-email-button { background: #0284c7; border: 1px solid #0ea5e9; color: #ffffff !important; }
+.attendance-email-button:hover:not(:disabled) { background: #0369a1; }
+.attendance-phone-button { background: #059669; border: 1px solid #10b981; color: #ffffff !important; }
+.attendance-phone-button:hover:not(:disabled) { background: #047857; }
+.attendance-email-button:disabled,
+.attendance-phone-button:disabled { background: #cbd5e1; border-color: #94a3b8; color: #64748b !important; cursor: not-allowed; }
+.theme-dark .attendance-email-button:disabled,
+.theme-dark .attendance-phone-button:disabled { background: #334155; border-color: #475569; color: #94a3b8 !important; }
 
 .theme-dark .text-slate-200 { color: #f1f5f9; }
 .theme-dark .text-slate-300 { color: #e2e8f0; }

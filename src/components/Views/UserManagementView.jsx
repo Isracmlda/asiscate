@@ -41,6 +41,11 @@ export function UserManagementView({
             {managedUsers.map((u) => {
               const isApproved = u.approved !== false;
               const isActive = u.active !== false;
+              const isProtectedByRole = !['admin'].includes(userRole) && (
+                u.role === 'admin' || (userRole === 'coordinador' && u.role === 'coordinadorGeneral')
+              );
+              const isProtectedAccount = ['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(u.email?.toLowerCase());
+              const canModifyUser = u.id !== user.uid && !isProtectedByRole && !isProtectedAccount;
               return (
                 <tr key={u.id}>
                   <td className="px-6 py-4 font-semibold">
@@ -49,7 +54,7 @@ export function UserManagementView({
                     {u.phone && <div className="text-[11px] text-slate-500 font-mono">{u.phone}</div>}
                   </td>
                   <td className="px-6 py-4">
-                    {(userRole === 'admin' || userRole === 'coordinadorGeneral') && activeViewMode !== 'coordinador' && u.id !== user.uid && !['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(u.email?.toLowerCase()) ? (
+                    {(userRole === 'admin' || userRole === 'coordinadorGeneral') && activeViewMode !== 'coordinador' && canModifyUser ? (
                       <select
                         value={u.role}
                         onChange={(e) => handleChangeRole(u.id, e.target.value)}
@@ -71,7 +76,7 @@ export function UserManagementView({
                   <td className="px-6 py-4">
                     <div className="flex flex-col gap-1">
                       <select
-                        disabled={activeViewMode !== 'admin'}
+                        disabled={activeViewMode !== 'admin' || !canModifyUser}
                         value={u.parroquiaId || ''}
                         onChange={(e) => handleUpdateUserTerritory(u.id, e.target.value, '')}
                         className={`rounded px-2 py-1 text-xs ${inputBgClass}`}
@@ -81,7 +86,7 @@ export function UserManagementView({
                       </select>
 
                       <select
-                        disabled={(activeViewMode !== 'admin' && activeViewMode !== 'coordinadorGeneral') || !u.parroquiaId}
+                        disabled={(activeViewMode !== 'admin' && activeViewMode !== 'coordinadorGeneral') || !u.parroquiaId || !canModifyUser}
                         value={u.diaconiaId || ''}
                         onChange={(e) => handleUpdateUserTerritory(u.id, u.parroquiaId, e.target.value)}
                         className={`rounded px-2 py-1 text-xs ${inputBgClass}`}
@@ -109,7 +114,7 @@ export function UserManagementView({
                   </td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex flex-wrap justify-end gap-1.5">
-                      {u.id !== user.uid && !['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(u.email?.toLowerCase()) && (
+                      {canModifyUser && (
                         <>
                           {!isApproved && (
                             <button

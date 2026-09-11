@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 
 export function ReportsView({
   cardBgClass,
@@ -68,6 +68,10 @@ export function ReportsView({
   handleDeleteLevelCertificate,
   handleDeleteCertificate
 }) {
+  const canGenerateLevelCertificates = userRole !== 'catequista';
+  useEffect(() => {
+    if (!canGenerateLevelCertificates && certificateGenerationType === 'nivel') setCertificateGenerationType('asistencia');
+  }, [canGenerateLevelCertificates, certificateGenerationType, setCertificateGenerationType]);
   return (
     <div className="space-y-6">
       <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4`}>
@@ -397,24 +401,20 @@ export function ReportsView({
                   </button>
                   {certificateGenerationOpen && (
                     <div className="border-t border-slate-700 p-4 space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 items-stretch">
                         <select value={certificateGenerationType} onChange={event => setCertificateGenerationType(event.target.value)} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
                           <option value="asistencia">Certificado de asistencia</option>
-                          <option value="nivel">Certificado de nivel</option>
+                          {canGenerateLevelCertificates && <option value="nivel">Certificado de nivel</option>}
                           <option value="carta">Carta de asistencia</option>
                         </select>
                         <input type="date" value={certificateLetterDate} onChange={event => setCertificateLetterDate(event.target.value)} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`} aria-label="Fecha de la carta" />
-                        <div className="flex gap-2">
-                          <button type="button" onClick={() => setSelectedCertificateIds(generationStudents.map(student => student.id))} className="flex-1 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-400">Seleccionar todos</button>
-                          <button type="button" onClick={() => setSelectedCertificateIds([])} className="flex-1 rounded-lg bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-400">Deseleccionar todos</button>
-                        </div>
-                      </div>
-                      <div className="flex justify-end gap-2">
+                        <button type="button" onClick={() => setSelectedCertificateIds(generationStudents.map(student => student.id))} className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-700 dark:text-emerald-400">Seleccionar todos</button>
+                        <button type="button" onClick={() => setSelectedCertificateIds([])} className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-700 dark:text-rose-400">Deseleccionar todos</button>
                         <button type="button" onClick={() => handleExportSelectedCertificatesZip(selectedGroupId)} className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-bold text-white">Exportar ZIP</button>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {generationStudents.length === 0 ? <p className="text-sm text-slate-400">No hay catequizandos en este grupo.</p> : generationStudents.map(student => (
-                          <div key={student.id} className={`${cardBgClass} rounded-xl border p-3 flex items-center justify-between gap-3`}>
+                        {generationStudents.length === 0 ? <p className="text-sm text-slate-400 md:col-span-2">No hay catequizandos en este grupo.</p> : generationStudents.map((student, index) => (
+                          <div key={student.id} className={`${cardBgClass} rounded-xl border p-3 flex items-center justify-between gap-3 ${generationStudents.length % 2 === 1 && index === generationStudents.length - 1 ? 'md:col-start-1 md:col-end-3 md:mx-[25%]' : ''}`}>
                             <label className="flex items-center gap-2 min-w-0 cursor-pointer">
                               <input type="checkbox" checked={selectedCertificateIds.includes(student.id)} onChange={event => setSelectedCertificateIds(prev => event.target.checked ? [...new Set([...prev, student.id])] : prev.filter(id => id !== student.id))} className="rounded text-sky-600" />
                               <span className="truncate text-sm font-semibold">{student.name}</span>
@@ -434,7 +434,7 @@ export function ReportsView({
                   </button>
                   {certificateSearchOpen && (
                     <div className="border-t border-slate-700 p-4 space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                         <input value={certificateSearch} onChange={event => { setCertificateSearch(event.target.value); setCertificatePage(1); }} placeholder="Buscar nombre, grupo o QR" className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} />
                         <select value={certificateSearchType} onChange={event => { setCertificateSearchType(event.target.value); setCertificatePage(1); }} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
                           <option value="all">Todos los certificados</option><option value="asistencia">Asistencia</option><option value="nivel">Nivel</option><option value="carta">Carta</option>
@@ -465,7 +465,8 @@ export function ReportsView({
                               <button
                                 type="button"
                                 onClick={() => {
-                                  if (record.certificateType === 'nivel') {
+                                  if (record.certificateType === 'nivel' && !canGenerateLevelCertificates) return;
+                                  if (record.certificateType === 'nivel' && canGenerateLevelCertificates) {
                                     handleGenerateLevelCertificate(record.groupId, record.studentId);
                                   } else if (record.certificateType === 'carta') {
                                     handleGenerateAttendanceLetter(record.groupId, record.studentId, record.date || new Date().toISOString().split('T')[0], record.attendanceType || 'asistencia');

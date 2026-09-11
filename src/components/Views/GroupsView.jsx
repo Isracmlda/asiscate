@@ -51,6 +51,13 @@ export function GroupsView({
   setEditGroupLevel,
   editGroupYear,
   setEditGroupYear,
+  editGroupDay,
+  setEditGroupDay,
+  editGroupTime,
+  setEditGroupTime,
+  editGroupRoom,
+  setEditGroupRoom,
+  groupScheduleOptions = { days: [], times: [], rooms: [] },
   editGroupCatechists,
   setEditGroupCatechists,
   editGroupVisibleForCatechists,
@@ -61,6 +68,8 @@ export function GroupsView({
   handleDeleteGroup,
   handleDuplicateGroup,
   handleOpenMaintenanceModal,
+  handleExportGroupSchedulePdf,
+  handleExportGroupScheduleImage,
   themeMode,
   mutedTextClass = 'text-slate-400',
   softTextClass = 'text-slate-300',
@@ -104,6 +113,11 @@ export function GroupsView({
           >
             📊 Añadir / Importar Catequizandos
           </button>
+          {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
+            <>
+              <button type="button" onClick={handleExportGroupScheduleImage} className="bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow">📅 Generar horario</button>
+            </>
+          )}
         </div>
       </div>
 
@@ -149,7 +163,6 @@ export function GroupsView({
                     <div className="space-y-4" onClick={(event) => event.stopPropagation()}>
                       <div className="flex justify-between items-center border-b border-slate-700 pb-2">
                         <h4 className="font-bold text-sm text-red-400">Editar Grupo</h4>
-                        <span className="text-xs text-slate-400 font-mono">{group.id}</span>
                       </div>
 
                       <div className="space-y-2">
@@ -188,10 +201,30 @@ export function GroupsView({
                         </select>
                       </div>
 
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <select value={editGroupDay || ''} onChange={event => setEditGroupDay && setEditGroupDay(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                          <option value="">Día...</option>
+                          {(groupScheduleOptions.days || []).map(day => <option key={day} value={day}>{day}</option>)}
+                        </select>
+                        <select value={editGroupTime || ''} onChange={event => setEditGroupTime && setEditGroupTime(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                          <option value="">Horario...</option>
+                          {(groupScheduleOptions.times || []).map(time => <option key={time} value={time}>{time}</option>)}
+                        </select>
+                        <select value={editGroupRoom || ''} onChange={event => setEditGroupRoom && setEditGroupRoom(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                          <option value="">Salón...</option>
+                          {(groupScheduleOptions.rooms || []).map(room => <option key={room} value={room}>{room}</option>)}
+                        </select>
+                      </div>
+
                       <div>
                         <label className={`block text-xs font-bold ${labelTextClass} uppercase mb-2`}>Asignar Catequistas</label>
                         <div className="max-h-40 overflow-y-auto border border-slate-700 rounded-lg p-2 space-y-1">
-                          {allUsers.map(u => (
+                          {allUsers
+                            .filter(u => (
+                              ((u.role === 'catequista' || u.email?.toLowerCase() === 'cmisra2407@gmail.com') && u.diaconiaId === group.diaconiaId) ||
+                              (editGroupCatechists || []).includes(u.id)
+                            ))
+                            .map(u => (
                             <label key={u.id} className="flex items-center gap-2 text-xs sm:text-sm hover:bg-slate-700/30 p-1 rounded">
                               <input
                                 type="checkbox"
@@ -212,7 +245,7 @@ export function GroupsView({
                         </div>
                       </div>
 
-                      {(activeViewMode === 'admin' || activeViewMode === 'coordinador') && (
+                      {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
                         <div className="pt-2 border-t border-slate-700">
                           <label className="flex items-center gap-2 text-xs font-bold text-slate-300 cursor-pointer">
                             <input
@@ -280,6 +313,11 @@ export function GroupsView({
                         <p className={`text-xs mt-2 ${softTextClass}`}>
                           Catequizandos matriculados: {visibleStudents.filter(s => s.groupId === group.id).length}
                         </p>
+                        {(group.scheduleDay || group.scheduleTime || group.room) && (
+                          <p className="text-xs mt-2 text-sky-600 dark:text-sky-300 font-semibold">
+                            🗓️ {group.scheduleDay || 'Sin día'} · {group.scheduleTime || 'Sin horario'} · {group.room || 'Sin salón'}
+                          </p>
+                        )}
                         {group.isVisibleForCatechists === false && (
                           <span className="inline-block mt-2 text-[10px] bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded font-bold">
                             🔒 Oculto para Catequistas
@@ -287,7 +325,7 @@ export function GroupsView({
                         )}
                       </div>
 
-                      {(activeViewMode === 'admin' || activeViewMode === 'coordinador') && (
+                      {(activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') && (
                         <div className="mt-6 flex flex-wrap justify-end gap-2 border-t border-slate-700 pt-4">
                           {typeof handleStartEditGroup === 'function' && (
                             <button
@@ -328,5 +366,3 @@ export function GroupsView({
     </div>
   );
 }
-
-
