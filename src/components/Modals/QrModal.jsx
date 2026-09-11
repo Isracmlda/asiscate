@@ -16,7 +16,7 @@ export function QrModal({
       <div className={`${cardBgClass} rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4`}>
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-bold">{qrModal.title}</h3>
-          <button type="button" onClick={() => { setQrModal(null); setQrCardLoading(false); }} className="bg-red-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold">Cerrar</button>
+          <button type="button" onClick={() => { setQrModal(null); setQrCardLoading(false); }} aria-label="Cerrar" className="bg-rose-700 hover:bg-rose-800 text-white px-2.5 py-1 rounded-lg text-lg font-bold leading-none">✕</button>
         </div>
 
         {qrCardLoading ? (

@@ -314,7 +314,7 @@ export function PaymentsView({
       <div className="order-2 grid grid-cols-1 gap-6">
        {isPaymentModalOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/70 p-4" onMouseDown={event => event.target === event.currentTarget && setIsPaymentModalOpen(false)}>
         <div id="payment-register-form" className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto`}>
-          <div className="flex items-center justify-between mb-4"><h3 className="text-base sm:text-lg font-bold">Registrar pago</h3><button type="button" onClick={() => setIsPaymentModalOpen(false)} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-bold text-white">Cerrar</button></div>
+          <div className="flex items-center justify-between mb-4"><h3 className="text-base sm:text-lg font-bold">Registrar pago</h3><button type="button" onClick={() => setIsPaymentModalOpen(false)} aria-label="Cerrar" className="rounded-lg bg-rose-700 hover:bg-rose-800 px-2.5 py-1 text-lg font-bold leading-none text-white">✕</button></div>
           <form onSubmit={(event) => { handleAddPaymentRecord(event); setIsPaymentModalOpen(false); }} className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
               <select value={paymentForm.groupId} onChange={(event) => setPaymentForm(prev => ({ ...prev, groupId: event.target.value, studentId: '', studentName: '' }))} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>

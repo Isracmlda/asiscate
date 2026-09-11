@@ -19,7 +19,7 @@ export function ScannerModal({
                 ? 'Escanear QR de certificado'
                 : 'Escanear QR de asistencia'}
           </h3>
-          <button type="button" onClick={() => setScannerModal(null)} className="bg-red-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold">Cerrar</button>
+          <button type="button" onClick={() => setScannerModal(null)} aria-label="Cerrar" className="bg-rose-700 hover:bg-rose-800 text-white px-2.5 py-1 rounded-lg text-lg font-bold leading-none">✕</button>
         </div>
         {scannerModal.status === 'ok' ? (
           <div className="text-center p-5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-2">

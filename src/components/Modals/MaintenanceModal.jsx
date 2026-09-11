@@ -45,7 +45,7 @@ export function MaintenanceModal({
             <h3 className="text-xl font-bold">{maintenanceGroup.name}</h3>
             <p className="text-xs text-slate-400">Ciclo {maintenanceGroup.year || '2026-2027'}</p>
           </div>
-          <button onClick={() => { if (handleCloseMaintenanceModal) handleCloseMaintenanceModal(); else if (setMaintenanceGroup) setMaintenanceGroup(null); }} className="bg-red-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold">Cerrar</button>
+          <button onClick={() => { if (handleCloseMaintenanceModal) handleCloseMaintenanceModal(); else if (setMaintenanceGroup) setMaintenanceGroup(null); }} aria-label="Cerrar" className="bg-rose-700 hover:bg-rose-800 text-white px-2.5 py-1 rounded-lg text-lg font-bold leading-none">✕</button>
         </div>
 
         <div className="flex flex-wrap gap-2 border-b border-slate-700 pb-2">

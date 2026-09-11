@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 export function InventoryView({
   cardBgClass,
@@ -20,6 +20,7 @@ export function InventoryView({
   startInventoryItemEdit,
   handleInventoryStockChange,
   handleDeleteInventoryItem,
+  handleDeleteAllInventoryItems,
   handleAddInventoryReservation,
   inventoryReservationForm,
   setInventoryReservationForm,
@@ -39,9 +40,50 @@ export function InventoryView({
   setEditingInventoryAssetId,
   startInventoryAssetEdit,
   handleInventoryAssetStockChange,
-  handleDeleteInventoryAsset
+  handleDeleteInventoryAsset,
+  groupScheduleOptions = { days: [], times: [], rooms: [] }
 }) {
   const [isMaterialModalOpen, setIsMaterialModalOpen] = useState(false);
+  const [isReservationCalendarOpen, setIsReservationCalendarOpen] = useState(false);
+  const reservationCalendarRef = useRef(null);
+  const [reservationCalendarMonth, setReservationCalendarMonth] = useState(() => {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1);
+  });
+  const allowedDays = groupScheduleOptions.days || [];
+  const allowedTimes = groupScheduleOptions.times || [];
+  const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+  const isAllowedReservationDate = (dateValue) => {
+    if (!dateValue) return false;
+    const date = new Date(`${dateValue}T12:00:00`);
+    const today = new Date();
+    const startDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const maximumDate = new Date(today.getFullYear(), today.getMonth() + 1, today.getDate());
+    return date >= startDate && date <= maximumDate && (!allowedDays.length || allowedDays.includes(dayNames[date.getDay()]));
+  };
+  const today = new Date();
+  const calendarMinimumMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const calendarMaximumMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  const canGoPreviousMonth = reservationCalendarMonth > calendarMinimumMonth;
+  const canGoNextMonth = reservationCalendarMonth < calendarMaximumMonth;
+  const calendarMonthDays = new Date(reservationCalendarMonth.getFullYear(), reservationCalendarMonth.getMonth() + 1, 0).getDate();
+  const calendarFirstDay = (new Date(reservationCalendarMonth.getFullYear(), reservationCalendarMonth.getMonth(), 1).getDay() + 6) % 7;
+  const calendarDateValue = (day) => `${reservationCalendarMonth.getFullYear()}-${String(reservationCalendarMonth.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  const selectReservationDate = (dateValue) => {
+    if (!isAllowedReservationDate(dateValue)) return;
+    setInventoryReservationForm(previous => ({ ...previous, date: dateValue }));
+    setIsReservationCalendarOpen(false);
+  };
+  useEffect(() => {
+    if (!isReservationCalendarOpen) return undefined;
+    const handleOutsideClick = (event) => {
+      if (reservationCalendarRef.current && !reservationCalendarRef.current.contains(event.target)) {
+        setIsReservationCalendarOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [isReservationCalendarOpen]);
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -128,9 +170,19 @@ export function InventoryView({
                   })}
             </select>
             <div className="grid grid-cols-2 gap-2">
-              <input type="date" value={inventoryReservationForm.date} onChange={(event) => setInventoryReservationForm(prev => ({ ...prev, date: event.target.value }))} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+              <div ref={reservationCalendarRef} className="relative">
+                <button type="button" onClick={() => setIsReservationCalendarOpen(previous => !previous)} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${inputBgClass}`}>{inventoryReservationForm.date ? new Date(`${inventoryReservationForm.date}T12:00:00`).toLocaleDateString('es-CR') : 'Selecciona una fecha'} <span className="float-right">📅</span></button>
+                {isReservationCalendarOpen && (
+                  <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-xl border border-slate-300 bg-white p-3 text-slate-800 shadow-2xl dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100">
+                    <div className="mb-3 flex items-center justify-between"><button type="button" disabled={!canGoPreviousMonth} onClick={() => canGoPreviousMonth && setReservationCalendarMonth(previous => new Date(previous.getFullYear(), previous.getMonth() - 1, 1))} className="rounded px-2 py-1 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-slate-700">‹</button><strong className="text-sm capitalize">{reservationCalendarMonth.toLocaleDateString('es-CR', { month: 'long', year: 'numeric' })}</strong><button type="button" disabled={!canGoNextMonth} onClick={() => canGoNextMonth && setReservationCalendarMonth(previous => new Date(previous.getFullYear(), previous.getMonth() + 1, 1))} className="rounded px-2 py-1 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-slate-700">›</button></div>
+                    <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-slate-500">{['LU', 'MA', 'MI', 'JU', 'VI', 'SA', 'DO'].map(day => <span key={day}>{day}</span>)}</div>
+                    <div className="mt-1 grid grid-cols-7 gap-1">{Array.from({ length: calendarFirstDay + calendarMonthDays }, (_, index) => { const day = index - calendarFirstDay + 1; if (day < 1) return <span key={`empty-${index}`} />; const dateValue = calendarDateValue(day); const enabled = isAllowedReservationDate(dateValue); const selected = inventoryReservationForm.date === dateValue; return <button key={dateValue} type="button" disabled={!enabled} onClick={() => selectReservationDate(dateValue)} className={`rounded py-1.5 text-xs ${selected ? 'bg-sky-600 text-white' : enabled ? 'hover:bg-sky-100 dark:hover:bg-slate-700' : 'cursor-not-allowed text-slate-300 line-through dark:text-slate-600'}`}>{day}</button>; })}</div>
+                    <div className="mt-2 flex justify-between"><button type="button" onClick={() => { const today = new Date(); setReservationCalendarMonth(new Date(today.getFullYear(), today.getMonth(), 1)); }} className="text-xs text-sky-600">Hoy</button><button type="button" onClick={() => { setInventoryReservationForm(previous => ({ ...previous, date: '' })); setIsReservationCalendarOpen(false); }} className="text-xs text-rose-600">Borrar</button></div>
+                  </div>
+                )}
+              </div>
               <select value={inventoryReservationForm.slot} onChange={(event) => setInventoryReservationForm(prev => ({ ...prev, slot: event.target.value }))} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
-                {['08:00-10:00', '10:30-12:30'].map(slot => <option key={slot} value={slot}>{slot}</option>)}
+                {allowedTimes.map(slot => <option key={slot} value={slot}>{slot}</option>)}
               </select>
             </div>
             {getReservationAssetConfig(inventoryReservationForm.itemId)?.showTogether === true && (
@@ -221,13 +273,13 @@ export function InventoryView({
       {isMaterialModalOpen && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/70 p-4" onMouseDown={event => event.target === event.currentTarget && setIsMaterialModalOpen(false)}>
           <div className={`${cardBgClass} w-full max-w-md rounded-2xl border p-5 shadow-2xl`}>
-            <div className="flex items-center justify-between mb-4"><h3 className="text-lg font-bold">Añadir material faltante</h3><button type="button" onClick={() => setIsMaterialModalOpen(false)} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-bold text-white">Cerrar</button></div>
+            <div className="flex items-center justify-between mb-4"><h3 className="text-lg font-bold">Añadir material faltante</h3><button type="button" onClick={() => setIsMaterialModalOpen(false)} aria-label="Cerrar" className="rounded-lg bg-rose-700 hover:bg-rose-800 px-2.5 py-1 text-lg font-bold leading-none text-white">✕</button></div>
             <form onSubmit={event => { handleAddInventoryItem(event); setIsMaterialModalOpen(false); }} className="space-y-3">
               <input required value={inventoryForm.name} onChange={event => setInventoryForm(prev => ({ ...prev, name: event.target.value }))} placeholder="Nombre del material" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
               <button className="w-full bg-red-800 hover:bg-red-900 text-white font-semibold py-2 rounded-lg text-sm">{editingInventoryItemId ? 'Guardar cambios' : 'Guardar material'}</button>
             </form>
             <div className="mt-5 space-y-2 max-h-72 overflow-y-auto">
-              <div className="flex items-center justify-between"><h4 className="text-sm font-bold">Materiales registrados</h4>{activeViewMode !== 'catequista' && <button type="button" onClick={handleExportInventoryPdf} className="rounded-lg bg-red-800 px-3 py-1.5 text-xs font-bold text-white">Generar PDF</button>}</div>
+              <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-bold">Materiales registrados</h4><div className="flex gap-2">{activeViewMode !== 'catequista' && <button type="button" onClick={handleExportInventoryPdf} className="rounded-lg bg-red-800 px-3 py-1.5 text-xs font-bold text-white">Generar PDF</button>}{activeViewMode !== 'catequista' && visibleInventoryItems.length > 0 && <button type="button" onClick={handleDeleteAllInventoryItems} className="rounded-lg bg-rose-700 px-3 py-1.5 text-xs font-bold text-white">Eliminar todo</button>}</div></div>
               {visibleInventoryItems.length === 0 ? <p className="text-sm text-slate-400">No hay materiales.</p> : visibleInventoryItems.map(item => {
                 const canDeleteItem = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';
                 const canEditItem = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';

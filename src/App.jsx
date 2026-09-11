@@ -100,6 +100,24 @@ export default function App() {
   
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState(null);
+  const [appToasts, setAppToasts] = useState([]);
+  const [appModal, setAppModal] = useState(null);
+
+  const notify = useCallback((message, type = 'info') => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setAppToasts(previous => [...previous, { id, message: String(message), type }]);
+    window.setTimeout(() => setAppToasts(previous => previous.filter(item => item.id !== id)), 3000);
+  }, []);
+
+  const showAppModal = useCallback((message, options = {}) => {
+    setAppModal({ message: String(message), title: options.title || 'Aviso', confirm: options.confirm === true, onConfirm: options.onConfirm });
+  }, []);
+
+  useEffect(() => {
+    const nativeAlert = window.alert;
+    window.alert = (message) => notify(message, 'error');
+    return () => { window.alert = nativeAlert; };
+  }, [notify]);
 
   // Estados para Modal de Onboarding
   const [modalParroquiaId, setModalParroquiaId] = useState('');
@@ -744,6 +762,14 @@ export default function App() {
     setScheduleOptionInputs({ days: '', times: '', rooms: '' });
   }, [effectiveDiaconiaId, groupScheduleOptionsByDiaconia]);
 
+  useEffect(() => {
+    const availableTimes = groupScheduleOptions.times || [];
+    setInventoryReservationForm(previous => ({
+      ...previous,
+      slot: availableTimes.includes(previous.slot) ? previous.slot : (availableTimes[0] || previous.slot)
+    }));
+  }, [groupScheduleOptions.times]);
+
   // Mantiene una diaconía válida para el selector del coordinador general.
   // Si se eliminó la selección o cambió la parroquia disponible, se toma la
   // primera diaconía permitida sin modificar la ubicación del usuario.
@@ -766,13 +792,13 @@ export default function App() {
   const handleSaveInitialTerritory = async (e) => {
     e.preventDefault();
     if (!modalParroquiaId || !modalDiaconiaId) {
-      alert("Debes seleccionar tanto la parroquia como la diaconía.");
+      showAppModal('Debes seleccionar tanto la parroquia como la diaconía.', { title: 'Datos incompletos' });
       return;
     }
 
     const phoneResult = validatePhoneNumber(userPhoneCode, userPhoneNumber);
     if (!phoneResult.valid) {
-      alert(phoneResult.message);
+      showAppModal(phoneResult.message, { title: 'Teléfono inválido' });
       return;
     }
 
@@ -796,6 +822,7 @@ export default function App() {
         phone: phoneResult.formatted
       }));
       await fetchAllData();
+      showAppModal('La configuración se guardó correctamente.', { title: 'Preferencias actualizadas' });
     } catch (error) {
       console.error("Error guardando selección inicial:", error);
       alert("Error al guardar la selección. Intenta nuevamente.");
@@ -806,7 +833,7 @@ export default function App() {
 
   const checkTerritoryConfigured = () => {
     if (isTerritoryPending) {
-      alert("Debes configurar tu Parroquia, Diaconía y Número de Teléfono en tus Preferencias (haz clic en tu usuario en el navbar) para realizar esta acción.");
+      showAppModal("Debes configurar tu Parroquia, Diaconía y Número de Teléfono en tus Preferencias (haz clic en tu usuario en el navbar) para realizar esta acción.", { title: 'Configuración requerida' });
       setUserNameDraft(userData?.name || user?.displayName || '');
       setModalParroquiaId(userData?.parroquiaId || '');
       setModalDiaconiaId(userData?.diaconiaId || '');
@@ -2969,6 +2996,35 @@ ${catechistName}`;
     setInventoryItems(prev => prev.filter(item => item.id !== itemId));
   };
 
+  const handleDeleteAllInventoryItems = async () => {
+    const canDeleteAll = activeViewMode === 'admin' || activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral';
+    if (!canDeleteAll) {
+      alert('No tienes permisos para eliminar materiales faltantes.');
+      return;
+    }
+    const targetItems = visibleInventoryItems.filter(item => !effectiveDiaconiaId || item.diaconiaId === effectiveDiaconiaId);
+    if (!targetItems.length) {
+      alert('No hay materiales faltantes registrados en esta diaconía.');
+      return;
+    }
+    const diaconiaName = diaconias.find(item => item.id === effectiveDiaconiaId)?.name || 'la diaconía seleccionada';
+    showAppModal(`¿Eliminar todos los ${targetItems.length} materiales faltantes de ${diaconiaName}? Esta acción no se puede deshacer.`, {
+      title: 'Confirmar eliminación',
+      confirm: true,
+      onConfirm: async () => {
+        try {
+          await Promise.all(targetItems.map(item => deleteDoc(doc(db, 'inventoryItems', item.id))));
+          const targetIds = new Set(targetItems.map(item => item.id));
+          setInventoryItems(previous => previous.filter(item => !targetIds.has(item.id)));
+          notify('Materiales faltantes eliminados correctamente.', 'success');
+        } catch (error) {
+          console.error('Error eliminando todos los materiales faltantes:', error);
+          notify('No se pudieron eliminar todos los materiales faltantes.', 'error');
+        }
+      }
+    });
+  };
+
   const handleDeleteInventoryAsset = async (assetId) => {
     const asset = inventoryAssets.find(entry => entry.id === assetId);
     if (!asset) return;
@@ -3020,6 +3076,29 @@ ${catechistName}`;
   const handleAddInventoryReservation = async (event) => {
     event.preventDefault();
     if (!inventoryReservationForm.itemId) return;
+    const configuredDays = groupScheduleOptions.days || [];
+    const configuredTimes = groupScheduleOptions.times || [];
+    if (!inventoryReservationForm.date) {
+      alert('Selecciona una fecha válida para la diaconía activa.');
+      return;
+    }
+    const reservationDate = new Date(`${inventoryReservationForm.date}T12:00:00`);
+    const reservationDay = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][reservationDate.getDay()];
+    const todayForReservation = new Date();
+    const minimumReservationDate = new Date(todayForReservation.getFullYear(), todayForReservation.getMonth(), todayForReservation.getDate());
+    const maximumReservationDate = new Date(todayForReservation.getFullYear(), todayForReservation.getMonth() + 1, todayForReservation.getDate());
+    if (reservationDate < minimumReservationDate || reservationDate > maximumReservationDate) {
+      alert('Las reservas solo pueden hacerse desde hoy hasta un mes adelante.');
+      return;
+    }
+    if (configuredDays.length && !configuredDays.includes(reservationDay)) {
+      alert(`Las reservas solo están disponibles los días configurados: ${configuredDays.join(', ')}.`);
+      return;
+    }
+    if (configuredTimes.length && !configuredTimes.includes(inventoryReservationForm.slot)) {
+      alert('Selecciona un horario disponible para la diaconía activa.');
+      return;
+    }
 
     const selectedAssetConfig = getReservationAssetConfig(inventoryReservationForm.itemId);
     const isGrouped = selectedAssetConfig?.showTogether === true;
@@ -3761,18 +3840,25 @@ ${catechistName}`;
   const scheduleSvgToPngBlob = async () => {
     if (!schedulePreviewHtml) return null;
     const renderTarget = document.createElement('div');
-    renderTarget.style.position = 'fixed'; renderTarget.style.left = '-100000px'; renderTarget.style.top = '0'; renderTarget.style.width = '1400px'; renderTarget.style.background = '#f8fafc';
+    renderTarget.style.position = 'absolute'; renderTarget.style.left = '0'; renderTarget.style.top = '0'; renderTarget.style.width = '1400px'; renderTarget.style.background = '#f8fafc'; renderTarget.style.opacity = '1'; renderTarget.style.pointerEvents = 'none'; renderTarget.style.zIndex = '-1';
     const parsedHtml = new DOMParser().parseFromString(schedulePreviewHtml, 'text/html');
-    const styleMarkup = [...parsedHtml.querySelectorAll('style')].map(style => style.outerHTML).join('');
-    renderTarget.innerHTML = `${styleMarkup}<div class="schedule-render-root">${parsedHtml.body?.innerHTML || ''}</div>`;
+    const temporaryStyles = [...parsedHtml.querySelectorAll('style')].map(style => {
+      const styleNode = document.createElement('style');
+      styleNode.textContent = style.textContent;
+      document.head.appendChild(styleNode);
+      return styleNode;
+    });
+    renderTarget.innerHTML = `<div class="schedule-render-root">${parsedHtml.body?.innerHTML || ''}</div>`;
     document.body.appendChild(renderTarget);
     try {
       if (document.fonts?.ready) await document.fonts.ready;
+      await new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
       const dataUrl = await toPng(renderTarget, { pixelRatio: 2, cacheBust: true, backgroundColor: '#f8fafc' });
       const response = await fetch(dataUrl);
       return await response.blob();
     } finally {
       renderTarget.remove();
+      temporaryStyles.forEach(styleNode => styleNode.remove());
     }
   };
 
@@ -4708,6 +4794,7 @@ ${catechistName}`;
             startInventoryItemEdit={startInventoryItemEdit}
             handleInventoryStockChange={handleInventoryStockChange}
             handleDeleteInventoryItem={handleDeleteInventoryItem}
+            handleDeleteAllInventoryItems={handleDeleteAllInventoryItems}
             handleAddInventoryReservation={handleAddInventoryReservation}
             inventoryReservationForm={inventoryReservationForm}
             setInventoryReservationForm={setInventoryReservationForm}
@@ -4728,6 +4815,7 @@ ${catechistName}`;
             startInventoryAssetEdit={startInventoryAssetEdit}
             handleInventoryAssetStockChange={handleInventoryAssetStockChange}
             handleDeleteInventoryAsset={handleDeleteInventoryAsset}
+            groupScheduleOptions={groupScheduleOptionsByDiaconia[effectiveDiaconiaId] || groupScheduleOptions}
           />
         )}
 
@@ -5049,7 +5137,7 @@ ${catechistName}`;
                 <h2 className="text-lg font-bold">Horario de grupos</h2>
                 <p className="text-xs text-slate-500 dark:text-slate-400">Vista previa del horario por salón y hora</p>
               </div>
-              <button type="button" onClick={() => setIsSchedulePreviewOpen(false)} className="rounded-lg bg-rose-700 px-3 py-1.5 text-xs font-bold text-white">Cerrar</button>
+              <button type="button" onClick={() => setIsSchedulePreviewOpen(false)} aria-label="Cerrar" className="rounded-lg bg-rose-700 px-3 py-1.5 text-lg font-bold leading-none text-white hover:bg-rose-800">✕</button>
             </div>
             <div className="flex-1 overflow-auto bg-white p-3">
               <iframe title="Vista previa del horario" srcDoc={schedulePreviewHtml} className="mx-auto h-[70vh] w-full min-w-[720px] border-0" />
@@ -5068,7 +5156,7 @@ ${catechistName}`;
           <div className={`${cardBgClass} rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl border`}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold">Preferencias</h3>
-              <button onClick={() => setIsUserNameModalOpen(false)} className="text-slate-400 hover:text-white text-sm">Cerrar</button>
+              <button onClick={() => setIsUserNameModalOpen(false)} aria-label="Cerrar" className="rounded-lg bg-rose-700 px-2.5 py-1 text-lg font-bold leading-none text-white hover:bg-rose-800">✕</button>
             </div>
 
             <div className="space-y-5">
@@ -5397,7 +5485,7 @@ ${catechistName}`;
           <div className={`${cardBgClass} rounded-2xl w-full max-w-sm flex flex-col shadow-2xl`} style={{ height: 'min(900px, calc(100dvh - 24px))' }}>
             <div className="flex items-center justify-between px-4 pt-4 pb-3 shrink-0">
               <h3 className="text-sm font-bold truncate pr-2">{paymentProofModal.title}</h3>
-              <button type="button" onClick={() => setPaymentProofModal(null)} className="bg-red-900 text-white px-3 py-1.5 rounded-lg text-xs font-bold shrink-0">Cerrar</button>
+              <button type="button" onClick={() => setPaymentProofModal(null)} aria-label="Cerrar" className="bg-rose-700 hover:bg-rose-800 text-white px-2.5 py-1 rounded-lg text-lg font-bold leading-none shrink-0">✕</button>
             </div>
 
             <div className="flex justify-center items-center flex-1 min-h-0 overflow-hidden px-3 pb-2">
@@ -5670,7 +5758,7 @@ ${catechistName}`;
                 onClick={() => setEditingEnrollmentStudent(null)}
                 className="text-slate-400 hover:text-white text-base font-bold px-3 py-1 bg-slate-800 rounded-lg"
               >
-                ✕ Cerrar
+                ✕
               </button>
             </div>
 
@@ -5695,6 +5783,25 @@ ${catechistName}`;
               inputBgClass={inputBgClass}
               themeMode={themeMode}
             />
+          </div>
+        </div>
+      )}
+      <div className="fixed bottom-4 right-4 z-[120] flex w-[min(calc(100vw-2rem),24rem)] flex-col gap-2 pointer-events-none">
+        {appToasts.map(toast => (
+          <div key={toast.id} className={`pointer-events-auto rounded-xl border px-4 py-3 text-sm font-semibold shadow-2xl backdrop-blur-lg ${toast.type === 'success' ? 'border-emerald-300/40 bg-emerald-600/45 text-white' : toast.type === 'warning' ? 'border-amber-300/40 bg-amber-500/45 text-slate-950' : 'border-slate-400/45 bg-slate-900/45 text-white'}`}>
+            {toast.message}
+          </div>
+        ))}
+      </div>
+      {appModal && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center bg-slate-950/70 p-4" onMouseDown={event => event.target === event.currentTarget && setAppModal(null)}>
+          <div className="w-full max-w-md rounded-2xl border border-slate-300 bg-white p-6 text-slate-900 shadow-2xl dark:border-slate-700 dark:bg-slate-900 dark:text-white">
+            <h3 className="mb-3 text-lg font-bold text-slate-900 dark:text-white">{appModal.title}</h3>
+            <p className="whitespace-pre-line text-sm leading-6 text-slate-700 dark:text-slate-200">{appModal.message}</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setAppModal(null)} aria-label={appModal.confirm ? 'Cancelar' : 'Cerrar'} className="rounded-lg bg-rose-700 px-2.5 py-1 text-lg font-bold leading-none text-white hover:bg-rose-800">✕</button>
+              {appModal.confirm && <button type="button" onClick={() => { const action = appModal.onConfirm; setAppModal(null); action?.(); }} className="rounded-lg bg-red-800 px-4 py-2 text-xs font-bold text-white">Aceptar</button>}
+            </div>
           </div>
         </div>
       )}
