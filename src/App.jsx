@@ -209,6 +209,7 @@ export default function App() {
   const [certificateLetterDate, setCertificateLetterDate] = useState(new Date().toISOString().split('T')[0]);
   const [dashboardGroupId, setDashboardGroupId] = useState('');
   const [dashboardDate, setDashboardDate] = useState('');
+  const [dashboardAttendanceType, setDashboardAttendanceType] = useState('all');
   const [dashboardPanelOpen, setDashboardPanelOpen] = useState(false);
   const [certificateGenerationType, setCertificateGenerationType] = useState('asistencia');
   const [certificateSearchType, setCertificateSearchType] = useState('all');
@@ -1600,13 +1601,8 @@ export default function App() {
             type: targetType
           };
         } else {
-          updatedAttendance.push({
-            date: dateStr,
-            status: 'present',
-            present: true,
-            label: cleanedLabel,
-            type: targetType
-          });
+          // Escribir el nombre no debe crear registros ni marcar presentes.
+          return;
         }
 
         await updateDoc(doc(db, 'students', student.id), { attendance: updatedAttendance });
@@ -4185,10 +4181,18 @@ ${catechistName}`;
     .at(-1) || '';
 
   useEffect(() => {
+    const firstVisibleGroupId = visibleGroups[0]?.id || '';
+    setDashboardGroupId(previousGroupId => (
+      previousGroupId && visibleGroups.some(group => group.id === previousGroupId)
+        ? previousGroupId
+        : firstVisibleGroupId
+    ));
+  }, [visibleGroups]);
+
+  useEffect(() => {
     if (!latestAttendanceDate) return;
 
     const timeoutId = window.setTimeout(() => {
-      setDashboardDate(previousDate => previousDate || latestAttendanceDate);
       if (!attendanceDateInitializedRef.current) {
         setAttendanceDate(latestAttendanceDate);
         attendanceDateInitializedRef.current = true;
@@ -4270,13 +4274,22 @@ ${catechistName}`;
 
   const totalCollected = visiblePaymentRecords.reduce((sum, record) => sum + Number(record.amount || 0), 0);
   const totalPending = 0;
+  const dashboardStudentIds = new Set();
   const dashboardAttendanceRecords = visibleStudents.flatMap(student => {
+    const dashboardStudentKey = student.id || `${student.name || student.fullName || ''}|${student.groupId || ''}`;
+    if (dashboardStudentIds.has(dashboardStudentKey)) return [];
+    dashboardStudentIds.add(dashboardStudentKey);
     if (dashboardGroupId && student.groupId !== dashboardGroupId) return [];
-    return (student.attendance || []).filter(record => {
-      const matchesType = (record.type || 'encuentro') === attendanceType;
+    const uniqueRecords = new Map();
+    (student.attendance || []).forEach(record => {
+      const recordType = record.type || 'encuentro';
+      const matchesType = dashboardAttendanceType === 'all' || recordType === dashboardAttendanceType;
       const matchesDate = !dashboardDate || record.date === dashboardDate;
-      return matchesType && matchesDate;
+      if (matchesType && matchesDate) {
+        uniqueRecords.set(`${record.date || ''}|${recordType}`, record);
+      }
     });
+    return Array.from(uniqueRecords.values());
   });
   const dashboardAttendanceStats = {
     total: dashboardAttendanceRecords.length,
@@ -4714,6 +4727,8 @@ ${catechistName}`;
             setAttendanceType={setAttendanceType}
             dashboardGroupId={dashboardGroupId}
             setDashboardGroupId={setDashboardGroupId}
+            dashboardAttendanceType={dashboardAttendanceType}
+            setDashboardAttendanceType={setDashboardAttendanceType}
             userRole={userRole}
             visibleGroups={visibleGroups}
             dashboardDate={dashboardDate}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export function DashboardView({
   userData,
@@ -12,6 +12,8 @@ export function DashboardView({
   setAttendanceType,
   dashboardGroupId,
   setDashboardGroupId,
+  dashboardAttendanceType,
+  setDashboardAttendanceType,
   userRole,
   visibleGroups,
   dashboardDate,
@@ -68,6 +70,17 @@ export function DashboardView({
   selectedGroupForStudent,
   setSelectedGroupForStudent
 }) {
+  const [hoveredDonutSegment, setHoveredDonutSegment] = useState(null);
+  const donutSegments = [
+    { key: 'present', label: 'Presentes', value: dashboardAttendanceStats.present, color: '#10b981' },
+    { key: 'justified', label: 'Justificados', value: dashboardAttendanceStats.justified, color: '#f59e0b' },
+    { key: 'absent', label: 'Ausentes', value: dashboardAttendanceStats.absent, color: '#f43f5e' }
+  ];
+  const donutTotal = dashboardAttendanceStats.total || 0;
+  const donutRadius = 38;
+  const donutCircumference = 2 * Math.PI * donutRadius;
+  let donutOffset = 0;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -107,23 +120,58 @@ export function DashboardView({
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-bold text-slate-300">Consulta de asistencia</p>
-                <span className="text-[11px] text-slate-400 uppercase">{attendanceType === 'misa' ? 'Misa' : 'Encuentro'}</span>
+                <span className="text-[11px] text-slate-400 uppercase">{dashboardAttendanceType === 'all' ? 'Todas' : dashboardAttendanceType === 'misa' ? 'Misa' : 'Encuentro'}</span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <select value={dashboardGroupId} onChange={(event) => setDashboardGroupId(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
                   <option value="">{userRole === 'catequista' ? 'Todos mis grupos' : 'Todos los grupos visibles'}</option>
                   {visibleGroups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+                </select>
+                <select value={dashboardAttendanceType} onChange={(event) => setDashboardAttendanceType(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} aria-label="Tipo de asistencia del gráfico">
+                  <option value="all">Todas</option>
+                  <option value="encuentro">Encuentro</option>
+                  <option value="misa">Misa</option>
                 </select>
                 <input type="date" value={dashboardDate} onChange={(event) => setDashboardDate(event.target.value)} style={browserThemeStyle} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} />
               </div>
 
               <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4 flex flex-col sm:flex-row items-center gap-5">
-                <div className="relative h-32 w-32 shrink-0 rounded-full" style={dashboardDonutStyle}>
-                  <div className={`absolute inset-5 rounded-full flex flex-col items-center justify-center ${themeMode === 'dark' ? 'bg-black' : 'bg-white'}`}>
+                <div className="relative h-32 w-32 shrink-0">
+                  <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90" aria-label="Distribución de asistencia">
+                    <circle cx="50" cy="50" r={donutRadius} fill="none" stroke={themeMode === 'dark' ? '#334155' : '#cbd5e1'} strokeWidth="18" />
+                    {donutSegments.map(segment => {
+                      const segmentLength = donutTotal ? (segment.value / donutTotal) * donutCircumference : 0;
+                      const segmentOffset = -donutOffset;
+                      donutOffset += segmentLength;
+                      return segmentLength > 0 ? (
+                        <circle
+                          key={segment.key}
+                          cx="50"
+                          cy="50"
+                          r={donutRadius}
+                          fill="none"
+                          stroke={segment.color}
+                          strokeWidth="18"
+                          strokeDasharray={`${segmentLength} ${donutCircumference - segmentLength}`}
+                          strokeDashoffset={segmentOffset}
+                          className="cursor-pointer transition-opacity hover:opacity-70"
+                          onMouseEnter={() => setHoveredDonutSegment(segment.key)}
+                          onMouseLeave={() => setHoveredDonutSegment(null)}
+                        >
+                          <title>{`${segment.label}: ${donutTotal ? Math.round((segment.value / donutTotal) * 100) : 0}%`}</title>
+                        </circle>
+                      ) : null;
+                    })}
+                  </svg>
+                  <div className={`pointer-events-none absolute inset-5 rounded-full flex flex-col items-center justify-center ${themeMode === 'dark' ? 'bg-black' : 'bg-white'}`}>
                     <span className="text-2xl font-black">{dashboardAttendanceStats.total}</span>
                     <span className="text-[10px] text-slate-400">registros</span>
                   </div>
+                  {hoveredDonutSegment && (() => {
+                    const segment = donutSegments.find(item => item.key === hoveredDonutSegment);
+                    return segment ? <div className="pointer-events-none absolute -top-2 left-1/2 z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-lg">{segment.label}: {donutTotal ? Math.round((segment.value / donutTotal) * 100) : 0}%</div> : null;
+                  })()}
                 </div>
                 <div className="w-full space-y-2 text-xs text-slate-400">
                   <div className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Presentes</span><span className="font-bold text-emerald-400">{dashboardAttendanceStats.present}</span></div>
@@ -136,7 +184,7 @@ export function DashboardView({
 
             <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-3 sm:p-4">
               <AssistantWidget 
-                attendanceType={attendanceType} 
+                attendanceType={dashboardAttendanceType} 
                 absentRate={absentRate} 
                 userRole={activeViewMode}
                 userName={userData?.fullName || user?.displayName || 'Usuario'}
