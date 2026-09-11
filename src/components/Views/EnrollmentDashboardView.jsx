@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { collection, addDoc, doc, updateDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { jsPDF } from 'jspdf';
@@ -22,7 +22,6 @@ const loadFaviconAsPng = async () => {
 
 export default function EnrollmentDashboardView({
   currentUser,
-  userRole,
   cardBgClass,
   inputBgClass,
   isEnrollmentEnabled,
@@ -276,7 +275,11 @@ export default function EnrollmentDashboardView({
           await Promise.all(chunk.map(student => updateDoc(doc(db, 'students', student.id), { groupId: groupDocRef.id })));
           createdGroups.push({ id: groupDocRef.id, ...newGroupData, studentIds: chunk.map(student => student.id) });
         }
-        if (typeof setGroups === 'function') setGroups(prev => [...prev, ...createdGroups.map(({ studentIds, ...group }) => group)]);
+        if (typeof setGroups === 'function') setGroups(prev => [...prev, ...createdGroups.map(group => {
+          const groupData = { ...group };
+          delete groupData.studentIds;
+          return groupData;
+        })]);
         if (typeof setStudents === 'function') {
           setStudents(prev => prev.map(student => {
             const assignedGroup = createdGroups.find(group => group.studentIds.includes(student.id));

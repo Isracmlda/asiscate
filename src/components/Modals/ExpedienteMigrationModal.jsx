@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { APPS_SCRIPT_URL } from '../../utils/constants';
@@ -12,10 +12,9 @@ export function ExpedienteMigrationModal({
   inputBgClass = 'bg-slate-900',
   onSuccess
 }) {
-  if (!isOpen || !student) return null;
-
+  const sourceStudent = student || {};
   const currentYear = new Date().getFullYear();
-  const [cycle, setCycle] = useState(student.cycle || `${currentYear}-${currentYear + 1}`);
+  const [cycle, setCycle] = useState(sourceStudent.cycle || `${currentYear}-${currentYear + 1}`);
 
   // Archivos
   const [minorIdFile, setMinorIdFile] = useState(null);
@@ -23,9 +22,9 @@ export function ExpedienteMigrationModal({
   const [communionFile, setCommunionFile] = useState(null);
 
   // Pendientes
-  const [minorIdPending, setMinorIdPending] = useState(student.documents?.minorId?.status === 'PENDING');
-  const [baptismPending, setBaptismPending] = useState(student.documents?.bautismo?.status === 'PENDING');
-  const [communionPending, setCommunionPending] = useState(student.documents?.comunion?.status === 'PENDING');
+  const [minorIdPending, setMinorIdPending] = useState(sourceStudent.documents?.minorId?.status === 'PENDING');
+  const [baptismPending, setBaptismPending] = useState(sourceStudent.documents?.bautismo?.status === 'PENDING');
+  const [communionPending, setCommunionPending] = useState(sourceStudent.documents?.comunion?.status === 'PENDING');
 
   // Firma
   const canvasRef = useRef(null);
@@ -33,6 +32,8 @@ export function ExpedienteMigrationModal({
   const [signatureData, setSignatureData] = useState(null);
 
   const [isSaving, setIsSaving] = useState(false);
+
+  if (!isOpen || !student) return null;
 
   // Firma canvas handlers
   const startDrawing = (e) => {

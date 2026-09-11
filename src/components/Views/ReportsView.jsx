@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 
 export function ReportsView({
   cardBgClass,
@@ -36,6 +36,7 @@ export function ReportsView({
   levelCertificateHistory,
   attendanceLetterHistory,
   certificateSearchType,
+  setCertificateSearchType,
   certificateSearch,
   certificateFilters,
   levelCertificateFilters,

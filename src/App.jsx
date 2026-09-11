@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { toPng } from 'html-to-image';
 import { auth, db, googleProvider, microsoftProvider } from './config/firebase';
 import { AssistantWidget } from './components/AssistantWidget';
@@ -8,23 +8,40 @@ import { ScannerModal } from './components/Modals/ScannerModal';
 import { MaintenanceModal } from './components/Modals/MaintenanceModal';
 import { AsisCateLogo } from './components/Shared/AsisCateLogo';
 import { CountryCodeSelect } from './components/Shared/CountryCodeSelect';
-import { DashboardView } from './components/Views/DashboardView';
-import { GroupsView } from './components/Views/GroupsView';
-import { ReportsView } from './components/Views/ReportsView';
-import { InventoryView } from './components/Views/InventoryView';
-import { PaymentsView } from './components/Views/PaymentsView';
-import { UserManagementView } from './components/Views/UserManagementView';
+const DashboardView = lazy(() => import('./components/Views/DashboardView').then(module => ({ default: module.DashboardView })));
+const GroupsView = lazy(() => import('./components/Views/GroupsView').then(module => ({ default: module.GroupsView })));
+const ReportsView = lazy(() => import('./components/Views/ReportsView').then(module => ({ default: module.ReportsView })));
+const InventoryView = lazy(() => import('./components/Views/InventoryView').then(module => ({ default: module.InventoryView })));
+const PaymentsView = lazy(() => import('./components/Views/PaymentsView').then(module => ({ default: module.PaymentsView })));
+const UserManagementView = lazy(() => import('./components/Views/UserManagementView').then(module => ({ default: module.UserManagementView })));
 import { APPS_SCRIPT_URL, levelOptions } from './utils/constants';
-import EnrollmentView from './components/Views/EnrollmentView';
-import EnrollmentDashboardView from './components/Views/EnrollmentDashboardView';
+const EnrollmentView = lazy(() => import('./components/Views/EnrollmentView'));
+const EnrollmentDashboardView = lazy(() => import('./components/Views/EnrollmentDashboardView'));
 import { validatePhoneNumber, COUNTRY_CODES } from './utils/validators';
+import { useInstallPrompt } from './hooks/useInstallPrompt';
+import { useAuthSession } from './hooks/useAuthSession';
+import { useRoleScope } from './hooks/useRoleScope';
+import { useVisibleGroups } from './hooks/useVisibleGroups';
+import { useVisibleStudents } from './hooks/useVisibleStudents';
+import { useVisiblePayments } from './hooks/useVisiblePayments';
+import { useVisibleInventory } from './hooks/useVisibleInventory';
+import { useDashboardAttendance } from './hooks/useDashboardAttendance';
+import { useRealtimeSubscriptions } from './hooks/useRealtimeSubscriptions';
+import { useRoleAccess } from './hooks/useRoleAccess';
+import { usePrimaryDataCache } from './hooks/usePrimaryDataCache';
+import { useInventoryCleanup } from './hooks/useInventoryCleanup';
+import { usePersistedState } from './hooks/usePersistedState';
+import { mapSnapshotDocs, normalizeStudentRecord, sortPaymentRecords } from './services/firestoreDataMappers';
+import { savePaymentRecord } from './services/paymentService';
+import { resolveUserProfile } from './services/userProfileService';
+import { loadXlsx } from './services/spreadsheetService';
+import { hasDuplicateGroup, hasDuplicateReservation, isRecentDuplicatePayment, sameNormalized } from './utils/recordValidation';
 import { 
   signInWithPopup, 
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
   signOut, 
-  onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   doc, 
@@ -34,10 +51,8 @@ import {
   addDoc, 
   getDocs, 
   updateDoc,
-  deleteDoc,
-  onSnapshot
+  deleteDoc
 } from 'firebase/firestore';
-import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 
 const loadFaviconAsPng = async () => {
@@ -91,22 +106,31 @@ const getScheduleGroupLabel = (group) => {
   return name || 'Grupo';
 };
 
+const isAllowedNavbarColor = (hex) => {
+  if (!hex || typeof hex !== 'string') return false;
+  const normalized = hex.replace('#', '');
+  const fullHex = normalized.length === 3 ? normalized.split('').map(ch => ch + ch).join('') : normalized;
+  if (!/^[0-9a-fA-F]{6}$/.test(fullHex)) return false;
+  const r = parseInt(fullHex.slice(0, 2), 16);
+  const g = parseInt(fullHex.slice(2, 4), 16);
+  const b = parseInt(fullHex.slice(4, 6), 16);
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  return brightness < 245;
+};
+
 export default function App() {
-  const [user, setUser] = useState(null);
   const [userData, setUserData] = useState(null);
   const [userRole, setUserRole] = useState(null);
   const [activeViewMode, setActiveViewMode] = useState('catequista'); 
   const [themeMode, setThemeMode] = useState('light'); // 'light' | 'dark'
   const [navbarColor, setNavbarColor] = useState('#7f1d1d');
-  const [loading, setLoading] = useState(true);
   const [isOnline, setIsOnline] = useState(() => navigator.onLine !== false);
   
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState(null);
   const [appToasts, setAppToasts] = useState([]);
   const [appModal, setAppModal] = useState(null);
-  const [installPromptEvent, setInstallPromptEvent] = useState(null);
-  const [isAppInstalled, setIsAppInstalled] = useState(false);
+  const { installPromptEvent, isAppInstalled, installApp } = useInstallPrompt();
 
   const notify = useCallback((message, type = 'info') => {
     const id = `${Date.now()}-${Math.random()}`;
@@ -118,39 +142,10 @@ export default function App() {
     setAppModal({ message: String(message), title: options.title || 'Aviso', confirm: options.confirm === true, onConfirm: options.onConfirm });
   }, []);
 
-  // Captura la invitación nativa del navegador para instalar AsisCate como aplicación.
-  useEffect(() => {
-    const isStandalone = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    setIsAppInstalled(Boolean(isStandalone));
-
-    const handleBeforeInstallPrompt = (event) => {
-      event.preventDefault();
-      setInstallPromptEvent(event);
-    };
-    const handleAppInstalled = () => {
-      setIsAppInstalled(true);
-      setInstallPromptEvent(null);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
-    };
-  }, []);
-
   const handleInstallApp = async () => {
-    if (!installPromptEvent) {
+    const prompted = await installApp();
+    if (!prompted) {
       showAppModal('El navegador todavía no ha habilitado la instalación automática. Abre esta página en Chrome o Edge, espera unos segundos y usa el icono de instalación de la barra de direcciones o el menú “Instalar AsisCate”.', { title: 'Instalar AsisCate' });
-      return;
-    }
-    installPromptEvent.prompt();
-    try {
-      const choice = await installPromptEvent.userChoice;
-      if (choice?.outcome === 'accepted') setIsAppInstalled(true);
-    } finally {
-      setInstallPromptEvent(null);
     }
   };
 
@@ -167,10 +162,6 @@ export default function App() {
   const [userPhoneNumber, setUserPhoneNumber] = useState('');
   const [savingTerritory, setSavingTerritory] = useState(false);
   const [isTerritoryModalSkipped, setIsTerritoryModalSkipped] = useState(false);
-
-  const isTerritoryPending = Boolean(user && userData && (!userData.parroquiaId || !userData.diaconiaId || !userData.phoneNumber));
-  const isUserUnapproved = Boolean(user && userData && userData.approved === false);
-  const isUserInactive = Boolean(user && userData && userData.active === false);
 
   // Datos
   const [isEnrollmentEnabled, setIsEnrollmentEnabled] = useState(true);
@@ -205,7 +196,6 @@ export default function App() {
   const [newGroupDay, setNewGroupDay] = useState('Sábado');
   const [newGroupTime, setNewGroupTime] = useState('');
   const [newGroupRoom, setNewGroupRoom] = useState('');
-  const [schedulePreviewSvg, setSchedulePreviewSvg] = useState('');
   const [schedulePreviewHtml, setSchedulePreviewHtml] = useState('');
   const [isSchedulePreviewOpen, setIsSchedulePreviewOpen] = useState(false);
   const [selectedGroupForStudent, setSelectedGroupForStudent] = useState('');
@@ -225,13 +215,12 @@ export default function App() {
   const diaconiaSelectorModeRef = useRef(null);
   // El coordinador general trabaja como un coordinador de la diaconía
   // seleccionada en el navbar. La ubicación real de su usuario no se cambia.
-  const effectiveDiaconiaId = activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin'
-    ? generalDiaconiaId
-    : userData?.diaconiaId || '';
-  const effectiveParroquiaId = (activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && effectiveDiaconiaId
-    ? diaconias.find(diaconia => diaconia.id === effectiveDiaconiaId)?.parroquiaId || userData?.parroquiaId || ''
-    : userData?.parroquiaId || '';
-  const canManageScheduleOptions = ['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode);
+  const { effectiveDiaconiaId, effectiveParroquiaId, canManageScheduleOptions } = useRoleScope({
+    activeViewMode,
+    userData,
+    diaconias,
+    generalDiaconiaId
+  });
   const [reportStudentIds, setReportStudentIds] = useState(null);
   const [maintenanceGroup, setMaintenanceGroup] = useState(null);
   const [maintenanceMode, setMaintenanceMode] = useState('view');
@@ -259,71 +248,21 @@ export default function App() {
 
 
   const [issuedCertificates, setIssuedCertificates] = useState([]);
-  const [generatedCertificates, setGeneratedCertificates] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asiscate-generated-certificates');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [levelCertificateHistory, setLevelCertificateHistory] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asiscate-level-certificates');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [attendanceLetterHistory, setAttendanceLetterHistory] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asiscate-attendance-letters');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [generatedCertificates, setGeneratedCertificates] = usePersistedState('asiscate-generated-certificates', []);
+  const [levelCertificateHistory, setLevelCertificateHistory] = usePersistedState('asiscate-level-certificates', []);
+  const [attendanceLetterHistory, setAttendanceLetterHistory] = usePersistedState('asiscate-attendance-letters', []);
   const [levelCertificateFilters, setLevelCertificateFilters] = useState({ year: 'all', level: 'all', search: '' });
-  const [inventoryItems, setInventoryItems] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asiscate-inventory');
-      return saved ? JSON.parse(saved) : [
-        { id: 'material-1', name: 'Biblia del catequista', category: 'Material', stock: 6, unit: 'pza' },
-        { id: 'material-2', name: 'Fichas de trabajo', category: 'Papelería', stock: 20, unit: 'pza' }
-      ];
-    } catch {
-      return [
-        { id: 'material-1', name: 'Biblia del catequista', category: 'Material', stock: 6, unit: 'pza' },
-        { id: 'material-2', name: 'Fichas de trabajo', category: 'Papelería', stock: 20, unit: 'pza' }
-      ];
-    }
-  });
-  const [inventoryAssets, setInventoryAssets] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asiscate-inventory-assets');
-      return saved ? JSON.parse(saved) : [
-        { id: 'asset-1', name: 'Micrófono portátil', category: 'Equipo audiovisual', stock: 2, unit: 'unidad', showTogether: false },
-        { id: 'asset-2', name: 'Proyector', category: 'Equipo', stock: 1, unit: 'unidad', showTogether: false }
-      ];
-    } catch {
-      return [
-        { id: 'asset-1', name: 'Micrófono portátil', category: 'Equipo audiovisual', stock: 2, unit: 'unidad', showTogether: false },
-        { id: 'asset-2', name: 'Proyector', category: 'Equipo', stock: 1, unit: 'unidad', showTogether: false }
-      ];
-    }
-  });
-  const [inventoryReservations, setInventoryReservations] = useState(() => {
-    try {
-      const saved = localStorage.getItem('asiscate-inventory-reservations');
-      return saved ? JSON.parse(saved) : [
-        { id: 'demo-res-1', itemId: 'demo-1', itemName: 'Biblia del catequista', reservedBy: 'María', date: new Date().toISOString().split('T')[0], slot: '08:00-10:00', quantity: 1, status: 'confirmado' }
-      ];
-    } catch {
-      return [
-        { id: 'demo-res-1', itemId: 'demo-1', itemName: 'Biblia del catequista', reservedBy: 'María', date: new Date().toISOString().split('T')[0], slot: '08:00-10:00', quantity: 1, status: 'confirmado' }
-      ];
-    }
-  });
+  const [inventoryItems, setInventoryItems] = usePersistedState('asiscate-inventory', () => [
+    { id: 'material-1', name: 'Biblia del catequista', category: 'Material', stock: 6, unit: 'pza' },
+    { id: 'material-2', name: 'Fichas de trabajo', category: 'Papelería', stock: 20, unit: 'pza' }
+  ]);
+  const [inventoryAssets, setInventoryAssets] = usePersistedState('asiscate-inventory-assets', () => [
+    { id: 'asset-1', name: 'Micrófono portátil', category: 'Equipo audiovisual', stock: 2, unit: 'unidad', showTogether: false },
+    { id: 'asset-2', name: 'Proyector', category: 'Equipo', stock: 1, unit: 'unidad', showTogether: false }
+  ]);
+  const [inventoryReservations, setInventoryReservations] = usePersistedState('asiscate-inventory-reservations', () => [
+    { id: 'demo-res-1', itemId: 'demo-1', itemName: 'Biblia del catequista', reservedBy: 'María', date: new Date().toISOString().split('T')[0], slot: '08:00-10:00', quantity: 1, status: 'confirmado' }
+  ]);
   const [inventoryReservationForm, setInventoryReservationForm] = useState({
     itemId: '',
     date: new Date().toISOString().split('T')[0],
@@ -417,172 +356,36 @@ export default function App() {
     document.title = 'AsisCate';
   }, []);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('asiscate-generated-certificates', JSON.stringify(generatedCertificates));
-    } catch (error) {
-      console.warn('No se pudieron guardar los certificados generados:', error);
-    }
-  }, [generatedCertificates]);
+  usePrimaryDataCache({
+    parroquias,
+    diaconias,
+    groups,
+    students,
+    users: allUsers
+  });
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('asiscate-level-certificates', JSON.stringify(levelCertificateHistory));
-    } catch (error) {
-      console.warn('No se pudieron guardar los certificados de nivel:', error);
-    }
-  }, [levelCertificateHistory]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('asiscate-attendance-letters', JSON.stringify(attendanceLetterHistory));
-    } catch (error) {
-      console.warn('No se pudieron guardar las cartas de asistencia:', error);
-    }
-  }, [attendanceLetterHistory]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('asiscate-inventory', JSON.stringify(inventoryItems));
-    } catch (error) {
-      console.warn('No se pudieron guardar los elementos de inventario:', error);
-    }
-  }, [inventoryItems]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('asiscate-inventory-assets', JSON.stringify(inventoryAssets));
-    } catch (error) {
-      console.warn('No se pudieron guardar los activos de inventario:', error);
-    }
-  }, [inventoryAssets]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('asiscate-inventory-reservations', JSON.stringify(inventoryReservations));
-    } catch (error) {
-      console.warn('No se pudieron guardar las reservas de inventario:', error);
-    }
-  }, [inventoryReservations]);
-
-  const cachePrimaryData = useCallback(() => {
-    try {
-      localStorage.setItem('asiscate-parroquias-cache', JSON.stringify(parroquias));
-      localStorage.setItem('asiscate-diaconias-cache', JSON.stringify(diaconias));
-      localStorage.setItem('asiscate-groups-cache', JSON.stringify(groups));
-      localStorage.setItem('asiscate-students-cache', JSON.stringify(students));
-      localStorage.setItem('asiscate-users-cache', JSON.stringify(allUsers));
-    } catch (error) {
-      console.warn('No se pudo guardar la caché local:', error);
-    }
-  }, [parroquias, diaconias, groups, students, allUsers]);
-
-  useEffect(() => {
-    cachePrimaryData();
-  }, [cachePrimaryData]);
-
-  useEffect(() => {
-    if (activeTab !== 'inventario' || !userRole || userRole === 'catequista') return;
-
-    const today = new Date().toISOString().split('T')[0];
-    const oneYearAgo = new Date();
-    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const cutoff = oneYearAgo.toISOString();
-
-    const cleanupId = window.setTimeout(() => {
-      const expiredItems = inventoryItems.filter(item => item.createdAt && new Date(item.createdAt) < new Date(cutoff));
-      const expiredReservations = inventoryReservations.filter(reservation => reservation.date && reservation.date < today);
-      Promise.all([
-        ...expiredItems.map(item => deleteDoc(doc(db, 'inventoryItems', item.id))),
-        ...expiredReservations.map(reservation => deleteDoc(doc(db, 'inventoryReservations', reservation.id)))
-      ]).catch(error => console.warn('No se pudo completar la limpieza de Inventario en Firestore:', error));
-      setInventoryItems(previous => previous.filter(item => !expiredItems.some(expired => expired.id === item.id)));
-      setInventoryReservations(previous => previous.filter(reservation => !expiredReservations.some(expired => expired.id === reservation.id)));
-    }, 0);
-
-    return () => window.clearTimeout(cleanupId);
-  }, [activeTab, userRole]);
+  useInventoryCleanup({
+    activeTab,
+    userRole,
+    inventoryItems,
+    inventoryReservations,
+    setInventoryItems,
+    setInventoryReservations
+  });
 
   const fetchAndResolveUser = async (currentUser) => {
     try {
-      const userDocRef = doc(db, 'users', currentUser.uid);
-      const userDocSnap = await getDoc(userDocRef);
-
-      const targetEmail = currentUser.email ? currentUser.email.toLowerCase() : '';
-      const defaultAdminEmails = ['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'];
-      const isDefaultAdmin = defaultAdminEmails.includes(targetEmail);
-
-      if (userDocSnap.exists()) {
-        const uData = userDocSnap.data();
-        let currentRole = uData.role || 'catequista';
-        const savedTheme = uData.theme || 'light';
-        const savedNavbarColor = uData.navbarColor || '#7f1d1d';
-
-        if (isDefaultAdmin && currentRole !== 'admin') {
-          currentRole = 'admin';
-        }
-
-        const resolvedName = uData.name || currentUser.displayName || 'Usuario';
-
-        await updateDoc(userDocRef, {
-          name: resolvedName,
-          email: currentUser.email || uData.email,
-          role: currentRole
-        });
-        
-        setUserData({ id: currentUser.uid, ...uData, name: resolvedName, role: currentRole, theme: savedTheme, navbarColor: savedNavbarColor });
-        setUserPhoneCode(uData.phoneCode || '+506');
-        setUserPhoneNumber(uData.phoneNumber || '');
-        setModalParroquiaId(uData.parroquiaId || '');
-        setModalDiaconiaId(uData.diaconiaId || '');
-        setThemeMode(savedTheme);
-        if (isAllowedNavbarColor(savedNavbarColor)) {
-          setNavbarColor(savedNavbarColor);
-        }
-        return currentRole;
-      } else {
-        const defaultRole = isDefaultAdmin ? 'admin' : 'catequista';
-
-        // Verificar si el correo está en la lista de autoadmitidos
-        let isPreApproved = isDefaultAdmin;
-        if (!isPreApproved && targetEmail) {
-          try {
-            const allowedDocRef = doc(db, 'allowedEmails', targetEmail);
-            const allowedSnap = await getDoc(allowedDocRef);
-            if (allowedSnap.exists()) {
-              isPreApproved = true;
-              await deleteDoc(allowedDocRef).catch(err => console.warn('No se pudo borrar de allowedEmails:', err));
-            }
-          } catch (allowErr) {
-            console.warn('Error consultando allowedEmails:', allowErr);
-          }
-        }
-
-        const newUserObj = {
-          name: currentUser.displayName || 'Usuario',
-          email: currentUser.email,
-          role: defaultRole,
-          parroquiaId: '',
-          diaconiaId: '',
-          phoneCode: '+506',
-          phoneNumber: '',
-          phone: '',
-          approved: isPreApproved ? true : false,
-          active: true,
-          theme: 'light',
-          navbarColor: '#7f1d1d',
-          createdAt: new Date().toISOString()
-        };
-        await setDoc(userDocRef, newUserObj);
-        setUserData({ id: currentUser.uid, ...newUserObj });
-        setUserPhoneCode('+506');
-        setUserPhoneNumber('');
-        setThemeMode('light');
-        setNavbarColor('#7f1d1d');
-        return defaultRole;
-      }
+      const { profile, role } = await resolveUserProfile(db, currentUser);
+      setUserData(profile);
+      setUserPhoneCode(profile.phoneCode || '+506');
+      setUserPhoneNumber(profile.phoneNumber || '');
+      setModalParroquiaId(profile.parroquiaId || '');
+      setModalDiaconiaId(profile.diaconiaId || '');
+      setThemeMode(profile.theme || 'light');
+      if (isAllowedNavbarColor(profile.navbarColor)) setNavbarColor(profile.navbarColor);
+      return role;
     } catch (error) {
-      console.error("Error resolviendo usuario:", error);
+      console.error('Error resolviendo usuario:', error);
       return 'catequista';
     }
   };
@@ -631,15 +434,15 @@ export default function App() {
       }
 
       const parroquiasSnap = await getDocs(collection(db, 'parroquias'));
-      const nextParroquias = parroquiasSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const nextParroquias = mapSnapshotDocs(parroquiasSnap);
       setParroquias(nextParroquias);
 
       const diaconiasSnap = await getDocs(collection(db, 'diaconias'));
-      const nextDiaconias = diaconiasSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const nextDiaconias = mapSnapshotDocs(diaconiasSnap);
       setDiaconias(nextDiaconias);
 
       const usersSnap = await getDocs(collection(db, 'users'));
-      const nextUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const nextUsers = mapSnapshotDocs(usersSnap);
       setAllUsers(nextUsers);
 
       if (user) {
@@ -651,40 +454,22 @@ export default function App() {
 
       try {
         const allowedEmailsSnap = await getDocs(collection(db, 'allowedEmails'));
-        const nextAllowedEmails = allowedEmailsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const nextAllowedEmails = mapSnapshotDocs(allowedEmailsSnap);
         setAllowedEmails(nextAllowedEmails);
       } catch (e) {
         console.warn('No se pudo cargar allowedEmails:', e);
       }
 
       const groupsSnap = await getDocs(collection(db, 'groups'));
-      const nextGroups = groupsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const nextGroups = mapSnapshotDocs(groupsSnap);
       setGroups(nextGroups);
 
       const studentsSnap = await getDocs(collection(db, 'students'));
-      const nextStudents = studentsSnap.docs.map(d => {
-        const student = d.data();
-        const family = student.family || {};
-        const contacts = [family.guardian, family.mother, family.father].filter(Boolean);
-        const familyEmail = contacts.find(contact => contact.email?.trim())?.email?.trim() || '';
-        const familyPhone = contacts.find(contact => contact.phone1?.trim() || contact.phone?.trim());
-
-        return {
-          id: d.id,
-          ...student,
-          // Los expedientes de Matrículación guardan el contacto dentro de `family`.
-          // Se normaliza para que asistencia y mensajería usen la misma estructura.
-          name: student.name || student.fullName || '',
-          parentEmail: student.parentEmail || familyEmail,
-          parentPhone: student.parentPhone || familyPhone?.phone1?.trim() || familyPhone?.phone?.trim() || ''
-        };
-      });
+      const nextStudents = studentsSnap.docs.map(normalizeStudentRecord);
       setStudents(nextStudents);
 
       const paymentsSnap = await getDocs(collection(db, 'payments'));
-      const nextPaymentRecords = paymentsSnap.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => new Date(b.dateTime || b.date || 0) - new Date(a.dateTime || a.date || 0));
+      const nextPaymentRecords = sortPaymentRecords(mapSnapshotDocs(paymentsSnap));
       setPaymentRecords(nextPaymentRecords);
 
       const inventoryItemsSnap = await getDocs(collection(db, 'inventoryItems'));
@@ -695,12 +480,12 @@ export default function App() {
       oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
 
       const certificatesSnap = await getDocs(collection(db, 'certificates'));
-      const nextCertificates = certificatesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const nextCertificates = mapSnapshotDocs(certificatesSnap);
       setIssuedCertificates(nextCertificates);
 
-      const inventoryDocs = inventoryItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const assetDocs = inventoryAssetsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const reservationDocs = inventoryReservationsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const inventoryDocs = mapSnapshotDocs(inventoryItemsSnap);
+      const assetDocs = mapSnapshotDocs(inventoryAssetsSnap);
+      const reservationDocs = mapSnapshotDocs(inventoryReservationsSnap);
       const expiredMaterials = inventoryDocs.filter(item => item.createdAt && new Date(item.createdAt) < oneYearAgo);
       const expiredReservations = reservationDocs.filter(reservation => reservation.date && reservation.date < today);
 
@@ -735,66 +520,32 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    if (!user) return;
-    try {
-      const unsubCerts = onSnapshot(collection(db, 'certificates'), (snap) => {
-        const certs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-        setIssuedCertificates(certs);
-      }, (error) => {
-        console.warn('Error escuchando certificados en tiempo real:', error);
-      });
-
-      const unsubPayments = onSnapshot(collection(db, 'payments'), (snap) => {
-        const payments = snap.docs
-          .map(d => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => new Date(b.dateTime || b.date || 0) - new Date(a.dateTime || a.date || 0));
-        setPaymentRecords(payments);
-      }, (error) => {
-        console.warn('Error escuchando pagos en tiempo real:', error);
-      });
-
-      const unsubConfig = onSnapshot(doc(db, 'config', 'enrollment'), (docSnap) => {
-        if (docSnap.exists()) {
-          setIsEnrollmentEnabled(docSnap.data().enabled !== false);
-        }
-      }, (error) => {
-        console.warn('Error escuchando estado de matrícula:', error);
-      });
-
-      return () => {
-        unsubCerts();
-        unsubPayments();
-        unsubConfig();
-      };
-    } catch (err) {
-      console.warn('No se pudo suscribir a Firestore:', err);
+  const { user, loading, setLoading } = useAuthSession({
+    resolveUser: fetchAndResolveUser,
+    loadData: fetchAllData,
+    onResolved: (resolvedRole) => {
+      setUserRole(resolvedRole);
+      const initialView = resolvedRole === 'admin'
+        ? 'admin'
+        : (resolvedRole === 'coordinadorGeneral'
+          ? 'coordinadorGeneral'
+          : (resolvedRole === 'coordinador' ? 'coordinador' : 'catequista'));
+      setActiveViewMode(initialView);
+    },
+    onSignedOut: () => {
+      setUserData(null);
+      setUserRole(null);
+      setGroups([]);
+      setStudents([]);
+      setAllUsers([]);
     }
-  }, [user]);
+  });
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setLoading(true);
-      if (currentUser) {
-        setUser(currentUser);
-        const resolvedRole = await fetchAndResolveUser(currentUser);
-        setUserRole(resolvedRole);
-        
-        const initialView = resolvedRole === 'admin' ? 'admin' : (resolvedRole === 'coordinadorGeneral' ? 'coordinadorGeneral' : (resolvedRole === 'coordinador' ? 'coordinador' : 'catequista'));
-        setActiveViewMode(initialView);
-        await fetchAllData();
-      } else {
-        setUser(null);
-        setUserData(null);
-        setUserRole(null);
-        setGroups([]);
-        setStudents([]);
-        setAllUsers([]);
-      }
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, [fetchAllData]);
+  useRealtimeSubscriptions({ user, setIssuedCertificates, setPaymentRecords, setIsEnrollmentEnabled });
+
+  const isTerritoryPending = Boolean(user && userData && (!userData.parroquiaId || !userData.diaconiaId || !userData.phoneNumber));
+  const isUserUnapproved = Boolean(user && userData && userData.approved === false);
+  const isUserInactive = Boolean(user && userData && userData.active === false);
 
   useEffect(() => {
     const selectedOptions = effectiveDiaconiaId
@@ -875,28 +626,6 @@ export default function App() {
     }
   };
 
-  const checkTerritoryConfigured = () => {
-    if (isTerritoryPending) {
-      showAppModal("Debes configurar tu Parroquia, Diaconía y Número de Teléfono en tus Preferencias (haz clic en tu usuario en el navbar) para realizar esta acción.", { title: 'Configuración requerida' });
-      setUserNameDraft(userData?.name || user?.displayName || '');
-      setModalParroquiaId(userData?.parroquiaId || '');
-      setModalDiaconiaId(userData?.diaconiaId || '');
-      setUserPhoneCode(userData?.phoneCode || '+506');
-      setUserPhoneNumber(userData?.phoneNumber || '');
-      setIsUserNameModalOpen(true);
-      return false;
-    }
-    if (isUserUnapproved) {
-      alert("Tu cuenta aún está pendiente de aprobación por parte del Coordinador o Administrador. No puedes realizar ediciones hasta ser aprobado.");
-      return false;
-    }
-    if (isUserInactive) {
-      alert("Tu cuenta se encuentra inactiva. Contacta al Coordinador o Administrador para reactivarla.");
-      return false;
-    }
-    return true;
-  };
-
   const handleSaveUserName = async () => {
     if (!user) return;
 
@@ -961,18 +690,6 @@ export default function App() {
     const g = Math.max(0, Math.min(255, Math.round(((num >> 8) & 255) * (1 - amount))));
     const b = Math.max(0, Math.min(255, Math.round((num & 255) * (1 - amount))));
     return `#${[r, g, b].map(value => value.toString(16).padStart(2, '0')).join('')}`;
-  };
-
-  const isAllowedNavbarColor = (hex) => {
-    if (!hex || typeof hex !== 'string') return false;
-    const normalized = hex.replace('#', '');
-    const fullHex = normalized.length === 3 ? normalized.split('').map(ch => ch + ch).join('') : normalized;
-    if (!/^[0-9a-fA-F]{6}$/.test(fullHex)) return false;
-    const r = parseInt(fullHex.slice(0, 2), 16);
-    const g = parseInt(fullHex.slice(2, 4), 16);
-    const b = parseInt(fullHex.slice(4, 6), 16);
-    const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-    return brightness < 245;
   };
 
   const handleNavbarColorChange = (nextColor) => {
@@ -1144,40 +861,6 @@ export default function App() {
     }
   };
 
-  const handleSaveGroupScheduleOptions = async (event) => {
-    event.preventDefault();
-    const normalize = (values) => [...new Set(String(values || '').split(',').map(value => value.trim()).filter(Boolean))];
-    const nextOptions = {
-      days: normalize(scheduleOptionsDraft.days),
-      times: normalize(scheduleOptionsDraft.times),
-      rooms: normalize(scheduleOptionsDraft.rooms)
-    };
-    if (!nextOptions.days.length || !nextOptions.times.length || !nextOptions.rooms.length) {
-      alert('Debes conservar al menos una opción de día, horario y salón.');
-      return;
-    }
-    const targetDiaconiaId = effectiveDiaconiaId || userData?.diaconiaId || '';
-    if (!targetDiaconiaId) {
-      alert('Selecciona una diaconía antes de guardar sus horarios y salones.');
-      return;
-    }
-    try {
-      await setDoc(doc(db, 'diaconiaSchedules', targetDiaconiaId), {
-        ...nextOptions,
-        diaconiaId: targetDiaconiaId,
-        updatedAt: new Date().toISOString(),
-        updatedBy: user?.uid || ''
-      }, { merge: true });
-      setGroupScheduleOptionsByDiaconia(previous => ({ ...previous, [targetDiaconiaId]: nextOptions }));
-      setGroupScheduleOptions(nextOptions);
-      setScheduleOptionsDraft(nextOptions);
-      alert('Opciones guardadas para la diaconía seleccionada.');
-    } catch (error) {
-      console.error('Error guardando opciones de horarios:', error);
-      alert('No se pudieron guardar las opciones de horarios.');
-    }
-  };
-
   const persistScheduleOptions = async (nextOptions) => {
     const targetDiaconiaId = effectiveDiaconiaId || userData?.diaconiaId || '';
     if (!targetDiaconiaId) {
@@ -1260,6 +943,11 @@ export default function App() {
     const groupDiaconia = (activeViewMode === 'coordinadorGeneral'
       ? effectiveDiaconiaId
       : userData?.diaconiaId || newGroupDiaconia || (diaconias[0]?.id || ''));
+
+    if (hasDuplicateGroup(groups, { name: newGroupName, year: newGroupYear || '2026-2027', diaconiaId: groupDiaconia })) {
+      alert('Ya existe un grupo con ese nombre en el mismo ciclo y diaconía.');
+      return;
+    }
 
     try {
       const groupData = {
@@ -1409,6 +1097,11 @@ export default function App() {
 
     const groupObj = groups.find(g => g.id === selectedGroupForStudent);
 
+    if (students.some(student => student.groupId === selectedGroupForStudent && sameNormalized(student.name, newStudentName))) {
+      alert('Ya existe un catequizando con ese nombre en este grupo.');
+      return;
+    }
+
     try {
       const studentData = {
         name: newStudentName.trim(),
@@ -1527,6 +1220,7 @@ export default function App() {
     if (!file) return;
 
     try {
+      const XLSX = await loadXlsx();
       const reader = new FileReader();
 
       reader.onload = (evt) => {
@@ -1554,7 +1248,8 @@ export default function App() {
     }
   };
 
-  const handleDownloadStudentTemplate = () => {
+  const handleDownloadStudentTemplate = async () => {
+    const XLSX = await loadXlsx();
     const worksheet = XLSX.utils.aoa_to_sheet([
       ['Nombre Catequizando', 'Correo del Encargado', 'Número Telefónico del Encargado'],
       ['Ejemplo: Ana Pérez', 'encargado@correo.com', '88888888']
@@ -1957,7 +1652,7 @@ export default function App() {
 
   const getAttendanceStatus = (student, dateStr, targetType = attendanceType) => {
     if (!student.attendance) return null;
-    let record = null;
+    let record;
 
     if (targetType === 'all') {
       record = student.attendance.find(a => a.date === dateStr && (a.type || 'encuentro') === 'encuentro')
@@ -1973,7 +1668,7 @@ export default function App() {
 
   const getAttendanceLabel = (studentList, dateStr, targetType = attendanceType) => {
     for (const st of studentList) {
-      let rec = null;
+      let rec;
 
       if (targetType === 'all') {
         rec = (st.attendance || []).find(a => a.date === dateStr && (a.type || 'encuentro') === 'encuentro')
@@ -3017,6 +2712,16 @@ ${catechistName}`;
       expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
     };
 
+    const duplicateMaterial = inventoryItems.some(item =>
+      item.id !== editingInventoryItemId &&
+      String(item.diaconiaId || '') === String(payload.diaconiaId || '') &&
+      sameNormalized(item.name, payload.name)
+    );
+    if (duplicateMaterial) {
+      alert('Ya existe un material con ese nombre en esta diaconía.');
+      return;
+    }
+
     if (editingInventoryItemId) {
       const updatedItem = { id: editingInventoryItemId, ...payload };
       await setDoc(doc(db, 'inventoryItems', editingInventoryItemId), payload, { merge: true });
@@ -3235,10 +2940,18 @@ ${catechistName}`;
     };
 
     if (editingInventoryReservationId) {
+      if (hasDuplicateReservation(inventoryReservations, reservationPayload, editingInventoryReservationId)) {
+        alert('Ya existe una reserva igual para ese activo, fecha, horario y usuario.');
+        return;
+      }
       await setDoc(doc(db, 'inventoryReservations', editingInventoryReservationId), reservationPayload, { merge: true });
       setInventoryReservations(prev => prev.map(reservation => reservation.id === editingInventoryReservationId ? { ...reservation, ...reservationPayload } : reservation));
       setEditingInventoryReservationId(null);
     } else {
+      if (hasDuplicateReservation(inventoryReservations, reservationPayload)) {
+        alert('Ya existe una reserva igual para ese activo, fecha, horario y usuario.');
+        return;
+      }
       const reservationId = `inventory-res-${Date.now()}`;
       await setDoc(doc(db, 'inventoryReservations', reservationId), reservationPayload);
       const newReservation = { id: reservationId, ...reservationPayload };
@@ -3391,8 +3104,13 @@ ${catechistName}`;
       withoutMatricula: Boolean(paymentForm.withoutMatricula)
     };
 
+    if (isRecentDuplicatePayment(paymentRecords, newRecord)) {
+      alert('Este pago parece haberse registrado recientemente. Verifica el historial antes de repetirlo.');
+      return;
+    }
+
     try {
-      await setDoc(doc(db, 'payments', newRecord.id), newRecord);
+      await savePaymentRecord(db, newRecord);
       setPaymentRecords(prev => [newRecord, ...prev.filter(record => record.id !== newRecord.id)]);
       setPaymentForm({
         groupId: '',
@@ -3463,13 +3181,13 @@ ${catechistName}`;
     const timeText = dateValue.toLocaleTimeString('es-CR', { hour: '2-digit', minute: '2-digit', hour12: true });
     const issuedTo = record.invoiceName || record.studentName || 'Sin matrícula';
     const totalText = formatCRC(record.amount || 0);
-    let qrUrl = '';
+    let qrUrl;
     try {
       qrUrl = await buildPaymentQrDataUrl(record);
     } catch {
       qrUrl = buildPaymentProofQrUrl(record);
     }
-    let logoUrl = '';
+    let logoUrl;
     try {
       logoUrl = await loadFaviconAsPng();
     } catch {
@@ -3962,31 +3680,6 @@ ${catechistName}`;
     setIsSchedulePreviewOpen(true);
   };
 
-  const handleExportGroupScheduleImage = async (cycleFilter = '') => {
-    const scheduledGroups = visibleGroups.filter(group => (
-      (!cycleFilter || String(group.year || '').trim() === cycleFilter) &&
-      group.scheduleDay && group.scheduleTime && group.room
-    ));
-    if (!scheduledGroups.length) { alert('No hay grupos con horario y salón asignados.'); return; }
-    const levelStyles = { 'Cate-Kinder': ['#16a34a', '#ffffff'], 'Primer Nivel': ['#2563eb', '#ffffff'], 'Segundo Nivel': ['#7c3aed', '#ffffff'], 'Tercer Nivel (Primera Comunión)': ['#ffffff', '#111827'], 'Cuarto Nivel': ['#facc15', '#ffffff'], 'Quinto Nivel': ['#f97316', '#ffffff'], 'Sexto Nivel': ['#7c2d12', '#ffffff'], 'Septimo Nivel': ['#38bdf8', '#ffffff'], 'Confirma': ['#dc2626', '#ffffff'] };
-    const days = [...new Set(scheduledGroups.map(group => group.scheduleDay))];
-    const dayOrder = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']; days.sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
-    const left = 280; const timeWidth = 360; const rowHeight = 88; const sectionHeight = 36; const maxTimes = Math.max(...days.map(day => new Set(scheduledGroups.filter(group => group.scheduleDay === day).map(group => group.scheduleTime)).size), 1); const width = Math.max(720, left + maxTimes * timeWidth);
-    const escapeXml = (value) => String(value || '').replace(/[<>&"']/g, char => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char]));
-    let cursorY = 0; let sections = '';
-    days.forEach(day => {
-      const dayGroups = scheduledGroups.filter(group => group.scheduleDay === day); const times = [...new Set(dayGroups.map(group => group.scheduleTime))]; const rooms = [...new Set(dayGroups.map(group => group.room))]; const sectionWidth = left + times.length * timeWidth;
-      sections += `<rect x="0" y="${cursorY}" width="${width}" height="62" rx="18" fill="#7f1d1d"/><text x="28" y="40" font-family="Arial" font-size="31" font-weight="700" fill="#ffffff">Horario de grupos · ${escapeXml(day)}</text>`;
-      sections += `<rect x="0" y="${cursorY + 62}" width="${left}" height="45" fill="#b91c1c"/><text x="${left / 2}" y="${cursorY + 91}" text-anchor="middle" font-family="Arial" font-size="22" font-weight="700" fill="#ffffff">Salón</text>`;
-      times.forEach((time, colIndex) => { const x = left + colIndex * timeWidth; sections += `<rect x="${x}" y="${cursorY + 62}" width="${timeWidth}" height="45" fill="#b91c1c"/><text x="${x + timeWidth / 2}" y="${cursorY + 91}" text-anchor="middle" font-family="Arial" font-size="21" font-weight="700" fill="#ffffff">${escapeXml(time)}</text>`; });
-      rooms.forEach((room, rowIndex) => { const y = cursorY + 107 + rowIndex * rowHeight; sections += `<rect x="0" y="${y}" width="${left}" height="${rowHeight}" fill="#b91c1c"/><text x="16" y="${y + 51}" font-family="Arial" font-size="20" font-weight="700" fill="#ffffff">${escapeXml(room)}</text>`; times.forEach((time, colIndex) => { const x = left + colIndex * timeWidth; const cellGroups = dayGroups.filter(group => group.room === room && group.scheduleTime === time); sections += `<rect x="${x}" y="${y}" width="${timeWidth}" height="${rowHeight}" fill="#f8fafc" stroke="#cbd5e1"/>`; const blockHeight = rowHeight / Math.max(cellGroups.length, 1); cellGroups.forEach((group, groupIndex) => { const style = levelStyles[group.level] || ['#475569', '#ffffff']; const blockY = y + groupIndex * blockHeight; sections += `<rect x="${x + 6}" y="${blockY + 5}" width="${timeWidth - 12}" height="${blockHeight - 10}" rx="12" fill="${style[0]}"/><text x="${x + timeWidth / 2}" y="${blockY + blockHeight / 2 + 7}" text-anchor="middle" font-family="Arial" font-size="18" font-weight="700" fill="${style[1]}">${escapeXml(getScheduleGroupLabel(group))}</text>`; }); }); }); cursorY += 107 + rooms.length * rowHeight + sectionHeight;
-    });
-    const height = cursorY;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="#ffffff"/>${sections}</svg>`;
-    setSchedulePreviewSvg(svg);
-    setIsSchedulePreviewOpen(true);
-  };
-
   const scheduleSvgToPngBlob = async () => {
     if (!schedulePreviewHtml) return null;
     const renderTarget = document.createElement('div');
@@ -4198,28 +3891,21 @@ ${catechistName}`;
     }
   };
 
-  const visibleGroups = groups.filter(g => {
-    if (activeViewMode === 'admin') return !effectiveDiaconiaId || g.diaconiaId === effectiveDiaconiaId;
-    if (activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') {
-      return Boolean(effectiveDiaconiaId) && g.diaconiaId === effectiveDiaconiaId;
-    }
-    
-    // Vista Catequista: Debe estar asignado Y el grupo debe ser visible para catequistas
-    const isAssigned = Array.isArray(g.catechistIds) ? g.catechistIds.includes(user?.uid) : g.catechistId === user?.uid;
-    const isVisible = g.isVisibleForCatechists !== false;
-    return isAssigned && isVisible;
+  const visibleGroups = useVisibleGroups({
+    groups,
+    activeViewMode,
+    effectiveDiaconiaId,
+    userId: user?.uid
   });
 
   const visibleGroupIds = visibleGroups.map(g => g.id);
 
-  const visibleStudents = activeViewMode === 'admin' && !effectiveDiaconiaId
-    ? students
-    : students.filter(s => visibleGroupIds.includes(s.groupId));
-
-  const latestAttendanceDate = visibleStudents
-    .flatMap(student => (student.attendance || []).map(record => record.date).filter(Boolean))
-    .sort()
-    .at(-1) || '';
+  const { visibleStudents, latestAttendanceDate } = useVisibleStudents({
+    students,
+    visibleGroupIds,
+    activeViewMode,
+    effectiveDiaconiaId
+  });
 
   useEffect(() => {
     const firstVisibleGroupId = visibleGroups[0]?.id || '';
@@ -4244,127 +3930,43 @@ ${catechistName}`;
   }, [latestAttendanceDate]);
 
   const currentUserKey = user?.uid || userData?.id || userData?.fullName || 'system';
-  const inventoryDateFilteredItems = inventoryItems.filter(item => {
-    const itemDate = item.date || item.createdAt?.split('T')[0] || '';
-    if (inventoryDateFilters.dateFrom && itemDate < inventoryDateFilters.dateFrom) return false;
-    if (inventoryDateFilters.dateTo && itemDate > inventoryDateFilters.dateTo) return false;
-    return true;
-  });
-  const visibleInventoryItems = activeViewMode === 'admin' && !effectiveDiaconiaId
-    ? inventoryDateFilteredItems
-    : inventoryDateFilteredItems.filter(item => item.diaconiaId === effectiveDiaconiaId);
-  const visibleInventoryAssets = activeViewMode === 'admin' && !effectiveDiaconiaId
-    ? inventoryAssets
-    : inventoryAssets.filter(asset => {
-        const owner = allUsers.find(item => item.id === asset.createdBy || item.uid === asset.createdBy);
-        return (asset.diaconiaId || owner?.diaconiaId) === effectiveDiaconiaId;
-      });
-  const visibleInventoryReservations = activeViewMode === 'admin' && !effectiveDiaconiaId
-    ? inventoryReservations
-    : inventoryReservations.filter(reservation => {
-        const reservationAssetId = String(reservation.itemId || '');
-        const parentAssetId = reservationAssetId.split('__unit__')[0];
-        const asset = inventoryAssets.find(item => item.id === reservationAssetId || item.id === parentAssetId);
-        const owner = asset && allUsers.find(item => item.id === asset.createdBy || item.uid === asset.createdBy);
-        return (reservation.diaconiaId || asset?.diaconiaId || owner?.diaconiaId) === effectiveDiaconiaId;
-      });
-  const displayInventoryAssets = visibleInventoryAssets.flatMap(asset => {
-    const isGrouped = asset.showTogether === true;
-    if (isGrouped || Number(asset.stock || 0) <= 1) return [{ ...asset, showTogether: isGrouped }];
-    return Array.from({ length: Number(asset.stock || 0) }, (_, index) => ({
-      ...asset,
-      id: `${asset.id}__unit__${index + 1}`,
-      name: `${asset.name} #${index + 1}`,
-      stock: 1,
-      parentAssetId: asset.id,
-      showTogether: false
-    }));
+  const { inventoryDateFilteredItems, visibleInventoryItems, visibleInventoryAssets, visibleInventoryReservations, displayInventoryAssets } = useVisibleInventory({
+    inventoryItems,
+    inventoryAssets,
+    inventoryReservations,
+    inventoryDateFilters,
+    allUsers,
+    activeViewMode,
+    effectiveDiaconiaId
   });
 
-  const visiblePaymentRecords = paymentRecords.filter(record => {
-    if (activeViewMode === 'admin') {
-      if (!effectiveDiaconiaId) return true;
-      const group = groups.find(g => g.id === record.groupId);
-      return group?.diaconiaId === effectiveDiaconiaId || record.diaconiaId === effectiveDiaconiaId;
-    }
-    if (activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') {
-      const group = groups.find(g => g.id === record.groupId);
-      return record.createdBy === currentUserKey || (group && group.diaconiaId === effectiveDiaconiaId);
-    }
-    // Catequista: únicamente pagos de grupos que tiene asignados y visibles.
-    const isAssignedGroup = record.groupId && visibleGroupIds.includes(record.groupId);
-    return Boolean(isAssignedGroup);
+  const { visiblePaymentRecords, filteredPaymentRecords, paginatedPaymentRecords, paymentPageSize, paymentTotalPages, totalCollected } = useVisiblePayments({
+    paymentRecords,
+    paymentFilters,
+    paymentCurrentPage,
+    groups,
+    activeViewMode,
+    effectiveDiaconiaId,
+    currentUserKey,
+    visibleGroupIds
   });
-
-  const filteredPaymentRecords = visiblePaymentRecords.filter(record => {
-    const matchesGroup = paymentFilters.groupId === 'all' || record.groupId === paymentFilters.groupId;
-    const recordDate = record.date || record.dateTime?.split('T')[0] || '';
-    const matchesDate = !paymentFilters.date || recordDate === paymentFilters.date;
-    const receiptNum = String(record.id || '').replace(/\D/g, '').slice(-6) || String(record.id || '').slice(-6);
-    const searchTarget = `${record.studentName || ''} ${record.invoiceName || ''} ${record.concept || ''} ${record.id || ''} ${receiptNum}`.toLowerCase();
-    const matchesSearch = !paymentFilters.search || searchTarget.includes(paymentFilters.search.toLowerCase());
-    return matchesGroup && matchesDate && matchesSearch;
+  const { dashboardAttendanceRecords, dashboardAttendanceStats, absentRate, dashboardDonutStyle } = useDashboardAttendance({
+    visibleStudents,
+    dashboardGroupId,
+    dashboardAttendanceType,
+    dashboardDate
   });
-
-  const paymentPageSize = 10;
-  const paymentTotalPages = Math.max(1, Math.ceil(filteredPaymentRecords.length / paymentPageSize));
-  const paginatedPaymentRecords = filteredPaymentRecords.slice(
-    (paymentCurrentPage - 1) * paymentPageSize,
-    paymentCurrentPage * paymentPageSize
-  );
-
-  const totalCollected = visiblePaymentRecords.reduce((sum, record) => sum + Number(record.amount || 0), 0);
-  const totalPending = 0;
-  const dashboardStudentIds = new Set();
-  const dashboardAttendanceRecords = visibleStudents.flatMap(student => {
-    const dashboardStudentKey = student.id || `${student.name || student.fullName || ''}|${student.groupId || ''}`;
-    if (dashboardStudentIds.has(dashboardStudentKey)) return [];
-    dashboardStudentIds.add(dashboardStudentKey);
-    if (dashboardGroupId && student.groupId !== dashboardGroupId) return [];
-    const uniqueRecords = new Map();
-    (student.attendance || []).forEach(record => {
-      const recordType = record.type || 'encuentro';
-      const matchesType = dashboardAttendanceType === 'all' || recordType === dashboardAttendanceType;
-      const matchesDate = !dashboardDate || record.date === dashboardDate;
-      if (matchesType && matchesDate) {
-        uniqueRecords.set(`${record.date || ''}|${recordType}`, record);
-      }
-    });
-    return Array.from(uniqueRecords.values());
-  });
-  const dashboardAttendanceStats = {
-    total: dashboardAttendanceRecords.length,
-    present: dashboardAttendanceRecords.filter(record => (record.status || (record.present ? 'present' : 'absent')) === 'present').length,
-    justified: dashboardAttendanceRecords.filter(record => (record.status || (record.present ? 'present' : 'absent')) === 'justified').length,
-    absent: dashboardAttendanceRecords.filter(record => (record.status || (record.present ? 'present' : 'absent')) === 'absent').length
-  };
-  const absentRate = dashboardAttendanceStats.total
-    ? Math.round((dashboardAttendanceStats.absent / dashboardAttendanceStats.total) * 100)
-    : 0;
-  const dashboardDonutStyle = dashboardAttendanceStats.total
-    ? { background: `conic-gradient(#10b981 0 ${dashboardAttendanceStats.present / dashboardAttendanceStats.total * 100}%, #f59e0b ${dashboardAttendanceStats.present / dashboardAttendanceStats.total * 100}% ${(dashboardAttendanceStats.present + dashboardAttendanceStats.justified) / dashboardAttendanceStats.total * 100}%, #f43f5e ${(dashboardAttendanceStats.present + dashboardAttendanceStats.justified) / dashboardAttendanceStats.total * 100}% 100%)` }
-    : { background: 'conic-gradient(#475569 0 100%)' };
 
   
 
-  const managedUsers = activeViewMode === 'coordinadorGeneral'
-    ? allUsers.filter(u => (
-        (u.role === 'catequista' || (u.role === 'admin' && u.email?.toLowerCase() !== 'asiscate.elcarmen@gmail.com')) &&
-        u.diaconiaId === effectiveDiaconiaId
-      ))
-    : activeViewMode === 'coordinador' || userRole === 'coordinador'
-    ? allUsers.filter(u => (
-        (u.role === 'catequista' || (u.role === 'admin' && u.email?.toLowerCase() !== 'asiscate.elcarmen@gmail.com')) &&
-        u.diaconiaId === effectiveDiaconiaId
-      ))
-    : userRole === 'coordinadorGeneral'
-      ? allUsers.filter(u => u.parroquiaId === userData?.parroquiaId)
-      : allUsers;
-  const legacyPanelEnabled = userRole === '__legacy__';
-  const canAccessEnrollment = isEnrollmentEnabled && userData?.canEnroll !== false;
-  const canAccessEnrollmentDashboard = ['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode);
-  const canAccessUserManagement = canAccessEnrollmentDashboard;
-  const showPreferencesMenu = canManageScheduleOptions;
+  const {
+    managedUsers,
+    legacyPanelEnabled,
+    canAccessEnrollment,
+    canAccessEnrollmentDashboard,
+    canAccessUserManagement,
+    showPreferencesMenu
+  } = useRoleAccess({ allUsers, activeViewMode, userRole, userData, effectiveDiaconiaId, isEnrollmentEnabled });
 
   if (loading) {
     return (
@@ -4400,13 +4002,12 @@ ${catechistName}`;
   const mainBgClass = themeMode === 'dark' ? 'bg-black text-white' : 'bg-slate-50 text-slate-800';
   const cardBgClass = themeMode === 'dark' ? 'bg-black border-neutral-800 text-slate-100' : 'bg-white border-slate-200 text-slate-800';
   const inputBgClass = themeMode === 'dark' ? 'border bg-neutral-950 border-neutral-700 text-white placeholder-neutral-400' : 'border bg-white border-slate-300 text-slate-800 placeholder-slate-400';
-  const mutedTextClass = themeMode === 'dark' ? 'text-slate-300' : 'text-slate-600';
-  const softTextClass = themeMode === 'dark' ? 'text-slate-400' : 'text-slate-500';
   const labelTextClass = themeMode === 'dark' ? 'text-slate-300' : 'text-slate-600';
   const browserThemeStyle = { colorScheme: themeMode === 'dark' ? 'dark' : 'light' };
 
   return (
-    <div className={`min-h-screen flex flex-col ${mainBgClass}`}>
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-semibold text-slate-700 dark:bg-slate-950 dark:text-slate-200">Cargando AsisCate…</div>}>
+      <div className={`min-h-screen flex flex-col ${mainBgClass}`}>
       {/* HEADER DE NAVEGACIÓN */}
       {!isOnline && (
         <div className="bg-amber-500 text-amber-950 text-center text-xs font-bold py-2 px-4 border-b border-amber-400">
@@ -4912,6 +4513,7 @@ ${catechistName}`;
             levelCertificateHistory={levelCertificateHistory}
             attendanceLetterHistory={attendanceLetterHistory}
             certificateSearchType={certificateSearchType}
+            setCertificateSearchType={setCertificateSearchType}
             certificateSearch={certificateSearch}
             certificateFilters={certificateFilters}
             levelCertificateFilters={levelCertificateFilters}
@@ -5975,6 +5577,7 @@ ${catechistName}`;
           </div>
         </div>
       )}
-    </div>
+      </div>
+    </Suspense>
   );
 }

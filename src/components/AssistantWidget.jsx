@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
 import { GEMINI_API_KEY } from '../utils/constants';
@@ -52,15 +52,12 @@ export const AssistantWidget = ({
 
           for (const modelCandidate of candidateModels) {
             try {
-              console.log(`[Gemini API] Probando disponibilidad de: ${modelCandidate}...`);
-              
               const testResponse = await ai.models.generateContent({
                 model: modelCandidate,
                 contents: 'ping',
               });
 
               if (testResponse && testResponse.text) {
-                console.log(`[Gemini API] Modelo verificado exitosamente: ${modelCandidate}`);
                 verifiedModels.push(modelCandidate);
               }
             } catch (testError) {
@@ -164,8 +161,6 @@ export const AssistantWidget = ({
       const modelToTry = candidateList[idx];
 
       try {
-        console.log(`[Gemini API] Intentando generar respuesta con: ${modelToTry} (Intento ${attempts + 1}/${totalModels})`);
-
         const response = await ai.models.generateContent({
           model: modelToTry,
           contents: prompt,
@@ -176,7 +171,6 @@ export const AssistantWidget = ({
         });
 
         if (idx !== currentModelIndex) {
-          console.log(`[Gemini API] Se ha actualizado el modelo activo a: ${modelToTry}`);
           setCurrentModelIndex(idx);
         }
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function InventoryView({
   cardBgClass,
@@ -29,7 +29,6 @@ export function InventoryView({
   getInventorySlotAvailability,
   getReservationAssetConfig,
   setEditingInventoryReservationId,
-  inventoryReservations,
   visibleInventoryReservations,
   startInventoryReservationEdit,
   handleDeleteInventoryReservation,

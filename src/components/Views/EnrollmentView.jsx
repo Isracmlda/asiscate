@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../config/firebase';
 import { APPS_SCRIPT_URL } from '../../utils/constants';
@@ -21,7 +21,6 @@ export default function EnrollmentView({
   currentUser,
   parroquias = [],
   diaconias = [],
-  groups = [],
   paymentRecords = [],
   setPaymentRecords,
   handlePrintPaymentReceipt,

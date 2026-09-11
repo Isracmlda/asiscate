@@ -1,4 +1,3 @@
-import React from 'react';
 import { AsisCateLogo } from './Shared/AsisCateLogo';
 
 export function AuthModal({

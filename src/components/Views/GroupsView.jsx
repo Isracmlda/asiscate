@@ -1,46 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ExpedienteMigrationModal } from '../Modals/ExpedienteMigrationModal';
 
 export function GroupsView({
   setIsImportModalOpen,
   cardBgClass,
-  handleCreateGroup,
-  newGroupName,
-  setNewGroupName,
-  newGroupLevel,
-  setNewGroupLevel,
   levelOptions = [],
-  newGroupYear,
-  setNewGroupYear,
   activeViewMode,
-  newGroupDiaconia,
-  setNewGroupDiaconia,
-  diaconias,
-  userRole,
-  userData,
-  newGroupParroquia,
-  setNewGroupParroquia,
-  parroquias,
   inputBgClass,
-  handleAddStudent,
-  newStudentName,
-  setNewStudentName,
-  newStudentParentEmail,
-  setNewStudentParentEmail,
-  selectedGroupForStudent,
-  setSelectedGroupForStudent,
   visibleGroups,
   visibleStudents,
-  editingStudentId,
-  setEditingStudentId,
-  editStudentName,
-  setEditStudentName,
-  editStudentParentEmail,
-  setEditStudentParentEmail,
-  handleSaveStudentEdit,
-  groups,
-  handleStartEditStudent,
-  handleDeleteStudent,
   setStudents,
   setIsCreateGroupModalOpen,
   editingGroupId,
@@ -68,7 +36,6 @@ export function GroupsView({
   handleDeleteGroup,
   handleDuplicateGroup,
   handleOpenMaintenanceModal,
-  handleExportGroupSchedulePdf,
   handleExportGroupScheduleImage,
   themeMode,
   mutedTextClass = 'text-slate-400',
@@ -101,12 +68,6 @@ export function GroupsView({
   }, [visibleGroups, currentCycle]);
 
   const filteredGroups = visibleGroups.filter(group => String(group.year || currentCycle).trim() === selectedCycle);
-
-  const isExpedienteIncomplete = (student) => {
-    if (!student) return true;
-    if (student.expedienteStatus === 'COMPLETED') return false;
-    return !student.documents || !student.family || !student.cycle;
-  };
 
   const handleMigrationSuccess = (studentId, updatedFields) => {
     if (typeof setStudents === 'function') {

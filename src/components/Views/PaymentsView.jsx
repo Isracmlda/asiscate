@@ -1,10 +1,9 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 export function PaymentsView({
   cardBgClass,
   showGroupPaymentTracker,
   setShowGroupPaymentTracker,
-  totalCollected,
   visiblePaymentRecords,
   trackerGroupId,
   setTrackerGroupId,
@@ -50,7 +49,7 @@ export function PaymentsView({
     const drawHeader = () => { doc.setFillColor(127, 29, 29); doc.rect(18, y - 7, 174, 9, 'F'); doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.text('Fecha', 22, y); doc.text('Concepto', 57, y); doc.text('Método', 132, y); doc.text('Monto', 170, y); y += 11; };
     drawHeader();
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(31, 41, 55);
-    records.forEach((record, index) => { if (y > 265) { doc.addPage(); y = 22; drawHeader(); doc.setFont('helvetica', 'normal'); doc.setTextColor(31, 41, 55); } const row = [record.date || record.dateTime?.split('T')[0] || '-', record.concept || 'Pago', record.paymentMethod || 'Efectivo', `C/ ${Number(record.amount || 0).toLocaleString()}`]; doc.text(row[0], 22, y); doc.text(row[1].slice(0, 38), 57, y); doc.text(row[2], 132, y); doc.text(row[3], 170, y); doc.setDrawColor(226, 232, 240); doc.line(18, y + 3, 192, y + 3); y += 9; });
+    records.forEach((record) => { if (y > 265) { doc.addPage(); y = 22; drawHeader(); doc.setFont('helvetica', 'normal'); doc.setTextColor(31, 41, 55); } const row = [record.date || record.dateTime?.split('T')[0] || '-', record.concept || 'Pago', record.paymentMethod || 'Efectivo', `C/ ${Number(record.amount || 0).toLocaleString()}`]; doc.text(row[0], 22, y); doc.text(row[1].slice(0, 38), 57, y); doc.text(row[2], 132, y); doc.text(row[3], 170, y); doc.setDrawColor(226, 232, 240); doc.line(18, y + 3, 192, y + 3); y += 9; });
     const total = records.reduce((sum, record) => sum + Number(record.amount || 0), 0);
     doc.setFont('helvetica', 'bold'); doc.text(`Total pagado: C/ ${total.toLocaleString()}`, 18, y + 8);
     doc.setTextColor(127, 29, 29); doc.text('AsisCate', 192, 280, { align: 'right' });

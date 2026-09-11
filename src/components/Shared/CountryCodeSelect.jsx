@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { COUNTRY_CODES } from '../../utils/validators';
 
 export function CountryCodeSelect({ value, onChange, className }) {

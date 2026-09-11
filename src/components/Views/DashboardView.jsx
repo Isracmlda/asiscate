@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 export function DashboardView({
   userData,
@@ -8,7 +8,6 @@ export function DashboardView({
   cardBgClass,
   dashboardPanelOpen,
   setDashboardPanelOpen,
-  installPromptEvent,
   isAppInstalled,
   handleInstallApp,
   attendanceType,
@@ -23,7 +22,6 @@ export function DashboardView({
   setDashboardDate,
   browserThemeStyle,
   inputBgClass,
-  dashboardDonutStyle,
   themeMode,
   dashboardAttendanceStats,
   AssistantWidget,
@@ -43,8 +41,6 @@ export function DashboardView({
   handleScanQr,
   setDeleteDateTarget,
   diaconias,
-  generalDiaconiaId,
-  setGeneralDiaconiaId,
   getAttendanceStatus,
   handleMarkAttendance,
   handleOpenAttendanceMessage,
