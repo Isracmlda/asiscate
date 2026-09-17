@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import { collection, addDoc, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { collection, addDoc, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
-import { jsPDF } from 'jspdf';
 
 const loadFaviconAsPng = async () => {
   const response = await fetch('/favicon.svg');
@@ -37,7 +36,8 @@ export default function EnrollmentDashboardView({
   handleStartEditStudent,
   allUsers = [],
   fetchAllData,
-  groupScheduleOptions = { days: [], times: [], rooms: [] }
+  groupScheduleOptions = { days: [], times: [], rooms: [] },
+  activeViewMode = 'coordinador'
 }) {
   const currentYear = new Date().getFullYear();
   const [selectedCycle, setSelectedCycle] = useState(`${currentYear}-${currentYear + 1}`);
@@ -59,6 +59,10 @@ export default function EnrollmentDashboardView({
   const [massGroupSchedules, setMassGroupSchedules] = useState([{ day: 'Sábado', time: '', room: '' }]);
   const [isCreatingGroups, setIsCreatingGroups] = useState(false);
   const [creationMessage, setCreationMessage] = useState(null);
+  const [isSyncingLevels, setIsSyncingLevels] = useState(false);
+  const [syncLevelsResult, setSyncLevelsResult] = useState(null);
+  const [isDeletingUnassigned, setIsDeletingUnassigned] = useState(false);
+  const [deleteUnassignedResult, setDeleteUnassignedResult] = useState(null);
 
   const levelsList = [
     'Cate-Kinder',
@@ -103,6 +107,93 @@ export default function EnrollmentDashboardView({
       console.error('Error actualizando permiso de usuario:', err);
     }
   };
+
+  // Admin: Sincronizar nivel de cada estudiante desde su grupo actual
+  const handleSyncLevelsFromGroups = async () => {
+    const studentsWithGroup = students.filter(s => s.groupId);
+    const toUpdate = studentsWithGroup.filter(s => {
+      const group = groups.find(g => g.id === s.groupId);
+      return group?.level && group.level !== s.level;
+    });
+
+    if (toUpdate.length === 0) {
+      setSyncLevelsResult({ updated: 0, skipped: studentsWithGroup.length });
+      setTimeout(() => setSyncLevelsResult(null), 5000);
+      return;
+    }
+
+    if (!window.confirm(
+      `Se actualizará el nivel de ${toUpdate.length} catequizando(s) para que coincida con el nivel de su grupo actual.\n\nLos catequizandos sin grupo asignado no serán modificados.\n\n¿Continuar?`
+    )) return;
+
+    setIsSyncingLevels(true);
+    setSyncLevelsResult(null);
+    try {
+      await Promise.all(
+        toUpdate.map(s => {
+          const group = groups.find(g => g.id === s.groupId);
+          return updateDoc(doc(db, 'students', s.id), { level: group.level });
+        })
+      );
+      if (typeof setStudents === 'function') {
+        setStudents(prev => prev.map(s => {
+          const group = groups.find(g => g.id === s.groupId);
+          return group?.level ? { ...s, level: group.level } : s;
+        }));
+      }
+      setSyncLevelsResult({ updated: toUpdate.length, skipped: studentsWithGroup.length - toUpdate.length });
+      setTimeout(() => setSyncLevelsResult(null), 7000);
+    } catch (err) {
+      console.error('Error sincronizando niveles:', err);
+      alert('Ocurrió un error al sincronizar los niveles. Intenta de nuevo.');
+    } finally {
+      setIsSyncingLevels(false);
+    }
+  };
+
+  // Admin: Eliminar catequizandos huérfanos / sin grupo asignado existente
+  const handleDeleteUnassignedStudents = async () => {
+    const existingGroupIds = new Set(groups.map(g => g.id));
+    const unassignedStudents = students.filter(s => !s.groupId || !existingGroupIds.has(s.groupId));
+
+    if (unassignedStudents.length === 0) {
+      alert('No se encontraron catequizandos sin grupo asignado o cuyo grupo ya no exista.');
+      return;
+    }
+
+    const sampleList = unassignedStudents
+      .slice(0, 15)
+      .map((s, idx) => `${idx + 1}. ${s.fullName || s.name || 'Sin nombre'} (${s.level || 'Sin nivel'})`)
+      .join('\n');
+    const overflowText = unassignedStudents.length > 15 ? `\n... y ${unassignedStudents.length - 15} catequizando(s) más.` : '';
+
+    const confirmMessage = `⚠️ ATENCIÓN: Se eliminarán permanentemente ${unassignedStudents.length} catequizando(s) que NO pertenecen a ningún grupo actualmente existente:\n\n${sampleList}${overflowText}\n\n¿Estás seguro de eliminar a estos ${unassignedStudents.length} catequizando(s)? Esta acción NO se puede deshacer.`;
+
+    if (!window.confirm(confirmMessage)) return;
+
+    setIsDeletingUnassigned(true);
+    setDeleteUnassignedResult(null);
+
+    try {
+      const deletedIds = new Set(unassignedStudents.map(s => s.id));
+      await Promise.all(unassignedStudents.map(s => deleteDoc(doc(db, 'students', s.id))));
+
+      if (typeof setStudents === 'function') {
+        setStudents(prev => prev.filter(s => !deletedIds.has(s.id)));
+      }
+      if (typeof fetchAllData === 'function') fetchAllData();
+
+      setDeleteUnassignedResult(`Se eliminaron ${unassignedStudents.length} catequizando(s) sin grupo con éxito.`);
+      setTimeout(() => setDeleteUnassignedResult(null), 7000);
+    } catch (err) {
+      console.error('Error eliminando catequizandos sin grupo:', err);
+      alert('Ocurrió un error al intentar eliminar los catequizandos.');
+    } finally {
+      setIsDeletingUnassigned(false);
+    }
+  };
+
+  // 5. Asistente para creación / asignación masiva de grupos
 
   // 2. Filtrar estudiantes por ciclo seleccionado
   const cycleStudentsRaw = students.filter(s => {
@@ -205,6 +296,7 @@ export default function EnrollmentDashboardView({
   };
 
   const generateBooksSummaryPdf = async () => {
+    const { jsPDF } = await import('jspdf');
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     await addPdfHeader(pdf, 'AsisCate - Control de Libros', `Ciclo catequético: ${selectedCycle}`);
     pdf.setFillColor(248, 250, 252); pdf.roundedRect(14, 40, 182, 18, 3, 3, 'F');
@@ -217,6 +309,7 @@ export default function EnrollmentDashboardView({
   };
 
   const generateBookListPdf = async (level) => {
+    const { jsPDF } = await import('jspdf');
     const records = booksByLevel[level] || [];
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     await addPdfHeader(pdf, 'AsisCate - Entrega de Libros', `${level} · Ciclo catequético: ${selectedCycle}`);
@@ -319,6 +412,7 @@ export default function EnrollmentDashboardView({
 
   // 6. Generador de Expediente PDF (Una sola página con la imagen de la firma incrustada)
   const generateSinglePageExpedientePdf = async (st) => {
+    const { jsPDF } = await import('jspdf');
     const docPdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const pageWidth = docPdf.internal.pageSize.getWidth();
     const margin = 12;
@@ -483,20 +577,28 @@ export default function EnrollmentDashboardView({
     docPdf.text('IV. FIRMA DE CONFORMIDAD Y DECLARACIÓN JURADA', margin + 3, y + 5);
     y += 12;
 
-    docPdf.setFont('helvetica', 'normal');
+    docPdf.setFont('helvetica', 'bold');
     docPdf.setFontSize(7.5);
     docPdf.text('Compromiso de formación en la fe: ' + (st.acceptsCatechesisCommitment ? 'ACEPTADO' : 'No registrado'), leftX, y);
     y += 5;
 
-    const signatureData = st.family?.guardian?.signatureData;
-    const signatureUrl = st.family?.guardian?.signatureUrl;
+    docPdf.setFont('helvetica', 'normal');
+    docPdf.setFontSize(7);
+    const commitmentText = 'Indico que esta decisión la asumo teniendo en cuenta de que tengo conocimiento de los requisitos y lineamientos del catequizando y mi persona como encargado legal, y deberé velar porque mi hijo o hija participe de manera puntual de los encuentros y eucaristías de la catequesis y que cumpla con las asignaciones otorgadas, celebraciones especiales de la diaconía. Así mismo acepto cumplir con los lineamientos establecidos por nuestra Parroquia y la Diócesis de Alajuela.';
+    const commitmentLines = docPdf.splitTextToSize(commitmentText, pageWidth - margin * 2 - 6);
+    docPdf.text(commitmentLines, leftX, y);
+    y += commitmentLines.length * 3.5 + 4;
+
+    const rawSig = st.family?.guardian?.signatureData || 
+                   st.family?.guardian?.signatureUrl || 
+                   st.family?.guardian?.signature || 
+                   st.signatureData || 
+                   st.signatureUrl || 
+                   st.signature;
 
     let cleanSigB64 = null;
-    if (signatureData && signatureData.startsWith('data:image/')) {
-      cleanSigB64 = await loadImageAsCleanPng(signatureData);
-    }
-    if (!cleanSigB64 && signatureUrl) {
-      cleanSigB64 = await loadImageAsCleanPng(signatureUrl);
+    if (rawSig) {
+      cleanSigB64 = await loadImageAsCleanPng(rawSig);
     }
 
     if (cleanSigB64) {
@@ -623,6 +725,75 @@ export default function EnrollmentDashboardView({
           )}
         </div>
       </div>
+
+      {/* Herramientas Admin */}
+      {activeViewMode === 'admin' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Sincronizar niveles */}
+          <div className={`${cardBgClass} p-4 rounded-xl border border-violet-500/30 flex flex-col justify-between gap-3`}>
+            <div>
+              <p className="text-sm font-bold text-violet-400 flex items-center gap-2">
+                🔧 <span>Herramienta Admin · Sincronizar niveles desde grupos</span>
+              </p>
+              <p className="text-xs text-slate-400 mt-1">
+                Actualiza el campo <strong className="text-slate-300">nivel</strong> de todos los catequizandos que tengan grupo asignado, usando el nivel actual de su grupo.
+              </p>
+            </div>
+            <div className="flex flex-col items-end gap-2 pt-2 border-t border-slate-700/50">
+              <button
+                type="button"
+                onClick={handleSyncLevelsFromGroups}
+                disabled={isSyncingLevels}
+                className="w-full sm:w-auto bg-violet-700 hover:bg-violet-800 disabled:bg-slate-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition shadow flex items-center justify-center gap-2"
+              >
+                {isSyncingLevels ? (
+                  <><span className="animate-spin">⏳</span> Sincronizando...</>
+                ) : (
+                  <>🔄 Sincronizar niveles</>
+                )}
+              </button>
+              {syncLevelsResult !== null && (
+                <p className={`text-xs font-bold ${syncLevelsResult.updated > 0 ? 'text-emerald-400' : 'text-slate-400'}`}>
+                  {syncLevelsResult.updated > 0
+                    ? `✅ ${syncLevelsResult.updated} actualizado(s), ${syncLevelsResult.skipped} ya estaban correctos.`
+                    : `✅ Todos los niveles ya estaban correctos (${syncLevelsResult.skipped} catequizandos).`}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Eliminar catequizandos sin grupo */}
+          <div className={`${cardBgClass} p-4 rounded-xl border border-rose-500/30 flex flex-col justify-between gap-3`}>
+            <div>
+              <p className="text-sm font-bold text-rose-400 flex items-center gap-2">
+                🗑️ <span>Herramienta Admin · Eliminar catequizandos sin grupo</span>
+              </p>
+              <p className="text-xs text-slate-400 mt-1">
+                Elimina permanentemente los registros de catequizandos (vía matrícula o adhesión) que <strong className="text-rose-300">no estén asignados a ningún grupo existente</strong>. Se mostrará una confirmación con la lista antes de eliminar.
+              </p>
+            </div>
+            <div className="flex flex-col items-end gap-2 pt-2 border-t border-slate-700/50">
+              <button
+                type="button"
+                onClick={handleDeleteUnassignedStudents}
+                disabled={isDeletingUnassigned}
+                className="w-full sm:w-auto bg-rose-700 hover:bg-rose-800 disabled:bg-slate-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition shadow flex items-center justify-center gap-2"
+              >
+                {isDeletingUnassigned ? (
+                  <><span className="animate-spin">⏳</span> Eliminando...</>
+                ) : (
+                  <>🗑️ Eliminar catequizandos sin grupo</>
+                )}
+              </button>
+              {deleteUnassignedResult && (
+                <p className="text-xs font-bold text-emerald-400">
+                  ✅ {deleteUnassignedResult}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Filtro de Ciclo Catequético */}
       <div className={`${cardBgClass} p-4 rounded-xl border border-slate-300 dark:border-slate-700/60 flex items-center justify-between gap-4 flex-wrap`}>
@@ -1026,7 +1197,7 @@ export default function EnrollmentDashboardView({
                   Compromiso de formación en la fe: {selectedStudentDetail.acceptsCatechesisCommitment ? 'Aceptado' : 'No registrado'}
                 </p>
                 <p className="commitment-text text-left text-xs leading-relaxed">
-                  ME COMPROMETO A CUMPLIR CON LA FORMACIÓN EN LA FE Y PARTICIPAR EN LO QUE SE REQUIERE EN LA CATEQUESIS, ENCUENTROS FAMILIARES Y MISAS DE NIÑOS, PARA QUE MI HIJO O HIJA CREZCA ESPIRITUALMENTE COMO HIJO DE DIOS Y APRENDA A VIVIR CRISTIANAMENTE.
+                  Indico que esta decisión la asumo teniendo en cuenta de que tengo conocimiento de los requisitos y lineamientos del catequizando y mi persona como encargado legal, y deberé velar porque mi hijo o hija participe de manera puntual de los encuentros y eucaristías de la catequesis y que cumpla con las asignaciones otorgadas, celebraciones especiales de la diaconía. Así mismo acepto cumplir con los lineamientos establecidos por nuestra Parroquia y la Diócesis de Alajuela.
                 </p>
                 {selectedStudentDetail.family?.guardian?.signatureData || selectedStudentDetail.family?.guardian?.signatureUrl ? (
                   <img

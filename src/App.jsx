@@ -1,11 +1,11 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
-import { toPng } from 'html-to-image';
 import { auth, db, googleProvider, microsoftProvider } from './config/firebase';
 import { AssistantWidget } from './components/AssistantWidget';
 import { AuthModal } from './components/AuthModal';
 import { QrModal } from './components/Modals/QrModal';
 import { ScannerModal } from './components/Modals/ScannerModal';
 import { MaintenanceModal } from './components/Modals/MaintenanceModal';
+import { ConfirmModal } from './components/Modals/ConfirmModal';
 import { AsisCateLogo } from './components/Shared/AsisCateLogo';
 import { CountryCodeSelect } from './components/Shared/CountryCodeSelect';
 const DashboardView = lazy(() => import('./components/Views/DashboardView').then(module => ({ default: module.DashboardView })));
@@ -14,6 +14,7 @@ const ReportsView = lazy(() => import('./components/Views/ReportsView').then(mod
 const InventoryView = lazy(() => import('./components/Views/InventoryView').then(module => ({ default: module.InventoryView })));
 const PaymentsView = lazy(() => import('./components/Views/PaymentsView').then(module => ({ default: module.PaymentsView })));
 const UserManagementView = lazy(() => import('./components/Views/UserManagementView').then(module => ({ default: module.UserManagementView })));
+const StudentsView = lazy(() => import('./components/Views/StudentsView').then(module => ({ default: module.StudentsView })));
 import { APPS_SCRIPT_URL, levelOptions } from './utils/constants';
 const EnrollmentView = lazy(() => import('./components/Views/EnrollmentView'));
 const EnrollmentDashboardView = lazy(() => import('./components/Views/EnrollmentDashboardView'));
@@ -53,7 +54,6 @@ import {
   updateDoc,
   deleteDoc
 } from 'firebase/firestore';
-import JSZip from 'jszip';
 
 const loadFaviconAsPng = async () => {
   const response = await fetch('/favicon.svg');
@@ -208,6 +208,10 @@ export default function App() {
   const [editStudentParentPhone, setEditStudentParentPhone] = useState('');
 
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().split('T')[0]);
+  const handleSetAttendanceDate = useCallback((value) => {
+    attendanceDateInitializedRef.current = true;
+    setAttendanceDate(value);
+  }, []);
   const [attendanceType, setAttendanceType] = useState('encuentro');
   const [attendanceLabel, setAttendanceLabel] = useState('');
   const [selectedGroupId, setSelectedGroupId] = useState('');
@@ -322,6 +326,8 @@ export default function App() {
   const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
   const [editingEnrollmentStudent, setEditingEnrollmentStudent] = useState(null);
   const [editingEnrollmentReadOnly, setEditingEnrollmentReadOnly] = useState(false);
+  const [studentToDelete, setStudentToDelete] = useState(null);
+  const [isDeletingStudent, setIsDeletingStudent] = useState(false);
 
   // Autenticación extendida (Correo/Contraseña, Microsoft, Google)
   const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
@@ -706,7 +712,7 @@ export default function App() {
     if ((mode === 'coordinadorGeneral' || mode === 'admin') && userData?.diaconiaId) {
       setGeneralDiaconiaId(userData.diaconiaId);
     }
-    if (mode === 'catequista' && (activeTab === 'parroquias' || activeTab === 'horarios' || activeTab === 'admin')) {
+    if (mode !== 'admin' && (activeTab === 'parroquias' || activeTab === 'horarios' || activeTab === 'admin' || activeTab === 'students')) {
       setActiveTab('dashboard');
     }
     await fetchAllData();
@@ -1103,11 +1109,14 @@ export default function App() {
     }
 
     try {
+      const formattedParentEmail = newStudentParentEmail.trim().toLowerCase();
       const studentData = {
         name: newStudentName.trim(),
         parentEmail: newStudentParentEmail.trim(),
         parentPhone: newStudentParentPhone.trim(),
+        correosAutorizados: formattedParentEmail ? [formattedParentEmail] : [],
         groupId: selectedGroupForStudent,
+        level: groupObj?.level || 'Primer Nivel',
         parroquiaId: groupObj?.parroquiaId || userData?.parroquiaId || '',
         diaconiaId: groupObj?.diaconiaId || effectiveDiaconiaId,
         catechistId: user.uid,
@@ -1150,10 +1159,26 @@ export default function App() {
       return;
     }
     try {
+      const rawEditEmail = editStudentParentEmail.trim().toLowerCase();
+      const existingCorreos = Array.isArray(student.correosAutorizados) ? student.correosAutorizados : [];
+      const motherEmail = student.family?.mother?.email?.trim().toLowerCase();
+      const fatherEmail = student.family?.father?.email?.trim().toLowerCase();
+      const guardianEmail = student.family?.guardian?.email?.trim().toLowerCase();
+
+      const updatedCorreos = Array.from(
+        new Set(
+          [rawEditEmail, motherEmail, fatherEmail, guardianEmail, ...existingCorreos]
+            .filter(Boolean)
+            .map(e => e.trim().toLowerCase())
+            .filter(e => e.length > 0)
+        )
+      );
+
       await updateDoc(doc(db, 'students', student.id), {
         name: editStudentName.trim(),
         parentEmail: editStudentParentEmail.trim(),
-        parentPhone: editStudentParentPhone.trim()
+        parentPhone: editStudentParentPhone.trim(),
+        correosAutorizados: updatedCorreos
       });
       setEditingStudentId(null);
       await fetchAllData();
@@ -1162,27 +1187,29 @@ export default function App() {
     }
   };
 
-  const handleDeleteStudent = async (studentTarget) => {
+  const handleDeleteStudent = (studentTarget) => {
     const studentObj = typeof studentTarget === 'object' ? studentTarget : students.find(s => s.id === studentTarget);
-    const studentId = typeof studentTarget === 'object' ? studentTarget.id : studentTarget;
-    if (!studentId) return;
+    if (!studentObj) return;
+    setStudentToDelete(studentObj);
+  };
 
-    const studentName = studentObj?.fullName || studentObj?.name || 'este catequizando';
-    const confirmMessage = `¿Estás seguro de que deseas eliminar a ${studentName}?\n\nEsta acción borrará permanentemente su expediente y todos los archivos digitales adjuntos (cédulas y constancias) en Google Drive.`;
-    if (!window.confirm(confirmMessage)) return;
+  const handleConfirmDeleteStudent = async () => {
+    if (!studentToDelete?.id) return;
+    const studentId = studentToDelete.id;
+    setIsDeletingStudent(true);
 
     try {
       // 1. Eliminar archivos vinculados en Google Drive si existen
-      if (studentObj) {
+      if (studentToDelete) {
         const fileUrlsToDelete = [];
-        if (studentObj.documents) {
-          Object.values(studentObj.documents).forEach(docItem => {
+        if (studentToDelete.documents) {
+          Object.values(studentToDelete.documents).forEach(docItem => {
             if (docItem?.url) fileUrlsToDelete.push(docItem.url);
             if (docItem?.fileUrl) fileUrlsToDelete.push(docItem.fileUrl);
           });
         }
-        if (studentObj.family?.guardian?.signatureUrl) {
-          fileUrlsToDelete.push(studentObj.family.guardian.signatureUrl);
+        if (studentToDelete.family?.guardian?.signatureUrl) {
+          fileUrlsToDelete.push(studentToDelete.family.guardian.signatureUrl);
         }
 
         if (fileUrlsToDelete.length > 0) {
@@ -1193,10 +1220,13 @@ export default function App() {
 
       // 2. Eliminar registro de Firestore
       await deleteDoc(doc(db, 'students', studentId));
+      setStudentToDelete(null);
       fetchAllData();
     } catch (error) {
       console.error("Error eliminando Catequizando:", error);
       alert("Ocurrió un error al eliminar el catequizando.");
+    } finally {
+      setIsDeletingStudent(false);
     }
   };
 
@@ -1271,6 +1301,7 @@ export default function App() {
           parentEmail: st.parentEmail || '',
           parentPhone: st.parentPhone || '',
           groupId: excelTargetGroupId,
+          level: groupObj?.level || 'Primer Nivel',
           parroquiaId: groupObj?.parroquiaId || userData?.parroquiaId || '',
           diaconiaId: groupObj?.diaconiaId || effectiveDiaconiaId,
           catechistId: user.uid,
@@ -1468,6 +1499,7 @@ export default function App() {
     if (!qrCardRef.current) return;
 
     try {
+      const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(qrCardRef.current, {
         cacheBust: true,
         pixelRatio: 3,
@@ -1497,6 +1529,7 @@ export default function App() {
   };
 
   const handleScanQr = async () => {
+    attendanceDateInitializedRef.current = true;
     if (!('BarcodeDetector' in window) || !navigator.mediaDevices?.getUserMedia) {
       alert('Tu navegador no soporta escaneo QR con cámara. Prueba en Chrome o Edge actualizado.');
       return;
@@ -2316,6 +2349,7 @@ ${catechistName}`;
     }
 
     try {
+      const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
 
       for (const student of selectedStudents) {
@@ -2359,6 +2393,7 @@ ${catechistName}`;
     }
 
     try {
+      const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
       for (const student of selectedStudents) {
         let pdfDocument;
@@ -2627,6 +2662,7 @@ ${catechistName}`;
     }
 
     try {
+      const { default: JSZip } = await import('jszip');
       const zip = new JSZip();
       for (const student of studentsForGroup) {
         const doc = await generateLevelCertificateDoc(group, student);
@@ -3283,6 +3319,7 @@ ${catechistName}`;
 
       await new Promise(resolve => setTimeout(resolve, 80));
 
+      const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(ticketEl, {
         cacheBust: true,
         pixelRatio: 2,
@@ -3462,6 +3499,31 @@ ${catechistName}`;
       const pdf = new JsPdf({ orientation: 'portrait', unit: 'mm', format: 'a4' });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const margin = 14;
+
+      const loadImageAsCleanPng = (srcUrl) => new Promise((resolve) => {
+        if (!srcUrl) return resolve(null);
+        let formattedUrl = String(srcUrl).trim();
+        if (!formattedUrl.startsWith('data:') && !formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
+          formattedUrl = `data:image/png;base64,${formattedUrl}`;
+        }
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || img.width || 300;
+            canvas.height = img.naturalHeight || img.height || 150;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            resolve(canvas.toDataURL('image/png'));
+          } catch (err) {
+            resolve(null);
+          }
+        };
+        img.onerror = () => resolve(null);
+        img.src = formattedUrl;
+        setTimeout(() => resolve(null), 2000);
+      });
+
       const line = (label, value, x, y, maxWidth = 178) => {
         pdf.setFont('helvetica', 'bold');
         const labelText = `${label}: `;
@@ -3470,6 +3532,7 @@ ${catechistName}`;
         pdf.setFont('helvetica', 'normal');
         pdf.text(pdf.splitTextToSize(String(value || 'N/A'), maxWidth - labelWidth), x + labelWidth, y);
       };
+
       const section = (title, y) => {
         pdf.setFillColor(241, 245, 249);
         pdf.rect(margin, y - 5, pageWidth - margin * 2, 8, 'F');
@@ -3481,6 +3544,7 @@ ${catechistName}`;
         pdf.setFontSize(8.5);
         return y + 12;
       };
+
       pdf.setFillColor(127, 29, 29);
       pdf.rect(0, 0, pageWidth, 24, 'F');
       pdf.setTextColor(255, 255, 255);
@@ -3492,6 +3556,7 @@ ${catechistName}`;
       pdf.text('AsisCate · Sistema Parroquial', margin, 18);
       pdf.setTextColor(30, 41, 59);
       let y = 36;
+
       y = section('I. DATOS DEL CATEQUIZANDO', y);
       line('Nombre completo', studentRecord.fullName || studentRecord.name, margin, y); line('Nivel', studentRecord.level, 110, y, 82); y += 9;
       line('Fecha de nacimiento', `${studentRecord.birthDate || 'N/A'} (${studentRecord.age ?? 'N/A'} años)`, margin, y); line('Identificación', `${studentRecord.idType || 'NACIONAL'} · ${studentRecord.nationalId || 'N/A'}`, 110, y, 82); y += 9;
@@ -3500,6 +3565,7 @@ ${catechistName}`;
       line('Datos adicionales', `Género: ${studentRecord.gender || 'N/A'} · Lugar de nacimiento: ${studentRecord.birthPlace || 'N/A'} · Centro educativo: ${studentRecord.educationCenter || 'N/A'} · Grado: ${studentRecord.schoolGrade || 'N/A'}`, margin, y); y += 16;
       line('Preguntas de salud', `Adecuación: ${studentRecord.curricularAdaptation || 'NO'} · Conducta: ${studentRecord.behaviorIssue || 'NO'} · Impedimento físico: ${studentRecord.physicalImpairment || 'NO'}`, margin, y); y += 12;
       line('Notas médicas', studentRecord.medicalNotes, margin, y); y += 14;
+
       y = section('II. FAMILIARES Y ENCARGADOS', y);
       const family = studentRecord.family || {};
       [ ['Madre', family.mother], ['Padre', family.father], ['Encargado', family.guardian] ].forEach(([label, person]) => {
@@ -3508,19 +3574,52 @@ ${catechistName}`;
         y += 9;
       });
       line('Estado civil', studentRecord.maritalStatus, margin, y); line('Hermanos', `${studentRecord.siblingCount || 'N/A'}${studentRecord.siblingDetails ? ` · ${studentRecord.siblingDetails}` : ''}`, 110, y, 82); y += 13;
+
       y = section('III. ESTADO DE DOCUMENTACIÓN', y);
       const documentStatus = (item) => item?.status === 'COMPLETED' || item?.url ? 'ADJUNTO' : 'PENDIENTE';
       line('Cédula menor', documentStatus(studentRecord.documents?.minorId), margin, y); line('Bautismo', documentStatus(studentRecord.documents?.bautismo), 110, y, 82); y += 9;
       line('Primera comunión', documentStatus(studentRecord.documents?.comunion), margin, y); line('Firma', studentRecord.family?.guardian?.signatureUrl || studentRecord.family?.guardian?.signatureData ? 'REGISTRADA' : 'PENDIENTE', 110, y, 82); y += 13;
-      y = section('IV. COMPROMISO DE FORMACIÓN EN LA FE', y);
-      pdf.setFont('helvetica', 'normal');
+
+      y = section('IV. FIRMA DE CONFORMIDAD Y DECLARACIÓN JURADA', y);
       pdf.setFont('helvetica', 'bold');
-      pdf.text(`Estado: ${studentRecord.acceptsCatechesisCommitment ? 'ACEPTADO' : 'PENDIENTE DE ACEPTACIÓN'}`, margin + 3, y);
-      y += 7;
+      pdf.text(`Compromiso de formación en la fe: ${studentRecord.acceptsCatechesisCommitment ? 'ACEPTADO' : 'PENDIENTE DE ACEPTACIÓN'}`, margin + 3, y);
+      y += 6;
       pdf.setFont('helvetica', 'normal');
-      const commitmentText = 'ME COMPROMETO A CUMPLIR CON LA FORMACIÓN EN LA FE Y PARTICIPAR EN LO QUE SE REQUIERE EN LA CATEQUESIS, ENCUENTROS FAMILIARES Y MISAS DE NIÑOS, PARA QUE MI HIJO O HIJA CREZCA ESPIRITUALMENTE COMO HIJO DE DIOS Y APRENDA A VIVIR CRISTIANAMENTE.';
+      pdf.setFontSize(7.5);
+      const commitmentText = 'Indico que esta decisión la asumo teniendo en cuenta de que tengo conocimiento de los requisitos y lineamientos del catequizando y mi persona como encargado legal, y deberé velar porque mi hijo o hija participe de manera puntual de los encuentros y eucaristías de la catequesis y que cumpla con las asignaciones otorgadas, celebraciones especiales de la diaconía. Así mismo acepto cumplir con los lineamientos establecidos por nuestra Parroquia y la Diócesis de Alajuela.';
       const commitmentLines = pdf.splitTextToSize(commitmentText, pageWidth - margin * 2 - 6);
       pdf.text(commitmentLines, margin + 3, y);
+      y += commitmentLines.length * 4 + 4;
+
+      const rawSig = family.guardian?.signatureData || family.guardian?.signatureUrl || family.guardian?.signature || studentRecord.signatureData || studentRecord.signatureUrl || studentRecord.signature;
+      let cleanSigB64 = null;
+      if (rawSig) {
+        cleanSigB64 = await loadImageAsCleanPng(rawSig);
+      }
+
+      if (cleanSigB64) {
+        try {
+          pdf.addImage(cleanSigB64, 'PNG', pageWidth / 2 - 30, y, 60, 24);
+          y += 26;
+        } catch (imgErr) {
+          pdf.setFont('helvetica', 'italic');
+          pdf.text('[ Firma Digital Registrada en Sistema ]', pageWidth / 2, y + 10, { align: 'center' });
+          y += 18;
+        }
+      } else {
+        pdf.setFont('helvetica', 'italic');
+        pdf.text('[ Firma Digital Registrada en Sistema ]', pageWidth / 2, y + 10, { align: 'center' });
+        y += 18;
+      }
+
+      pdf.setDrawColor(148, 163, 184);
+      pdf.line(pageWidth / 2 - 35, y, pageWidth / 2 + 35, y);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8.5);
+      pdf.setTextColor(51, 65, 85);
+      pdf.text('Firma del Encargado / Tutor Legal', pageWidth / 2, y + 4, { align: 'center' });
+
+      pdf.setFont('helvetica', 'normal');
       pdf.setTextColor(100, 116, 139); pdf.setFontSize(7.5);
       pdf.text(`Emitido el ${new Date().toLocaleDateString('es-CR')} · AsisCate Parroquial`, margin, 285);
       pdf.save(`Expediente_${(studentRecord.fullName || studentRecord.name || 'Catequizando').replace(/\s+/g, '_')}.pdf`);
@@ -3696,6 +3795,7 @@ ${catechistName}`;
     try {
       if (document.fonts?.ready) await document.fonts.ready;
       await new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+      const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(renderTarget, { pixelRatio: 2, cacheBust: true, backgroundColor: '#f8fafc' });
       const response = await fetch(dataUrl);
       return await response.blob();
@@ -3751,7 +3851,7 @@ ${catechistName}`;
         setUserRole(newRole);
         const nextView = newRole === 'admin' ? 'admin' : newRole === 'coordinadorGeneral' ? 'coordinadorGeneral' : newRole === 'coordinador' ? 'coordinador' : 'catequista';
         setActiveViewMode(nextView);
-        if (activeTab === 'parroquias' || activeTab === 'horarios' || activeTab === 'admin') setActiveTab('dashboard');
+        if (activeTab === 'parroquias' || activeTab === 'horarios' || activeTab === 'admin' || activeTab === 'students') setActiveTab('dashboard');
       }
     } catch (error) {
       console.error("Error cambiando el rol:", error);
@@ -4029,7 +4129,7 @@ ${catechistName}`;
               <select
                 value={activeViewMode}
                 onChange={(event) => handleToggleViewMode(event.target.value)}
-                className="hidden lg:block rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
+                className="hidden xl:block rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
                 aria-label="Seleccionar vista"
               >
                 {userRole === 'admin' && <option value="admin">Admin</option>}
@@ -4047,7 +4147,7 @@ ${catechistName}`;
                     setSelectedGroupForStudent('');
                     setPaymentFilters(previous => ({ ...previous, groupId: 'all' }));
                   }}
-                  className="hidden lg:block max-w-44 rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
+                  className="hidden xl:block max-w-44 rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
                   aria-label="Seleccionar diaconía"
                 >
                   <option value="">Selecciona diaconía</option>
@@ -4059,7 +4159,7 @@ ${catechistName}`;
             </div>
 
             {/* Menú Desktop */}
-            <div className="hidden lg:flex items-center gap-4">
+            <div className="hidden xl:flex items-center gap-4">
               <nav className="flex items-center gap-1">
                 <button
                   onClick={() => setActiveTab('dashboard')}
@@ -4097,9 +4197,12 @@ ${catechistName}`;
                   </div>
                 )}
                 <div className="relative" data-navbar-menu>
-                  <button onClick={() => setOpenNavMenu(openNavMenu === 'tools' ? null : 'tools')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['history', 'inventario', 'pagos'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Herramientas ▾</button>
+                  <button onClick={() => setOpenNavMenu(openNavMenu === 'tools' ? null : 'tools')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['students', 'history', 'inventario', 'pagos'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Herramientas ▾</button>
                   {openNavMenu === 'tools' && (
-                    <div className="absolute left-0 top-full mt-1 w-40 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
+                    <div className="absolute left-0 top-full mt-1 w-44 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
+                      {activeViewMode === 'admin' && (
+                        <button onClick={() => { setActiveTab('students'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700 font-semibold">Catequizandos</button>
+                      )}
                       <button onClick={() => { setActiveTab('history'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Reportes</button>
                       <button onClick={() => { setActiveTab('pagos'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Pagos</button>
                       <button onClick={() => { setActiveTab('inventario'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Inventario</button>
@@ -4135,8 +4238,8 @@ ${catechistName}`;
                       isTerritoryPending ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-red-900 animate-pulse bg-amber-500/20' : ''
                     }`}
                   >
-                    <span className="text-xs font-semibold text-white">{userData?.name || user.displayName}</span>
-                    <span className="text-[10px] text-slate-200">{user.email}</span>
+                    <span className="text-xs font-semibold text-white max-w-[160px] truncate">{userData?.name || user.displayName}</span>
+                    <span className="text-[10px] text-slate-200 hidden 2xl:block max-w-[160px] truncate">{user.email}</span>
                   </button>
 
                   {/* Mensaje Flotante / Tooltip prominente cuando falta la Parroquia y Diaconía */}
@@ -4170,8 +4273,8 @@ ${catechistName}`;
               </div>
             </div>
 
-            {/* Menú Móvil */}
-            <div className="lg:hidden flex items-center gap-2">
+            {/* Menú Móvil / Tablet */}
+            <div className="xl:hidden flex items-center gap-2">
               <button
                 onClick={handleToggleTheme}
                 title="Cambiar Modo Claro/Oscuro"
@@ -4196,9 +4299,9 @@ ${catechistName}`;
           </div>
         </div>
 
-        {/* Desplegable Móvil */}
+        {/* Desplegable Móvil / Tablet */}
         {isMobileMenuOpen && (
-          <div className={`mobile-menu ${themeMode === 'light' ? 'mobile-menu-light' : ''} lg:hidden border-b px-4 pt-2 pb-4 space-y-3 ${themeMode === 'dark' ? 'border-neutral-800 bg-black text-slate-100' : 'border-slate-200 bg-white text-slate-800'}`}>
+          <div className={`mobile-menu ${themeMode === 'light' ? 'mobile-menu-light' : ''} xl:hidden border-b px-4 pt-2 pb-4 space-y-3 ${themeMode === 'dark' ? 'border-neutral-800 bg-black text-slate-100' : 'border-slate-200 bg-white text-slate-800'}`}>
             <div className="flex flex-col space-y-1">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pb-2">
                 <select value={activeViewMode} onChange={(event) => handleToggleViewMode(event.target.value)} className={`w-full rounded-lg border px-3 py-2 text-xs font-bold ${themeMode === 'dark' ? 'border-red-700 bg-red-950 text-white' : 'border-slate-300 bg-white text-slate-800'}`} aria-label="Seleccionar vista">
@@ -4235,6 +4338,7 @@ ${catechistName}`;
               )}
               <div className="rounded-lg border border-slate-700/60 overflow-hidden">
                 <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Herramientas</div>
+                {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('students'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Catequizandos</button>}
                 <button onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Reportes</button>
                 <button onClick={() => { setActiveTab('pagos'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Pagos</button>
                 <button onClick={() => { setActiveTab('inventario'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Inventario</button>
@@ -4388,7 +4492,7 @@ ${catechistName}`;
             activeViewMode={activeViewMode}
             labelTextClass={labelTextClass}
             attendanceDate={attendanceDate}
-            setAttendanceDate={setAttendanceDate}
+            setAttendanceDate={handleSetAttendanceDate}
             setAttendanceLabel={setAttendanceLabel}
             getAttendanceLabel={getAttendanceLabel}
             visibleStudents={visibleStudents}
@@ -4628,6 +4732,7 @@ ${catechistName}`;
           <EnrollmentDashboardView
             currentUser={{ ...(userData || user), parroquiaId: effectiveParroquiaId, diaconiaId: effectiveDiaconiaId }}
             userRole={userRole}
+            activeViewMode={activeViewMode}
             cardBgClass={cardBgClass}
             inputBgClass={inputBgClass}
             isEnrollmentEnabled={isEnrollmentEnabled}
@@ -4672,6 +4777,21 @@ ${catechistName}`;
               </p>
             </div>
           )
+        )}
+        {activeTab === 'students' && activeViewMode === 'admin' && (
+          <StudentsView
+            students={visibleStudents}
+            groups={visibleGroups}
+            levelOptions={levelOptions}
+            parroquias={parroquias}
+            diaconias={diaconias}
+            cardBgClass={cardBgClass}
+            inputBgClass={inputBgClass}
+            themeMode={themeMode}
+            handleDeleteStudent={handleDeleteStudent}
+            handleStartEditStudent={handleStartEditStudent}
+            handleOpenStudentReadOnly={handleOpenStudentReadOnly}
+          />
         )}
         {activeTab === 'groups' && (
           <GroupsView
@@ -5577,6 +5697,18 @@ ${catechistName}`;
           </div>
         </div>
       )}
+      <ConfirmModal
+        isOpen={Boolean(studentToDelete)}
+        onClose={() => setStudentToDelete(null)}
+        onConfirm={handleConfirmDeleteStudent}
+        title={`¿Estás seguro de que deseas eliminar a ${studentToDelete?.fullName || studentToDelete?.name || 'este catequizando'}?`}
+        description="Esta acción borrará permanentemente su expediente y todos los archivos digitales adjuntos (cédulas y constancias) en Google Drive."
+        confirmText="Aceptar"
+        cancelText="Cancelar"
+        isDanger={true}
+        isLoading={isDeletingStudent}
+        themeMode={themeMode}
+      />
       </div>
     </Suspense>
   );

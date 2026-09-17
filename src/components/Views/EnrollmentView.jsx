@@ -91,6 +91,8 @@ export default function EnrollmentView({
     siblingCount: initialStudent?.siblingCount || 'N/A',
     siblingDetails: initialStudent?.siblingDetails || '',
     authorizedPickupPeople: initialStudent?.authorizedPickupPeople || '',
+    baptismDate: initialStudent?.baptismDate || '',
+    photoConsent: initialStudent?.photoConsent || 'SI',
     acceptsCatechesisCommitment: Boolean(initialStudent?.acceptsCatechesisCommitment)
   });
 
@@ -210,6 +212,8 @@ export default function EnrollmentView({
       siblingCount: 'N/A',
       siblingDetails: '',
       authorizedPickupPeople: '',
+      baptismDate: '',
+      photoConsent: 'SI',
       acceptsCatechesisCommitment: false
     });
     setStudentPhotoFile(null);
@@ -610,6 +614,8 @@ export default function EnrollmentView({
         siblingCount: student.siblingCount || 'N/A',
         siblingDetails: student.siblingCount !== 'N/A' ? student.siblingDetails || '' : '',
         authorizedPickupPeople: student.authorizedPickupPeople || '',
+        baptismDate: student.baptismDate || '',
+        photoConsent: student.photoConsent || 'SI',
         acceptsCatechesisCommitment: isEditing
           ? Boolean(student.acceptsCatechesisCommitment || initialStudent?.acceptsCatechesisCommitment)
           : true,
@@ -625,6 +631,14 @@ export default function EnrollmentView({
           father: { ...father, idCardUrl: fatherIdUrl, idCardPending: fatherIdPending },
           guardian: { ...guardian, idCardUrl: guardianIdUrl, idCardPending: guardianIdPending, signatureUrl, signatureData: signatureDataToSave }
         },
+        correosAutorizados: Array.from(
+          new Set(
+            [mother?.email, father?.email, guardian?.email]
+              .filter(Boolean)
+              .map(e => String(e).toLowerCase().trim())
+              .filter(e => e.length > 0)
+          )
+        ),
         documents: {
           minorId: { status: minorIdPending ? 'PENDING' : (minorIdUrl ? 'COMPLETED' : 'NOT_REQUIRED'), url: minorIdUrl },
           bautismo: { status: baptismPending ? 'PENDING' : (baptismUrl ? 'COMPLETED' : 'NOT_REQUIRED'), url: baptismUrl },
@@ -955,7 +969,7 @@ export default function EnrollmentView({
       <form onSubmit={handleSubmitEnrollment} className="space-y-6">
         <fieldset disabled={readOnly} className="space-y-6">
         {/* SECCIÓN CONFIGURACIÓN GENERAL */}
-        <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm grid grid-cols-1 md:grid-cols-4 gap-4`}>
+        <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4`}>
           <div>
             <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Ciclo Catequético *</label>
             <select value={cycle} onChange={(e) => setCycle(e.target.value)} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
@@ -1082,17 +1096,23 @@ export default function EnrollmentView({
               <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Dirección de Residencia *</label>
               <input required type="text" value={student.address} onChange={(e) => setStudent({ ...student, address: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
             </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Lugar de nacimiento</label>
-              <input type="text" value={student.birthPlace} onChange={(e) => setStudent({ ...student, birthPlace: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Centro educativo</label>
-              <input type="text" value={student.educationCenter} onChange={(e) => setStudent({ ...student, educationCenter: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Grado que cursa</label>
-              <input type="text" value={student.schoolGrade} onChange={(e) => setStudent({ ...student, schoolGrade: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+            <div className="md:col-span-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Lugar de nacimiento</label>
+                <input type="text" value={student.birthPlace} onChange={(e) => setStudent({ ...student, birthPlace: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Fecha de Bautismo</label>
+                <input type="date" value={student.baptismDate} onChange={(e) => setStudent({ ...student, baptismDate: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Centro educativo</label>
+                <input type="text" value={student.educationCenter} onChange={(e) => setStudent({ ...student, educationCenter: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Grado que cursa</label>
+                <input type="text" value={student.schoolGrade} onChange={(e) => setStudent({ ...student, schoolGrade: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+              </div>
             </div>
             <div className="md:col-span-3 space-y-1">
               <div className="flex justify-between items-center">
@@ -1436,6 +1456,27 @@ export default function EnrollmentView({
             </button>
           </div>
 
+          <div className="rounded-xl border border-slate-600/70 p-3.5 bg-slate-800/20 space-y-2">
+            <label className="block text-xs sm:text-sm font-semibold leading-relaxed">
+              Autorizo que salga en fotos de actividades propias de la Catequesis y sean publicadas en las redes sociales de la Parroquia
+            </label>
+            <div className="flex gap-5 text-sm pt-1">
+              {['SI', 'NO'].map((option) => (
+                <label key={option} className="inline-flex items-center gap-2 cursor-pointer font-medium">
+                  <input
+                    type="radio"
+                    name="photoConsent"
+                    value={option}
+                    checked={student.photoConsent === option}
+                    onChange={(e) => setStudent({ ...student, photoConsent: e.target.value })}
+                    className="text-red-800 focus:ring-red-800"
+                  />
+                  {option === 'SI' ? 'Sí' : 'No'}
+                </label>
+              ))}
+            </div>
+          </div>
+
           <label className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs sm:text-sm cursor-pointer">
             <input
               required
@@ -1445,7 +1486,7 @@ export default function EnrollmentView({
               className="mt-0.5 rounded text-red-800 focus:ring-red-800"
             />
             <span className="leading-relaxed text-slate-200">
-              <strong className="text-amber-700 dark:text-amber-300">Acepto el compromiso de formación en la fe.</strong> <span className="commitment-text" style={{ color: themeMode === 'dark' ? '#ffffff' : '#000000' }}>ME COMPROMETO A CUMPLIR CON LA FORMACIÓN EN LA FE Y PARTICIPAR EN LO QUE SE REQUIERE EN LA CATEQUESIS, ENCUENTROS FAMILIARES Y MISAS DE NIÑOS, PARA QUE MI HIJO O HIJA CREZCA ESPIRITUALMENTE COMO HIJO DE DIOS Y APRENDA A VIVIR CRISTIANAMENTE.</span>
+              <strong className="text-amber-700 dark:text-amber-300">Acepto el compromiso de formación en la fe: </strong> <span className="commitment-text" style={{ color: themeMode === 'dark' ? '#ffffff' : '#000000' }}>Indico que esta decisión la asumo teniendo en cuenta de que tengo conocimiento de los requisitos y lineamientos del catequizando y mi persona como encargado legal, y deberé velar porque mi hijo o hija participe de manera puntual de los encuentros y eucaristías de la catequesis y que cumpla con las asignaciones otorgadas, celebraciones especiales de la diaconía. Así mismo acepto cumplir con los lineamientos establecidos por nuestra Parroquia y la Diócesis de Alajuela.</span>
             </span>
           </label>
         </div>

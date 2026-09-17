@@ -1,5 +1,3 @@
-import { jsPDF } from 'jspdf';
-
 /**
  * Convierte un archivo nativo (PDF o Imagen) a string Base64 puro (sin encabezado data:).
  * @param {File} file 
@@ -64,6 +62,7 @@ export const compressImage = (file, maxWidth = 1280, quality = 0.7) => {
  * @returns {Promise<string>} Base64 puro del PDF generado (listo para Apps Script)
  */
 export const generateIDCardPdf = async (imageBase64List) => {
+  const { jsPDF } = await import('jspdf');
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',

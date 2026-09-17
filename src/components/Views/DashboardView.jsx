@@ -203,6 +203,10 @@ export function DashboardView({
                 userRole={activeViewMode}
                 userName={userData?.fullName || user?.displayName || 'Usuario'}
                 themeMode={themeMode}
+                visibleStudents={visibleStudents}
+                visibleGroups={visibleGroups}
+                selectedGroupId={selectedGroupId}
+                attendanceDate={attendanceDate}
               />
             </div>
           </div>
