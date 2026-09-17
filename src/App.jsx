@@ -4370,7 +4370,7 @@ ${catechistName}`;
       </header>
 
       {/* CONTENIDO PRINCIPAL */}
-      <main className={`theme-content flex-grow max-w-7xl mx-auto w-full p-4 sm:p-6 lg:p-8 ${themeMode === 'dark' ? 'theme-dark' : 'theme-light'}`}>
+      <main className={`theme-content flex-grow max-w-7xl mx-auto w-full min-w-0 overflow-x-hidden p-4 sm:p-6 lg:p-8 ${themeMode === 'dark' ? 'theme-dark' : 'theme-light'}`}>
         
         {isTerritoryPending && (
           <div className="mb-6 bg-amber-500/10 border-2 border-amber-500/40 text-amber-500 rounded-2xl p-4 text-xs sm:text-sm font-semibold flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md">

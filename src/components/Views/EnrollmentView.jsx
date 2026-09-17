@@ -945,7 +945,7 @@ export default function EnrollmentView({
   const availableDiaconias = diaconias.filter(d => d.parroquiaId === selectedParroquiaId);
 
   return (
-    <div className="space-y-6 relative">
+    <div className="space-y-6 relative min-w-0 w-full">
       {/* Toast Flotante Fijo */}
       {successToast && (
         <div className="fixed top-20 right-4 sm:right-6 z-50 max-w-md bg-emerald-600 text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-3 text-sm font-semibold animate-bounce border-2 border-emerald-400">
@@ -966,8 +966,8 @@ export default function EnrollmentView({
         </div>
       </div>
 
-      <form onSubmit={handleSubmitEnrollment} className="space-y-6">
-        <fieldset disabled={readOnly} className="space-y-6">
+      <form onSubmit={handleSubmitEnrollment} className="space-y-6 min-w-0">
+        <fieldset disabled={readOnly} className="space-y-6 min-w-0">
         {/* SECCIÓN CONFIGURACIÓN GENERAL */}
         <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4`}>
           <div>
