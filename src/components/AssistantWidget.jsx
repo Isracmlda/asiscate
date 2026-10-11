@@ -42,18 +42,63 @@ export const AssistantWidget = ({
   const recognitionRef = useRef(null);
 
   const DEFAULT_MODELS = [
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
     'gemini-2.5-flash-lite',
-    'gemini-1.5-flash',
+    'gemini-2.5-flash',
     'gemini-2.0-flash-lite',
-    'gemini-2.5-flash'
+    'gemini-1.5-flash'
   ];
 
-  const [candidateList] = useState(DEFAULT_MODELS);
+  const [candidateList, setCandidateList] = useState(DEFAULT_MODELS);
   const [currentModelIndex, setCurrentModelIndex] = useState(0);
   const [isModelReady, setIsModelReady] = useState(Boolean(apiKey && ai));
 
+  // Escaneo dinámico de modelos disponibles en la API de Gemini
   useEffect(() => {
     setIsModelReady(Boolean(apiKey && ai));
+
+    if (ai) {
+      (async () => {
+        try {
+          const fetchedModels = [];
+          const response = await ai.models.list();
+          for await (const modelObj of response) {
+            const rawName = modelObj.name || '';
+            const modelId = rawName.replace(/^models\//, '');
+            if (modelId && (modelId.includes('flash') || modelId.includes('lite') || modelId.includes('gemini'))) {
+              fetchedModels.push(modelId);
+            }
+          }
+
+          if (fetchedModels.length > 0) {
+            // Ordenar dando prioridad a los modelos lite/flash más recientes (3.5, 3.1, 3.0, 2.5, etc.)
+            const priorityOrder = [
+              'gemini-3.5-flash-lite',
+              'gemini-3.1-flash-lite',
+              'gemini-3-flash-lite',
+              'gemini-2.5-flash-lite',
+              'gemini-2.5-flash',
+              'gemini-2.0-flash-lite',
+              'gemini-1.5-flash'
+            ];
+
+            const sorted = [...new Set([...fetchedModels, ...DEFAULT_MODELS])].sort((a, b) => {
+              const idxA = priorityOrder.findIndex(p => a.includes(p) || a === p);
+              const idxB = priorityOrder.findIndex(p => b.includes(p) || b === p);
+              if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+              if (idxA !== -1) return -1;
+              if (idxB !== -1) return 1;
+              return a.localeCompare(b);
+            });
+
+            setCandidateList(sorted);
+          }
+        } catch (err) {
+          console.warn('[MarIA Model Scanner] No se pudo obtener la lista remota de modelos, usando lista base:', err);
+        }
+      })();
+    }
   }, []);
 
   const activeModel = candidateList[currentModelIndex] || 'gemini-2.5-flash-lite';
@@ -104,7 +149,7 @@ export const AssistantWidget = ({
     }
   };
 
-  // --- SINTETIZADOR DE VOZ (LECTURA HABLADA EN VOZ ALTA) ---
+  // --- SINTETIZADOR DE VOZ (LECTURA HABLADA EN VOZ ALTA FEMENINA) ---
   const toggleSpeechPlayback = (messageId, text) => {
     if (!('speechSynthesis' in window)) {
       alert('Tu navegador no soporta lectura en voz alta.');
@@ -125,8 +170,34 @@ export const AssistantWidget = ({
       .replace(/https?:\/\/\S+/g, 'enlace');
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = 'es-ES';
+    utterance.lang = 'es-MX'; // Priorizar variantes latinoamericanas
     utterance.rate = 1.0;
+
+    // Buscar voz femenina en español del sistema (Google, Microsoft, Monica, Helena, Paulina, Sabina, etc.)
+    const voices = window.speechSynthesis.getVoices();
+    const spanishVoices = voices.filter(v => v.lang.startsWith('es'));
+
+    const femaleVoice = spanishVoices.find(v => {
+      const name = v.name.toLowerCase();
+      return (
+        name.includes('female') ||
+        name.includes('mujer') ||
+        name.includes('sabina') ||
+        name.includes('helena') ||
+        name.includes('monica') ||
+        name.includes('paulina') ||
+        name.includes('hilda') ||
+        name.includes('laura') ||
+        name.includes('dalia') ||
+        name.includes('mia') ||
+        name.includes('google español') ||
+        name.includes('natural')
+      );
+    }) || spanishVoices.find(v => !v.name.toLowerCase().includes('male') && !v.name.toLowerCase().includes('pablo') && !v.name.toLowerCase().includes('jorge') && !v.name.toLowerCase().includes('raul')) || spanishVoices[0];
+
+    if (femaleVoice) {
+      utterance.voice = femaleVoice;
+    }
 
     utterance.onend = () => setSpeakingMessageId(null);
     utterance.onerror = () => setSpeakingMessageId(null);
@@ -278,6 +349,9 @@ export const AssistantWidget = ({
       Eres la asistente virtual pastoral y técnica de la plataforma de catequesis AsisCate de la Parroquia El Carmen (Alajuela, Costa Rica).
       Respondes ÚNICAMENTE al mensaje o consulta que el usuario acaba de escribir. NUNCA saludes repetitivamente.
 
+      [GENERACIÓN DE IMÁGENES Y DIBUJOS]
+      - Si el usuario te solicita directamente crear o generar una imagen o dibujo para colorear, explica amablemente que como asistente de texto no puedes generar archivos de imagen directamente por el chat, pero brinda ideas pastoralmente ricas o términos de búsqueda específicos para ayudar al usuario.
+
       [DESARROLLADOR / ORIGEN]
       - Tu desarrollador y creador de la plataforma es Israel (catequista de la parroquia).
       - Si te preguntan quién te creó, responde: "Fui desarrollada por Israel, catequista de nuestra parroquia El Carmen."
@@ -346,13 +420,29 @@ export const AssistantWidget = ({
           const call = functionCalls[0];
           const localResult = executeLocalFunctionCall(call.name, call.args);
 
+          const userParts = Array.isArray(contentsPayload) 
+            ? contentsPayload.map(p => typeof p === 'string' ? { text: p } : p)
+            : [{ text: String(contentsPayload) }];
+
           const toolResponsePayload = [
-            ...(Array.isArray(contentsPayload) ? contentsPayload : [contentsPayload]),
             {
-              functionResponse: {
-                name: call.name,
-                response: localResult
-              }
+              role: 'user',
+              parts: userParts
+            },
+            {
+              role: 'model',
+              parts: [{ functionCall: call }]
+            },
+            {
+              role: 'user',
+              parts: [
+                {
+                  functionResponse: {
+                    name: call.name,
+                    response: localResult
+                  }
+                }
+              ]
             }
           ];
 
@@ -448,11 +538,21 @@ export const AssistantWidget = ({
     setAssistantMessages(prev => [...prev, userMessage, initialBotMessage]);
     setIsLoading(true);
 
-    await generateAssistantReplyStream(userText, fileToProcess, (accumulatedText) => {
+    const finalReply = await generateAssistantReplyStream(userText, fileToProcess, (accumulatedText) => {
       setAssistantMessages(prev =>
         prev.map(msg => msg.id === botMessageId ? { ...msg, text: accumulatedText } : msg)
       );
     });
+
+    // Si el callback de streaming no actualizó nada o hubo falla directa, asegurar mostrar la respuesta final o mensaje de error
+    setAssistantMessages(prev =>
+      prev.map(msg => {
+        if (msg.id === botMessageId && (msg.text === '...' || !msg.text)) {
+          return { ...msg, text: finalReply || 'No se recibió respuesta del modelo.' };
+        }
+        return msg;
+      })
+    );
 
     setIsLoading(false);
   };
@@ -476,35 +576,27 @@ export const AssistantWidget = ({
     <div className={`rounded-2xl border p-3 sm:p-4 transition-colors ${
       isDark ? 'border-sky-500/20 bg-sky-500/5' : 'border-sky-300 bg-sky-50/70'
     }`}>
-      {/* HEADER DE MARIA CON PESTAÑAS */}
-      <div className="flex items-center justify-between mb-3 border-b pb-2 border-slate-700/40">
+      {/* HEADER DE MARIA LISO Y LIMPIO */}
+      <div className="flex items-center justify-between gap-2 mb-3 border-b pb-2 border-slate-700/40">
         <div className="flex items-center gap-2">
           <h3 className={`text-base font-bold ${isDark ? 'text-sky-300' : 'text-sky-900'}`}>MarIA</h3>
-          <span className="text-[10px] bg-sky-500/20 text-sky-400 px-2 py-0.5 rounded-full font-bold">Voz & Streaming</span>
+          <span className="text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 px-2 py-0.5 rounded-full font-medium" title={`Modelo activo: ${activeModel}`}>
+            Powered by <strong className="font-mono text-sky-300 font-bold">{activeModel}</strong>
+          </span>
         </div>
         
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 ml-auto">
           <button
             type="button"
-            onClick={() => setActiveTabMode('chat')}
-            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors ${
-              activeTabMode === 'chat' 
-                ? 'bg-sky-600 text-white' 
-                : (isDark ? 'text-slate-400 hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-200')
-            }`}
-          >
-            💬 Chat
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTabMode('favorites')}
+            onClick={() => setActiveTabMode(activeTabMode === 'favorites' ? 'chat' : 'favorites')}
+            title="Favoritos"
             className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-colors flex items-center gap-1 ${
               activeTabMode === 'favorites' 
-                ? 'bg-amber-500 text-amber-950 font-extrabold' 
+                ? 'bg-amber-500 text-amber-950 font-extrabold shadow' 
                 : (isDark ? 'text-amber-400 hover:bg-slate-800' : 'text-amber-600 hover:bg-slate-200')
             }`}
           >
-            ⭐ Favoritos ({favorites.length})
+            ⭐ ({favorites.length})
           </button>
         </div>
       </div>
@@ -531,78 +623,93 @@ export const AssistantWidget = ({
             <div
               key={message.id}
               id={`maria-card-${message.id}`}
-              className={`max-w-[95%] rounded-xl px-3 py-2 text-sm ${
+              className={`max-w-[95%] sm:max-w-[90%] min-w-0 rounded-xl px-3 py-2 text-sm break-words overflow-hidden ${
                 message.role === 'assistant' 
                   ? (isDark ? 'bg-slate-800 text-slate-100 border border-slate-700' : 'bg-white text-slate-800 border border-slate-200 shadow-sm') 
                   : 'ml-auto bg-sky-600 text-white font-medium'
               }`}
             >
               {message.fileName && (
-                <div className="text-[11px] font-bold text-sky-200 bg-sky-950/60 px-2 py-1 rounded mb-2 inline-flex items-center gap-1.5">
-                  <span>📎 Documento/Imagen:</span> {message.fileName}
+                <div className="text-[11px] font-bold text-sky-200 bg-sky-950/60 px-2 py-1 rounded mb-2 inline-flex items-center gap-1.5 max-w-full truncate">
+                  <span>📎 Documento/Imagen:</span> <span className="truncate">{message.fileName}</span>
                 </div>
               )}
 
-              <div className={`text-sm [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ul]:my-1 [&>ol]:my-1 ${
+              <div className={`text-sm break-words [word-break:break-word] overflow-wrap-break-word [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ul]:my-1 [&>ol]:my-1 ${
                 message.role === 'assistant'
                   ? (isDark ? 'prose prose-invert max-w-none' : 'text-slate-800')
                   : 'text-white'
               }`}>
-                <ReactMarkdown>
+                <ReactMarkdown
+                  components={{
+                    code({ node, inline, className, children, ...props }) {
+                      const match = /language-(xml|svg|html)/.exec(className || '');
+                      const codeString = String(children).trim();
+                      const isSvgCode = (match || codeString.startsWith('<svg')) && codeString.includes('</svg>');
+
+                      if (!inline && isSvgCode) {
+                        return (
+                          <div className="my-3 p-3 bg-white text-black rounded-xl border border-slate-300 shadow-sm flex flex-col items-center gap-2">
+                            <div 
+                              className="w-full max-w-md flex justify-center items-center overflow-auto p-2"
+                              dangerouslySetInnerHTML={{ __html: codeString }}
+                            />
+                            <div className="flex gap-2 text-xs">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const blob = new Blob([codeString], { type: 'image/svg+xml' });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = url;
+                                  a.download = 'dibujo_marIA.svg';
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                }}
+                                className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-lg transition-colors flex items-center gap-1"
+                              >
+                                📥 Descargar SVG
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      );
+                    }
+                  }}
+                >
                   {message.text}
                 </ReactMarkdown>
               </div>
 
-              {/* BARRA DE ACCIONES: PDF, WORD, IMAGEN, REPRODUCIR VOZ, FAVORITOS Y COPIAR */}
+              {/* BARRA DE ACCIONES CON ICONOS Y TOOLTIPS */}
               {message.role === 'assistant' && (
-                <div className="flex flex-wrap items-center gap-1.5 mt-3 pt-2 border-t border-slate-700/50 text-[11px]">
+                <div className="flex flex-wrap items-center gap-1 mt-2 pt-2 border-t border-slate-700/50 text-[11px]">
                   <button
                     type="button"
                     onClick={() => toggleSpeechPlayback(message.id, message.text)}
-                    className={`px-2.5 py-1 rounded font-bold transition-colors flex items-center gap-1 ${
+                    className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                       isSpeaking ? 'bg-amber-500 text-amber-950 animate-pulse' : 'bg-sky-500/20 hover:bg-sky-500/30 text-sky-300'
                     }`}
-                    title={isSpeaking ? 'Detener lectura' : 'Escuchar respuesta en voz alta'}
+                    title={isSpeaking ? 'Detener lectura' : 'Escuchar respuesta'}
                   >
-                    {isSpeaking ? '⏹️ Detener' : '🔊 Escuchar'}
+                    <span>{isSpeaking ? '⏹️' : '🔊'}</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => toggleFavorite(message)}
-                    className={`px-2.5 py-1 rounded font-bold transition-colors flex items-center gap-1 ${
+                    className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                       isFav ? 'bg-amber-400 text-amber-950' : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300'
                     }`}
-                    title={isFav ? 'Quitar de favoritos' : 'Guardar respuesta en favoritos'}
+                    title={isFav ? 'Quitar de favoritos' : 'Favoritos'}
                   >
-                    {isFav ? '★ Guardado' : '⭐ Favorito'}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => exportResponseToPdf(`Respuesta_MarIA_${message.id}`, message.text)}
-                    className="px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-bold transition-colors flex items-center gap-1"
-                    title="Descargar en PDF"
-                  >
-                    📄 PDF
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => exportResponseToWord(`Respuesta_MarIA_${message.id}`, message.text)}
-                    className="px-2.5 py-1 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 font-bold transition-colors flex items-center gap-1"
-                    title="Descargar en Word"
-                  >
-                    📝 Word
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => exportResponseToImage(`maria-card-${message.id}`, `Respuesta_MarIA_${message.id}`)}
-                    className="px-2.5 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-bold transition-colors flex items-center gap-1"
-                    title="Descargar en Imagen PNG"
-                  >
-                    🖼️ PNG
+                    <span>{isFav ? '★' : '⭐'}</span>
                   </button>
 
                   <button
@@ -612,7 +719,8 @@ export const AssistantWidget = ({
                       setCopiedId(message.id);
                       setTimeout(() => setCopiedId(null), 2000);
                     }}
-                    className="px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold transition-colors ml-auto flex items-center gap-1"
+                    title="Copiar texto"
+                    className="px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] transition-colors ml-auto flex items-center gap-1"
                   >
                     {copiedId === message.id ? '✓ Copiado' : '📋 Copiar'}
                   </button>
@@ -623,10 +731,10 @@ export const AssistantWidget = ({
         })}
 
         {isLoading && (
-          <div className={`max-w-[90%] rounded-xl px-3 py-2 text-xs italic animate-pulse ${
-            isDark ? 'bg-slate-800 text-slate-400' : 'bg-slate-200 text-slate-600'
+          <div className={`max-w-[95%] rounded-xl px-3.5 py-2.5 text-xs italic animate-pulse border ${
+            isDark ? 'bg-slate-800 text-sky-300 border-slate-700' : 'bg-white text-sky-900 border-slate-200 shadow-sm'
           }`}>
-            MarIA está procesando y respondiendo en tiempo real... ✨
+            ✨ MarIA está procesando y respondiendo en tiempo real...
           </div>
         )}
       </div>
@@ -650,7 +758,7 @@ export const AssistantWidget = ({
         </div>
       )}
 
-      {/* FORMULARIO DE ENVÍO CON ADJUNTAR Y MICRÓFONO */}
+      {/* FORMULARIO DE ENVÍO CON ADJUNTAR Y MICRÓFONO DENTRO DE LA CAJA */}
       {activeTabMode === 'chat' && (
         <form onSubmit={assistantSubmit} className="mt-3 flex gap-2 items-center">
           <label
@@ -670,24 +778,25 @@ export const AssistantWidget = ({
             />
           </label>
 
-          <button
-            type="button"
-            onClick={toggleVoiceInput}
-            className={`px-3 py-2 rounded-lg border text-xs font-bold transition-colors flex items-center gap-1 ${
-              isListening ? 'bg-rose-600 text-white border-rose-500 animate-pulse' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
-            }`}
-            title={isListening ? 'Escuchando... Presiona para detener' : 'Dictar mensaje por voz'}
-          >
-            <span>🎤</span>
-          </button>
-
-          <input
-            value={assistantInput}
-            onChange={(event) => setAssistantInput(event.target.value)}
-            placeholder={isListening ? "Escuchando tu voz..." : (isModelReady ? "Pregunta a MarIA o consulta asistencias..." : "Cargando...")}
-            disabled={isLoading || !isModelReady}
-            className={`flex-1 rounded-lg px-3 py-2 text-sm outline-none disabled:opacity-50 ${inputBgClass}`}
-          />
+          <div className={`flex-1 flex items-center rounded-lg px-2 border ${inputBgClass}`}>
+            <button
+              type="button"
+              onClick={toggleVoiceInput}
+              className={`p-1.5 rounded-md text-xs font-bold transition-colors flex items-center justify-center mr-1 ${
+                isListening ? 'bg-rose-600 text-white animate-pulse' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title={isListening ? 'Escuchando... Presiona para detener' : 'Dictar mensaje por voz'}
+            >
+              <span>🎤</span>
+            </button>
+            <input
+              value={assistantInput}
+              onChange={(event) => setAssistantInput(event.target.value)}
+              placeholder={isListening ? "Escuchando tu voz..." : (isModelReady ? "Pregunta a MarIA o consulta asistencias..." : "Cargando...")}
+              disabled={isLoading || !isModelReady}
+              className="w-full bg-transparent py-2 text-sm outline-none disabled:opacity-50"
+            />
+          </div>
 
           <button
             type="submit"

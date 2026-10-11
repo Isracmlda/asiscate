@@ -765,19 +765,9 @@ export default function EnrollmentView({
             issuedBy: currentUser?.fullName || currentUser?.displayName || 'Usuario'
           };
 
-          const payloadQr = JSON.stringify({
-            type: 'payment-proof',
-            paymentId: record.id,
-            studentName: record.studentName,
-            invoiceName: record.invoiceName,
-            concept: record.concept,
-            amount: record.amount,
-            dateTime: record.dateTime,
-            issuedBy: record.issuedBy,
-            paymentMethod: record.paymentMethod
-          });
+          const payloadQr = record.id || '';
 
-          const rawQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(payloadQr)}`;
+          const rawQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=2&ecc=L&data=${encodeURIComponent(payloadQr)}`;
           let qrUrl = rawQrUrl;
           try {
             const qrRes = await fetch(rawQrUrl);
@@ -799,52 +789,54 @@ export default function EnrollmentView({
           const totalText = `₡${record.amount.toLocaleString('es-CR')}`;
 
           const receiptHtml = `
-            <div style="width: 300px; max-width: 300px; margin: 0 auto; padding: 14px 12px; font-family: 'Courier New', Courier, monospace, Arial, sans-serif; color: #000; background: #fff; font-size: 11px; line-height: 1.35; box-sizing: border-box; text-align: left;">
-              <div style="text-align: center; position: relative; padding-top: 2px; padding-bottom: 8px; border-bottom: 1.5px dashed #000;">
-                <div style="position: absolute; top: 0; right: 0; font-size: 11.5px; font-weight: 700; letter-spacing: 0.5px;">N° ${formattedNum}</div>
-                <img src="/favicon.svg" style="width: 42px; height: 42px; margin: 0 auto 4px; display: block;" alt="AsisCate" />
-                <div style="font-size: 13.5px; font-weight: 800; margin: 2px 0 1px; text-transform: uppercase; letter-spacing: 0.5px;">COMPROBANTE DE PAGO</div>
-                <div style="font-size: 9.5px; color: #333; margin: 0 0 2px;">Parroquia Nuestra Señora de ${parishName}</div>
+            <div style="width: 216px; max-width: 216px; margin: 0 auto; padding: 8px 6px; font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; color: #000; background: #fff; font-size: 10.5px; line-height: 1.3; box-sizing: border-box; text-align: left;">
+              <div style="display: flex; align-items: center; gap: 8px; padding-bottom: 6px; border-bottom: 1.5px dashed #000;">
+                <img src="/favicon.svg" style="width: 52px; height: 52px; flex-shrink: 0;" alt="AsisCate" />
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.3px; color: #000; line-height: 1.2;">COMPROBANTE DE PAGO</div>
+                  <div style="font-size: 8.5px; font-weight: 700; color: #000; margin: 2px 0;">Parroquia Ntra. Sra. de ${parishName}</div>
+                  <div style="font-size: 10px; font-weight: 800; color: #000; margin-top: 3px;">N° ${formattedNum}</div>
+                </div>
               </div>
 
-              <div style="display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed #444; font-size: 10px;">
+              <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #000; font-size: 9.5px; color: #000;">
                 <span><strong>Fecha:</strong> ${dateText}</span>
                 <span><strong>Hora:</strong> ${timeText}</span>
               </div>
 
-              <div style="padding: 6px 0; border-bottom: 1.5px dashed #000;">
+              <div style="padding: 5px 0; border-bottom: 1.5px dashed #000; color: #000;">
                 <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 9px; font-weight: 700; text-transform: uppercase; color: #333;">A nombre de:</span>
+                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">A nombre de:</span>
                   <span style="font-size: 11px; font-weight: 700; word-break: break-word;">${record.invoiceName}</span>
                 </div>
                 <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 9px; font-weight: 700; text-transform: uppercase; color: #333;">Concepto:</span>
+                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Concepto:</span>
                   <span style="font-size: 11px; word-break: break-word;">${record.concept}</span>
                 </div>
                 <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 9px; font-weight: 700; text-transform: uppercase; color: #333;">Método de pago:</span>
+                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Método de pago:</span>
                   <span style="font-size: 11px; word-break: break-word;">${record.paymentMethod}</span>
                 </div>
                 <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 9px; font-weight: 700; text-transform: uppercase; color: #333;">Factura emitida por:</span>
+                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Factura emitida por:</span>
                   <span style="font-size: 11px; word-break: break-word;">${record.issuedBy}</span>
                 </div>
               </div>
 
-              <div style="padding: 7px 0; border-bottom: 1.5px dashed #000; display: flex; justify-content: space-between; align-items: center; font-size: 12.5px; font-weight: 800;">
+              <div style="padding: 6px 0; border-bottom: 1.5px dashed #000; display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; font-weight: 900; color: #000;">
                 <span>TOTAL PAGADO:</span>
-                <span style="font-size: 14.5px;">${totalText}</span>
+                <span style="font-size: 14px; font-weight: 900; color: #000;">${totalText}</span>
               </div>
 
               <div style="text-align: center; padding: 8px 0 4px;">
-                <img src="${qrUrl}" style="width: 95px; height: 95px; margin: 0 auto; display: block; border: 1px solid #d1d5db; padding: 3px;" alt="QR Verificación" />
-                <div style="font-size: 8px; color: #666; margin-top: 3px;">Escanear para verificar comprobante</div>
+                <img src="${qrUrl}" style="width: 105px; height: 105px; margin: 0 auto; display: block; border: 1.5px solid #000; padding: 4px; background: #ffffff; image-rendering: pixelated; image-rendering: crisp-edges;" alt="QR Verificación" />
+                <div style="font-size: 8px; font-weight: 700; color: #000; margin-top: 3px;">Escanear para verificar comprobante</div>
               </div>
 
-              <div style="text-align: center; font-size: 9px; color: #333; margin-top: 6px; line-height: 1.4;">
-                <div style="font-weight: 700;">¡Muchas gracias por su aporte!</div>
-                <div>Documento válido como comprobante oficial.</div>
-                <div style="font-weight: 700; margin-top: 2px; color: #7f1d1d;">AsisCate • Sistema Parroquial</div>
+              <div style="text-align: center; font-size: 8.5px; color: #000; margin-top: 4px; line-height: 1.35;">
+                <div style="font-weight: 800;">¡Muchas gracias por su aporte!</div>
+                <div style="font-weight: 600;">Documento válido como comprobante oficial.</div>
+                <div style="font-weight: 800; margin-top: 2px; color: #000;">AsisCate • Sistema Parroquial</div>
               </div>
             </div>
           `;
@@ -853,7 +845,7 @@ export default function EnrollmentView({
           container.style.position = 'fixed';
           container.style.left = '0';
           container.style.top = '0';
-          container.style.width = '300px';
+          container.style.width = '216px';
           container.style.opacity = '0';
           container.style.pointerEvents = 'none';
           container.style.zIndex = '-9999';
@@ -895,8 +887,8 @@ export default function EnrollmentView({
             }
           });
 
-          const pdfWidthMm = 80;
-          const imgAspectRatio = (img.naturalHeight || 500) / (img.naturalWidth || 300);
+          const pdfWidthMm = 57;
+          const imgAspectRatio = (img.naturalHeight || 400) / (img.naturalWidth || 216);
           const pdfHeightMm = Math.round(pdfWidthMm * imgAspectRatio);
 
           const pdf = new jsPDF({
