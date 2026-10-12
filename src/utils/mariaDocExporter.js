@@ -118,7 +118,7 @@ export const exportResponseToWord = (title, contentText) => {
     </head>
     <body>
       <div class="header">
-        <div class="header-title">✝️ AsisCate • Parroquia El Carmen</div>
+        <div class="header-title">AsisCate • Parroquia El Carmen</div>
         <div class="header-sub">Documento generado por MarIA (Asistente Pastoral Virtual)</div>
       </div>
       <div class="content">
@@ -161,7 +161,7 @@ export const exportResponseToPdf = async (title, contentText) => {
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(14);
   doc.setTextColor(2, 132, 199); // Azul celeste pastoral
-  doc.text('✝️ AsisCate • Parroquia El Carmen', 14, 16);
+  doc.text('AsisCate • Parroquia El Carmen', 14, 16);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);

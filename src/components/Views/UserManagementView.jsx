@@ -13,6 +13,10 @@ export function UserManagementView({
   diaconias,
   handleApproveUser,
   handleToggleActiveUser,
+  attendanceRemindersEnabled,
+  attendanceRemindersConfigReady,
+  savingGlobalReminderSetting,
+  handleToggleGlobalAttendanceReminders,
   handleDeleteUser,
   handleAddAllowedEmail,
   newAllowedEmailInput,
@@ -25,6 +29,35 @@ export function UserManagementView({
       <h2 className="text-xl sm:text-2xl font-bold">
         {activeViewMode === 'admin' ? 'Control de Usuarios, Roles y Jurisdicción' : 'Gestión de Catequistas de la Diaconía'}
       </h2>
+      {userRole === 'admin' && activeViewMode === 'admin' && (
+        <section className={`${cardBgClass} rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3`}>
+          <div>
+            <h3 className="text-sm font-bold">Recordatorios para pasar lista</h3>
+            <p className="mt-1 text-xs text-slate-400">
+              {!attendanceRemindersConfigReady
+                ? 'Cargando la configuración de recordatorios…'
+                : attendanceRemindersEnabled
+                ? 'Activos para los catequistas que los habilitaron en su perfil.'
+                : 'Pausados para todos. Las preferencias personales se conservarán.'}
+              {' '}Cada catequista también debe permitir las notificaciones en su navegador.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleToggleGlobalAttendanceReminders}
+            disabled={savingGlobalReminderSetting || !attendanceRemindersConfigReady}
+            className={`shrink-0 rounded-lg px-4 py-2 text-xs font-bold text-white disabled:opacity-60 ${
+              attendanceRemindersEnabled ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
+            }`}
+          >
+            {savingGlobalReminderSetting
+              ? 'Guardando…'
+              : !attendanceRemindersConfigReady
+                ? 'Cargando…'
+                : attendanceRemindersEnabled ? 'Pausar para todos' : 'Reanudar para todos'}
+          </button>
+        </section>
+      )}
       <div className={`${cardBgClass} rounded-xl border shadow-sm overflow-x-auto`}>
         <table className="min-w-full divide-y divide-slate-700 text-xs sm:text-sm">
           <thead className={themeMode === 'dark' ? 'bg-black' : 'bg-slate-50'}>
@@ -102,7 +135,7 @@ export function UserManagementView({
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                         isApproved ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
                       }`}>
-                        {isApproved ? '✓ Aprobado' : '⏳ Pendiente Aprobación'}
+                        {isApproved ? <><MaterialIcon name="check_circle" /> Aprobado</> : <><MaterialIcon name="hourglass_top" /> Pendiente Aprobación</>}
                       </span>
                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                         isActive ? 'bg-sky-500/10 text-sky-400 border border-sky-500/30' : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
@@ -207,3 +240,4 @@ export function UserManagementView({
     </div>
   );
 }
+import { MaterialIcon } from '../Shared/MaterialIcon';

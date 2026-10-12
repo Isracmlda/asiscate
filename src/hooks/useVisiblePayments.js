@@ -4,6 +4,7 @@ export function useVisiblePayments({
   paymentRecords,
   paymentFilters,
   paymentCurrentPage,
+  paymentPageSize,
   groups,
   activeViewMode,
   effectiveDiaconiaId,
@@ -33,15 +34,17 @@ export function useVisiblePayments({
     return matchesGroup && matchesDate && matchesSearch;
   }), [paymentFilters, visiblePaymentRecords]);
 
-  const paymentPageSize = 10;
-  const paymentTotalPages = Math.max(1, Math.ceil(filteredPaymentRecords.length / paymentPageSize));
+  const effectivePageSize = paymentPageSize === 'all'
+    ? Math.max(filteredPaymentRecords.length, 1)
+    : Number(paymentPageSize);
+  const paymentTotalPages = Math.max(1, Math.ceil(filteredPaymentRecords.length / effectivePageSize));
   const paginatedPaymentRecords = useMemo(() => filteredPaymentRecords.slice(
-    (paymentCurrentPage - 1) * paymentPageSize,
-    paymentCurrentPage * paymentPageSize
-  ), [filteredPaymentRecords, paymentCurrentPage]);
+    (paymentCurrentPage - 1) * effectivePageSize,
+    paymentCurrentPage * effectivePageSize
+  ), [effectivePageSize, filteredPaymentRecords, paymentCurrentPage]);
   const totalCollected = useMemo(() => visiblePaymentRecords.reduce(
     (sum, record) => sum + Number(record.amount || 0), 0
   ), [visiblePaymentRecords]);
 
-  return { visiblePaymentRecords, filteredPaymentRecords, paginatedPaymentRecords, paymentPageSize, paymentTotalPages, totalCollected };
+  return { visiblePaymentRecords, filteredPaymentRecords, paginatedPaymentRecords, paymentTotalPages, totalCollected };
 }

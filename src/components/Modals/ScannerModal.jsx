@@ -3,7 +3,8 @@ export function ScannerModal({
   scannerModal,
   setScannerModal,
   cardBgClass,
-  videoRef
+  videoRef,
+  isCatechistAttendanceScan = false
 }) {
   if (!scannerModal?.open) return null;
 
@@ -42,7 +43,7 @@ export function ScannerModal({
                 ? `No se encontró ningún comprobante para: ${scannerModal.result}`
                 : scannerModal.type === 'certificate'
                   ? `No se encontró ningún certificado para: ${scannerModal.result}`
-                  : `No se encontró el catequizando: ${scannerModal.result}`}
+                  : `No se encontró ${isCatechistAttendanceScan ? 'el catequista' : 'el catequizando'}: ${scannerModal.result}`}
             </p>
             <p className="text-[11px] text-slate-400 mt-2 italic">Cerrando en 2 segundos...</p>
           </div>
@@ -54,7 +55,7 @@ export function ScannerModal({
                 ? 'Apunta la cámara al código QR de la factura o comprobante.'
                 : scannerModal.type === 'certificate'
                   ? 'Apunta la cámara al código QR impreso en el certificado.'
-                  : 'Apunta la cámara al carnet del catequizando para marcar asistencia automáticamente.'}
+                  : `Apunta la cámara al carnet del ${isCatechistAttendanceScan ? 'catequista' : 'catequizando'} para marcar asistencia automáticamente.`}
             </p>
           </>
         )}

@@ -7,9 +7,13 @@ export async function resolveUserProfile(db, currentUser) {
   const userSnapshot = await getDoc(userRef);
   const email = currentUser.email?.toLowerCase() || '';
   const isDefaultAdmin = DEFAULT_ADMIN_EMAILS.includes(email);
+  const catechistRosterRef = email ? doc(db, 'catechistRoster', email) : null;
+  const catechistRosterSnapshot = catechistRosterRef ? await getDoc(catechistRosterRef) : null;
+  const preregisteredCatechist = catechistRosterSnapshot?.exists() ? catechistRosterSnapshot.data() : null;
 
   if (userSnapshot.exists()) {
     const data = userSnapshot.data();
+    const applyReminderDefault = data.attendanceRemindersDefaultApplied !== true;
     let role = data.role || 'catequista';
     if (isDefaultAdmin) role = 'admin';
     const profile = {
@@ -19,9 +23,36 @@ export async function resolveUserProfile(db, currentUser) {
       email: currentUser.email || data.email,
       role,
       theme: data.theme || 'light',
-      navbarColor: data.navbarColor || '#7f1d1d'
+      navbarColor: data.navbarColor || '#7f1d1d',
+      attendanceRemindersEnabled: applyReminderDefault || data.attendanceRemindersEnabled === true
     };
-    await updateDoc(userRef, { name: profile.name, email: profile.email, role });
+    const updates = {
+      name: profile.name,
+      email: profile.email,
+      role,
+      ...(applyReminderDefault ? {
+        attendanceRemindersEnabled: true,
+        attendanceRemindersDefaultApplied: true
+      } : {})
+    };
+    let linkPreregisteredCatechist = false;
+    if (preregisteredCatechist && (!data.diaconiaId || data.diaconiaId === preregisteredCatechist.diaconiaId)) {
+      profile.name = data.name || preregisteredCatechist.name || profile.name;
+      profile.diaconiaId = data.diaconiaId || preregisteredCatechist.diaconiaId || '';
+      profile.parroquiaId = data.parroquiaId || preregisteredCatechist.parroquiaId || '';
+      profile.attendance = data.attendance?.length ? data.attendance : preregisteredCatechist.attendance || [];
+      Object.assign(updates, {
+        name: profile.name,
+        diaconiaId: profile.diaconiaId,
+        parroquiaId: profile.parroquiaId,
+        attendance: profile.attendance
+      });
+      linkPreregisteredCatechist = true;
+    }
+    await updateDoc(userRef, updates);
+    if (linkPreregisteredCatechist) {
+      await updateDoc(catechistRosterRef, { linkedUserId: currentUser.uid });
+    }
     return { profile, role };
   }
 
@@ -38,20 +69,26 @@ export async function resolveUserProfile(db, currentUser) {
   const role = isDefaultAdmin ? 'admin' : 'catequista';
   const profile = {
     id: currentUser.uid,
-    name: currentUser.displayName || 'Usuario',
+    name: currentUser.displayName || preregisteredCatechist?.name || 'Usuario',
     email: currentUser.email,
     role,
-    parroquiaId: '',
-    diaconiaId: '',
+    parroquiaId: preregisteredCatechist?.parroquiaId || '',
+    diaconiaId: preregisteredCatechist?.diaconiaId || '',
     phoneCode: '+506',
     phoneNumber: '',
     phone: '',
     approved,
     active: true,
+    ...(Array.isArray(preregisteredCatechist?.attendance) ? { attendance: preregisteredCatechist.attendance } : {}),
     theme: 'light',
     navbarColor: '#7f1d1d',
+    attendanceRemindersEnabled: true,
+    attendanceRemindersDefaultApplied: true,
     createdAt: new Date().toISOString()
   };
   await setDoc(userRef, profile);
+  if (preregisteredCatechist) {
+    await updateDoc(catechistRosterRef, { linkedUserId: currentUser.uid });
+  }
   return { profile, role };
 }

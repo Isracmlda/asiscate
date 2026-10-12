@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { MaterialIcon } from '../Shared/MaterialIcon';
 
 export function PaymentsView({
   cardBgClass,
@@ -12,6 +13,7 @@ export function PaymentsView({
   visibleStudents,
   setPaymentFilters,
   setPaymentCurrentPage,
+  setPaymentPageSize,
   setPaymentForm,
   handleAddPaymentRecord,
   paymentForm,
@@ -26,16 +28,45 @@ export function PaymentsView({
   handleDeletePaymentRecord,
   paymentPageSize,
   paymentCurrentPage,
-  paymentTotalPages
+  paymentTotalPages,
+  fixedGroupId = ''
 }) {
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [historyStudentId, setHistoryStudentId] = useState('');
+  const [isGroupTrackerOpen, setIsGroupTrackerOpen] = useState(false);
+  const isGroupScoped = Boolean(fixedGroupId);
+  const isTrackerOpen = isGroupScoped ? isGroupTrackerOpen : showGroupPaymentTracker;
+  const effectiveGroupId = fixedGroupId || paymentFilters.groupId;
+  const paymentsForView = useMemo(
+    () => isGroupScoped ? visiblePaymentRecords.filter(record => record.groupId === fixedGroupId) : visiblePaymentRecords,
+    [fixedGroupId, isGroupScoped, visiblePaymentRecords]
+  );
+  const filteredRecordsForView = useMemo(() => isGroupScoped
+    ? paymentsForView.filter(record => {
+      const recordDate = record.date || record.dateTime?.split('T')[0] || '';
+      const receiptNum = String(record.id || '').replace(/\D/g, '').slice(-6) || String(record.id || '').slice(-6);
+      const searchTarget = `${record.studentName || ''} ${record.invoiceName || ''} ${record.concept || ''} ${record.id || ''} ${receiptNum}`.toLowerCase();
+      return (!paymentFilters.date || recordDate === paymentFilters.date)
+        && (!paymentFilters.search || searchTarget.includes(paymentFilters.search.toLowerCase()));
+    })
+    : filteredPaymentRecords,
+  [filteredPaymentRecords, isGroupScoped, paymentFilters.date, paymentFilters.search, paymentsForView]);
+  const effectivePageSize = paymentPageSize === 'all'
+    ? Math.max(filteredRecordsForView.length, 1)
+    : Number(paymentPageSize);
+  const paginatedRecordsForView = useMemo(() => isGroupScoped
+    ? filteredRecordsForView.slice((paymentCurrentPage - 1) * effectivePageSize, paymentCurrentPage * effectivePageSize)
+    : paginatedPaymentRecords,
+    [effectivePageSize, filteredRecordsForView, isGroupScoped, paginatedPaymentRecords, paymentCurrentPage]);
+  const totalPagesForView = isGroupScoped
+    ? Math.max(1, Math.ceil(filteredRecordsForView.length / effectivePageSize))
+    : paymentTotalPages;
   const generateStudentPaymentHistoryPdf = async () => {
     if (!historyStudentId) return;
-    const student = students.find(item => item.id === historyStudentId && item.groupId === paymentFilters.groupId);
+    const student = students.find(item => item.id === historyStudentId && item.groupId === effectiveGroupId);
     if (!student) return;
     const name = student.name || student.fullName || 'Catequizando';
-    const records = visiblePaymentRecords.filter(record => record.studentId === student.id || (record.studentName || '').toLowerCase().trim() === name.toLowerCase().trim());
+    const records = paymentsForView.filter(record => record.studentId === student.id || (record.studentName || '').toLowerCase().trim() === name.toLowerCase().trim());
     try {
     const jsPdfModule = await import('jspdf');
     const jsPDF = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
@@ -56,7 +87,7 @@ export function PaymentsView({
     doc.save(`Historial_Pagos_${name.replace(/\s+/g, '_')}.pdf`);
     } catch (error) { console.error('Error generando historial de pagos:', error); alert('No se pudo generar el PDF del historial.'); }
   };
-  const collectedByMethod = visiblePaymentRecords.reduce((totals, payment) => {
+  const collectedByMethod = paymentsForView.reduce((totals, payment) => {
     const amount = Number(payment.amount || payment.totalAmount || 0);
     const method = String(payment.paymentMethod || '').toUpperCase();
     if (method.includes('SINPE')) totals.sinpe += amount;
@@ -79,49 +110,61 @@ export function PaymentsView({
         </div>
         <button
           type="button"
-          onClick={() => setShowGroupPaymentTracker(prev => !prev)}
-          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs sm:text-sm font-semibold transition shadow-sm"
+          onClick={() => isGroupScoped
+            ? setIsGroupTrackerOpen(previous => !previous)
+            : setShowGroupPaymentTracker(previous => !previous)}
+          aria-expanded={isTrackerOpen}
+          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs sm:text-sm font-semibold transition shadow-sm"
         >
-          <span>📊</span>
-          <span>{showGroupPaymentTracker ? 'Ocultar gráfico por grupo' : 'Ver gráfico por grupo'}</span>
-          <span className="text-xs">{showGroupPaymentTracker ? '▲' : '▼'}</span>
+          <MaterialIcon name="monitoring" />
+          <span>{isTrackerOpen ? 'Ocultar gráfico' : 'Mostrar gráfico'}</span>
+          <MaterialIcon name={isTrackerOpen ? 'expand_less' : 'expand_more'} className="text-base" />
         </button>
       </div>
 
-      {showGroupPaymentTracker && (
-        <div className={`${cardBgClass} order-3 p-4 sm:p-6 rounded-xl border border-indigo-500/30 shadow-md space-y-4`}>
+      <div
+        aria-hidden={!isTrackerOpen}
+        inert={!isTrackerOpen}
+        className="order-3 grid transition-[grid-template-rows,opacity] duration-300 ease-in-out motion-reduce:transition-none"
+        style={{
+          gridTemplateRows: isTrackerOpen ? '1fr' : '0fr',
+          opacity: isTrackerOpen ? 1 : 0
+        }}
+      >
+        <div className="min-h-0 overflow-hidden">
+        <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border border-emerald-500/30 shadow-md space-y-4`}>
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-3 border-b border-slate-700">
             <div>
               <h3 className="text-base sm:text-lg font-bold text-slate-800 dark:text-white flex items-center gap-2">
-                <span>📊</span> Seguimiento Gráfico de Pagos por Catequizando
+                <MaterialIcon name="monitoring" /> Seguimiento Gráfico de Pagos por Catequizando
               </h3>
               <p className="text-xs text-slate-400">
-                Selecciona un grupo para consultar el estado y avance de aportes de sus catequizandos.
+                {isGroupScoped ? 'Estado y avance de aportes de los catequizandos de este grupo.' : 'Selecciona un grupo para consultar el estado y avance de aportes de sus catequizandos.'}
               </p>
             </div>
-            <div className="w-full sm:w-72">
+            {!isGroupScoped && <div className="w-full sm:w-72">
               <select
                 value={trackerGroupId}
                 onChange={(e) => setTrackerGroupId(e.target.value)}
-                className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass} font-medium border border-indigo-500/40`}
+                className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass} font-medium border border-emerald-500/40`}
               >
                 <option value="">-- Selecciona un grupo --</option>
                 {visibleGroups.map(group => (
                   <option key={group.id} value={group.id}>{group.name} ({group.year || '2026-2027'})</option>
                 ))}
               </select>
-            </div>
+            </div>}
           </div>
 
-          {!trackerGroupId ? (
+          {!effectiveGroupId ? (
             <div className="py-8 text-center text-slate-400 text-sm">
-              <p className="text-3xl mb-2">📋</p>
+              <p className="text-3xl mb-2"><MaterialIcon name="receipt_long" /></p>
               Elige un grupo en el menú desplegable superior para visualizar sus pagos y catequizandos.
             </div>
           ) : (() => {
-            const selectedGroup = visibleGroups.find(g => g.id === trackerGroupId);
-            const groupStudents = visibleStudents.filter(s => s.groupId === trackerGroupId);
-            const groupPayments = visiblePaymentRecords.filter(p => p.groupId === trackerGroupId);
+            const selectedGroup = visibleGroups.find(g => g.id === effectiveGroupId);
+            const groupStudents = visibleStudents.filter(s => s.groupId === effectiveGroupId);
+            const groupPayments = paymentsForView.filter(p => p.groupId === effectiveGroupId);
             const groupTotal = groupPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
             const studentsWithPayments = groupStudents.filter(s => {
               const studentName = (s.name || s.fullName || '').toLowerCase().trim();
@@ -149,7 +192,7 @@ export function PaymentsView({
                   </div>
                   <div className="bg-slate-100 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-xl p-3">
                     <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Con Pagos Registrados</span>
-                    <p className="text-xl sm:text-2xl font-black text-indigo-400 mt-1">
+                    <p className="text-xl sm:text-2xl font-black text-emerald-400 mt-1">
                       {studentsWithPayments.length} <span className="text-xs font-normal text-slate-400">de {groupStudents.length} ({percentPaid}%)</span>
                     </p>
                   </div>
@@ -173,7 +216,7 @@ export function PaymentsView({
                   </div>
                   <div className="w-full bg-slate-700/60 rounded-full h-3 overflow-hidden p-0.5 border border-slate-600/40">
                     <div
-                      className="bg-gradient-to-r from-indigo-500 via-sky-500 to-emerald-500 h-full rounded-full transition-all duration-500"
+                      className="bg-emerald-500 h-full rounded-full transition-all duration-500"
                       style={{ width: `${Math.max(percentPaid > 0 ? 3 : 0, percentPaid)}%` }}
                     />
                   </div>
@@ -195,7 +238,7 @@ export function PaymentsView({
                             key={student.id}
                             className={`rounded-xl p-3 border transition ${
                               total > 0
-                                ? 'bg-slate-50 dark:bg-slate-800/40 border-slate-300 dark:border-slate-700 hover:border-indigo-500/40'
+                                ? 'bg-slate-50 dark:bg-slate-800/40 border-slate-300 dark:border-slate-700 hover:border-emerald-500/40'
                                 : 'bg-slate-100 dark:bg-slate-800/20 border-slate-300 dark:border-slate-800/80 opacity-75'
                             }`}
                           >
@@ -222,7 +265,7 @@ export function PaymentsView({
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      setPaymentFilters(prev => ({ ...prev, search: student.name, groupId: trackerGroupId }));
+                                      setPaymentFilters(prev => ({ ...prev, search: student.name, groupId: effectiveGroupId }));
                                       setPaymentCurrentPage(1);
                                       setTimeout(() => {
                                         document.getElementById('payment-history-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -239,14 +282,14 @@ export function PaymentsView({
                                     onClick={() => {
                                       setPaymentForm(prev => ({
                                         ...prev,
-                                        groupId: trackerGroupId,
+                                        groupId: effectiveGroupId,
                                         studentId: student.id,
                                         studentName: student.name || student.fullName || '',
                                         withoutMatricula: false
                                       }));
                                       setIsPaymentModalOpen(true);
                                     }}
-                                    className="text-xs text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer"
+                                    className="text-xs text-emerald-400 hover:text-emerald-300 font-medium cursor-pointer"
                                   >
                                     + Registrar pago
                                   </button>
@@ -257,7 +300,7 @@ export function PaymentsView({
                             <div className="mt-2 w-full bg-slate-900/60 rounded-full h-1.5 overflow-hidden">
                               <div
                                 className={`h-full rounded-full transition-all duration-300 ${
-                                  total > 0 ? 'bg-indigo-500' : 'bg-transparent'
+                                  total > 0 ? 'bg-emerald-500' : 'bg-transparent'
                                 }`}
                                 style={{ width: `${barWidth}%` }}
                               />
@@ -308,20 +351,22 @@ export function PaymentsView({
             );
           })()}
         </div>
-      )}
+        </div>
+      </div>
 
       <div className="order-2 grid grid-cols-1 gap-6">
        {isPaymentModalOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/70 p-4" onMouseDown={event => event.target === event.currentTarget && setIsPaymentModalOpen(false)}>
         <div id="payment-register-form" className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto`}>
           <div className="flex items-center justify-between mb-4"><h3 className="text-base sm:text-lg font-bold">Registrar pago</h3><button type="button" onClick={() => setIsPaymentModalOpen(false)} aria-label="Cerrar" className="rounded-lg bg-rose-700 hover:bg-rose-800 px-2.5 py-1 text-lg font-bold leading-none text-white">✕</button></div>
-          <form onSubmit={(event) => { handleAddPaymentRecord(event); setIsPaymentModalOpen(false); }} className="space-y-3">
+          <form onSubmit={async event => { const saved = await handleAddPaymentRecord(event); if (saved) setIsPaymentModalOpen(false); }} className="space-y-3">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <select value={paymentForm.groupId} onChange={(event) => setPaymentForm(prev => ({ ...prev, groupId: event.target.value, studentId: '', studentName: '' }))} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
+              {!isGroupScoped && <select value={paymentForm.groupId} onChange={(event) => setPaymentForm(prev => ({ ...prev, groupId: event.target.value, studentId: '', studentName: '' }))} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
                 <option value="">Selecciona un grupo</option>
                 {visibleGroups.map(group => (
                   <option key={group.id} value={group.id}>{group.name}</option>
                 ))}
-              </select>
+              </select>}
+              {isGroupScoped && <div className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>{visibleGroups.find(group => group.id === fixedGroupId)?.name || 'Grupo'}</div>}
               <select value={paymentForm.studentId} onChange={(event) => setPaymentForm(prev => ({ ...prev, studentId: event.target.value, studentName: event.target.value ? (students.find(student => student.id === event.target.value)?.name || '') : '' }))} disabled={!paymentForm.groupId || paymentForm.withoutMatricula} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass} ${(!paymentForm.groupId || paymentForm.withoutMatricula) ? 'opacity-60 cursor-not-allowed' : ''}`}>
                 <option value="">Selecciona catequizando</option>
                 {students.filter(student => student.groupId === paymentForm.groupId).map(student => (
@@ -349,31 +394,31 @@ export function PaymentsView({
         </div>
         </div>}
 
-        <div id="payment-history-section" className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm`}>
+        <div id="payment-history-section" className={`${cardBgClass} order-2 p-4 sm:p-6 rounded-xl border shadow-sm`}>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
             <h3 className="text-base sm:text-lg font-bold">Historial de pagos</h3>
             <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-              <select value={historyStudentId} onChange={event => setHistoryStudentId(event.target.value)} disabled={!paymentFilters.groupId || paymentFilters.groupId === 'all'} className={`rounded-lg px-2 py-1.5 text-xs ${inputBgClass}`} aria-label="Catequizando para historial">
+              <select value={historyStudentId} onChange={event => setHistoryStudentId(event.target.value)} disabled={!effectiveGroupId || effectiveGroupId === 'all'} className={`rounded-lg px-2 py-1.5 text-xs ${inputBgClass}`} aria-label="Catequizando para historial">
                 <option value="">Selecciona catequizando</option>
-                {students.filter(student => student.groupId === paymentFilters.groupId).map(student => <option key={student.id} value={student.id}>{student.name || student.fullName}</option>)}
+                {students.filter(student => student.groupId === effectiveGroupId).map(student => <option key={student.id} value={student.id}>{student.name || student.fullName}</option>)}
               </select>
               <button type="button" disabled={!historyStudentId} onClick={generateStudentPaymentHistoryPdf} className="rounded-lg bg-red-800 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">PDF historial</button>
             </div>
           </div>
 
           <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-[auto_1.4fr_1fr_1.1fr] gap-2">
-              <button type="button" onClick={handleScanPaymentQr} className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white whitespace-nowrap">📷 Escanear QR</button>
+            <div className={`grid grid-cols-1 gap-2 ${isGroupScoped ? 'sm:grid-cols-[auto_1.4fr_1fr]' : 'sm:grid-cols-[auto_1.4fr_1fr_1.1fr]'}`}>
+              <button type="button" onClick={handleScanPaymentQr} className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white whitespace-nowrap"><MaterialIcon name="qr_code_scanner" /> Escanear QR</button>
               <input
                 value={paymentFilters.search}
                 onChange={(event) => {
-                  setPaymentFilters(prev => ({ ...prev, search: event.target.value }));
+                  setPaymentFilters(prev => ({ ...prev, search: event.target.value, ...(isGroupScoped ? { groupId: fixedGroupId } : {}) }));
                   setPaymentCurrentPage(1);
                 }}
                 placeholder="Buscar por nombre o N° recibo..."
                 className={`w-full rounded-lg px-3 py-2 text-xs ${inputBgClass}`}
               />
-              <select
+              {!isGroupScoped && <select
                 value={paymentFilters.groupId}
                 onChange={(event) => {
                   setPaymentFilters(prev => ({ ...prev, groupId: event.target.value }));
@@ -385,13 +430,13 @@ export function PaymentsView({
                 {visibleGroups.map(group => (
                   <option key={group.id} value={group.id}>{group.name}</option>
                 ))}
-              </select>
+              </select>}
               <div className="flex items-center gap-1 sm:order-3">
                 <input
                   type="date"
                   value={paymentFilters.date}
                   onChange={(event) => {
-                    setPaymentFilters(prev => ({ ...prev, date: event.target.value }));
+                    setPaymentFilters(prev => ({ ...prev, date: event.target.value, ...(isGroupScoped ? { groupId: fixedGroupId } : {}) }));
                     setPaymentCurrentPage(1);
                   }}
                   className={`w-full rounded-lg px-2.5 py-1.5 text-xs ${inputBgClass}`}
@@ -401,7 +446,7 @@ export function PaymentsView({
                   <button
                     type="button"
                     onClick={() => {
-                      setPaymentFilters(prev => ({ ...prev, date: '' }));
+                      setPaymentFilters(prev => ({ ...prev, date: '', ...(isGroupScoped ? { groupId: fixedGroupId } : {}) }));
                       setPaymentCurrentPage(1);
                     }}
                     className="px-2 py-1 text-xs text-slate-400 hover:text-white rounded bg-slate-700/50"
@@ -413,14 +458,14 @@ export function PaymentsView({
               </div>
             </div>
 
-            {filteredPaymentRecords.length === 0 ? (
+            {filteredRecordsForView.length === 0 ? (
               <div className="py-8 text-center text-slate-400 text-sm">
-                <p className="text-2xl mb-1">🔍</p>
+                <p className="text-2xl mb-1"><MaterialIcon name="search_off" /></p>
                 No hay pagos con esos filtros.
               </div>
             ) : (
               <div className="space-y-2">
-                {paginatedPaymentRecords.map(record => {
+                {paginatedRecordsForView.map(record => {
                   const rawNum = record.receiptNumber !== undefined && record.receiptNumber !== null
                     ? record.receiptNumber
                     : (String(record.id).replace(/\D/g, '').slice(-6) || '1');
@@ -441,7 +486,7 @@ export function PaymentsView({
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-bold text-sm text-emerald-400">₡{Number(record.amount || 0).toLocaleString()}</span>
                         <button onClick={() => handleViewPaymentQr(record)} className="px-2 py-1 rounded-lg bg-sky-600/10 text-sky-400 hover:bg-sky-600/20 text-xs font-bold transition">Imagen</button>
-                        <button onClick={() => handleGeneratePaymentProofPdf(record)} className="px-2 py-1 rounded-lg bg-violet-600/10 text-violet-400 hover:bg-violet-600/20 text-xs font-bold transition">PDF</button>
+                        <button onClick={() => handleGeneratePaymentProofPdf(record)} className="px-2 py-1 rounded-lg bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20 text-xs font-bold transition">PDF</button>
                         <button onClick={() => handlePrintPaymentReceipt(record)} className="px-2 py-1 rounded-lg bg-amber-600/10 text-amber-400 hover:bg-amber-600/20 text-xs font-bold transition">Imprimir</button>
                         <button onClick={() => handleDeletePaymentRecord(record.id)} className="px-2 py-1 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-bold transition">Eliminar</button>
                       </div>
@@ -451,8 +496,27 @@ export function PaymentsView({
               </div>
             )}
 
-            {filteredPaymentRecords.length > paymentPageSize ? (
-              <div className="flex items-center justify-between pt-3 border-t border-slate-700 text-xs">
+            {filteredRecordsForView.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-700 pt-3 text-xs">
+                <label className="flex items-center gap-2 text-slate-400">
+                  Mostrar
+                  <select
+                    value={paymentPageSize}
+                    onChange={event => {
+                      setPaymentPageSize(event.target.value === 'all' ? 'all' : Number(event.target.value));
+                      setPaymentCurrentPage(1);
+                    }}
+                    className={`rounded-lg px-2 py-1.5 text-xs ${inputBgClass}`}
+                    aria-label="Cantidad de pagos por página"
+                  >
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="all">Todos</option>
+                  </select>
+                  pagos
+                </label>
                 <button
                   type="button"
                   disabled={paymentCurrentPage <= 1}
@@ -461,27 +525,44 @@ export function PaymentsView({
                 >
                   ← Anterior
                 </button>
-                <span className="text-slate-400">
-                  Página <strong className="text-slate-800 dark:text-white">{paymentCurrentPage}</strong> de <strong className="text-slate-800 dark:text-white">{paymentTotalPages}</strong> ({filteredPaymentRecords.length} pagos)
+                <span className="text-center text-slate-400">
+                  Página <strong className="text-slate-800 dark:text-white">{paymentCurrentPage}</strong> de <strong className="text-slate-800 dark:text-white">{totalPagesForView}</strong> · {filteredRecordsForView.length} pagos
                 </span>
                 <button
                   type="button"
-                  disabled={paymentCurrentPage >= paymentTotalPages}
-                  onClick={() => setPaymentCurrentPage(prev => Math.min(paymentTotalPages, prev + 1))}
+                  disabled={paymentCurrentPage >= totalPagesForView}
+                  onClick={() => setPaymentCurrentPage(prev => Math.min(totalPagesForView, prev + 1))}
                   className="px-3 py-1.5 rounded-lg bg-slate-700/50 text-slate-200 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition"
                 >
                   Siguiente →
                 </button>
               </div>
-            ) : filteredPaymentRecords.length > 0 ? (
-              <div className="text-right text-[11px] text-slate-400 pt-2 border-t border-slate-800">
-                Total: {filteredPaymentRecords.length} pago(s)
-              </div>
-            ) : null}
+            )}
           </div>
         </div>
       </div>
-      <button type="button" onClick={() => setIsPaymentModalOpen(true)} className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full bg-red-800 hover:bg-red-900 text-white text-3xl font-light shadow-xl" title="Añadir pago" aria-label="Añadir pago">+</button>
+      <button
+        type="button"
+        onClick={() => {
+          if (isGroupScoped) {
+            setPaymentForm(previous => ({
+              ...previous,
+              groupId: fixedGroupId,
+              studentId: '',
+              studentName: '',
+              concept: '',
+              amount: '',
+              paymentMethod: 'Efectivo',
+              withoutMatricula: false,
+              invoiceName: ''
+            }));
+          }
+          setIsPaymentModalOpen(true);
+        }}
+        className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full bg-red-800 hover:bg-red-900 text-white text-3xl font-light shadow-xl"
+        title="Añadir pago"
+        aria-label="Añadir pago"
+      >+</button>
     </div>
   );
 }

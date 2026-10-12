@@ -1,4 +1,6 @@
 
+import { MaterialIcon } from '../Shared/MaterialIcon';
+
 export function MaintenanceModal({
   maintenanceGroup,
   setMaintenanceGroup,
@@ -48,8 +50,8 @@ export function MaintenanceModal({
 
         <div className="space-y-2 border-b border-slate-700 pb-2">
           <div className="flex flex-wrap justify-end gap-2">
-            <button type="button" onClick={() => handleExportGroupRosterToPdf?.(maintenanceGroup.id)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-700 hover:bg-rose-800 text-white">📄 Descargar PDF</button>
-            <button type="button" onClick={() => handleExportGroupRosterToExcel?.(maintenanceGroup.id)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-800 text-white">📊 Descargar Excel</button>
+            <button type="button" onClick={() => handleExportGroupRosterToPdf?.(maintenanceGroup.id)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-700 hover:bg-rose-800 text-white"><MaterialIcon name="picture_as_pdf" /> Descargar PDF</button>
+            <button type="button" onClick={() => handleExportGroupRosterToExcel?.(maintenanceGroup.id)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-700 hover:bg-emerald-800 text-white"><MaterialIcon name="table_view" /> Descargar Excel</button>
           </div>
         </div>
 
@@ -65,8 +67,8 @@ export function MaintenanceModal({
                   <div>
                     <p className={`font-bold text-sm ${themeMode === 'dark' ? 'text-white' : 'text-slate-900'}`}>{displayName}</p>
                     <div className="flex flex-wrap gap-3 text-xs mt-1">
-                      {displayEmail ? <span className="flex items-center gap-1"><a className="text-sky-400 hover:underline" href={`mailto:${displayEmail}`}>{displayEmail}</a><button title="Copiar correo" onClick={() => navigator.clipboard.writeText(displayEmail)}>📋</button></span> : <span className="text-slate-500 italic">Sin Correo</span>}
-                      {displayPhone ? <span className="flex items-center gap-1"><a className="text-emerald-400 hover:underline" href={buildWhatsAppLink ? buildWhatsAppLink(displayPhone) : `https://wa.me/${displayPhone}`} target="_blank" rel="noreferrer">{displayPhone}</a><button title="Copiar teléfono" onClick={() => navigator.clipboard.writeText(displayPhone)}>📋</button></span> : <span className="text-slate-500 italic">Sin Teléfono</span>}
+                      {displayEmail ? <span className="flex items-center gap-1"><a className="text-sky-400 hover:underline" href={`mailto:${displayEmail}`}>{displayEmail}</a><button title="Copiar correo" onClick={() => navigator.clipboard.writeText(displayEmail)}><MaterialIcon name="content_copy" /></button></span> : <span className="text-slate-500 italic">Sin Correo</span>}
+                      {displayPhone ? <span className="flex items-center gap-1"><a className="text-emerald-400 hover:underline" href={buildWhatsAppLink ? buildWhatsAppLink(displayPhone) : `https://wa.me/${displayPhone}`} target="_blank" rel="noreferrer">{displayPhone}</a><button title="Copiar teléfono" onClick={() => navigator.clipboard.writeText(displayPhone)}><MaterialIcon name="content_copy" /></button></span> : <span className="text-slate-500 italic">Sin Teléfono</span>}
                     </div>
                   </div>
                   <button type="button" onClick={() => handleGenerateStudentQr(student)} className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-xs font-bold">Mostrar CódigoQR</button>

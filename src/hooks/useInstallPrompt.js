@@ -30,8 +30,7 @@ export function useInstallPrompt() {
     if (!installPromptEvent) return false;
     installPromptEvent.prompt();
     try {
-      const choice = await installPromptEvent.userChoice;
-      if (choice?.outcome === 'accepted') setIsAppInstalled(true);
+      await installPromptEvent.userChoice;
     } finally {
       setInstallPromptEvent(null);
     }

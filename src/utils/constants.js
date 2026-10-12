@@ -2,7 +2,7 @@ export const levelOptions = [
   'Cate-Kinder',
   'Primer Nivel',
   'Segundo Nivel',
-  'Tercer Nivel (Primera Comunión)',
+  'Tercer Nivel',
   'Cuarto Nivel',
   'Quinto Nivel',
   'Sexto Nivel',

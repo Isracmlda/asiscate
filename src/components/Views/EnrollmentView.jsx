@@ -4,12 +4,13 @@ import { db } from '../../config/firebase';
 import { APPS_SCRIPT_URL } from '../../utils/constants';
 import { compressImage, fileToBase64, generateIDCardPdf } from '../../utils/documentProcessor';
 import { validateBirthDate, validateNationalId, validatePhone, validateEmail } from '../../utils/validators';
+import { MaterialIcon } from '../Shared/MaterialIcon';
 
 const LEVELS = [
   'Cate-Kinder',
   'Primer Nivel',
   'Segundo Nivel',
-  'Tercer Nivel (Primera Comunión)',
+  'Tercer Nivel',
   'Cuarto Nivel',
   'Quinto Nivel',
   'Sexto Nivel',
@@ -76,7 +77,6 @@ export default function EnrollmentView({
     phone: initialStudent?.phone || '',
     level: initialStudent?.level || 'Primer Nivel',
     gender: initialStudent?.gender || '',
-    birthPlace: initialStudent?.birthPlace || '',
     educationCenter: initialStudent?.educationCenter || '',
     schoolGrade: initialStudent?.schoolGrade || '',
     curricularAdaptation: initialStudent?.curricularAdaptation || 'NO',
@@ -91,7 +91,11 @@ export default function EnrollmentView({
     siblingCount: initialStudent?.siblingCount || 'N/A',
     siblingDetails: initialStudent?.siblingDetails || '',
     authorizedPickupPeople: initialStudent?.authorizedPickupPeople || '',
+    livesWith: initialStudent?.livesWith || '',
     baptismDate: initialStudent?.baptismDate || '',
+    baptismPlace: initialStudent?.baptismPlace || '',
+    firstCommunionDate: initialStudent?.firstCommunionDate || '',
+    firstCommunionPlace: initialStudent?.firstCommunionPlace || '',
     photoConsent: initialStudent?.photoConsent || 'SI',
     acceptsCatechesisCommitment: Boolean(initialStudent?.acceptsCatechesisCommitment)
   });
@@ -158,7 +162,7 @@ export default function EnrollmentView({
       <div className="flex flex-wrap gap-2">
         {urls.filter(Boolean).map((item, index) => (
           <a key={`${item}-${index}`} href={item} target="_blank" rel="noreferrer" className="inline-flex items-center rounded-lg bg-sky-700 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-sky-800">
-            📥 {urls.length > 1 ? `${label} ${index + 1}` : label}
+            <><MaterialIcon name="download" /> {urls.length > 1 ? `${label} ${index + 1}` : label}</>
           </a>
         ))}
       </div>
@@ -197,7 +201,6 @@ export default function EnrollmentView({
       phone: '',
       level: 'Primer Nivel',
       gender: '',
-      birthPlace: '',
       educationCenter: '',
       schoolGrade: '',
       curricularAdaptation: 'NO',
@@ -212,7 +215,11 @@ export default function EnrollmentView({
       siblingCount: 'N/A',
       siblingDetails: '',
       authorizedPickupPeople: '',
+      livesWith: '',
       baptismDate: '',
+      baptismPlace: '',
+      firstCommunionDate: '',
+      firstCommunionPlace: '',
       photoConsent: 'SI',
       acceptsCatechesisCommitment: false
     });
@@ -239,6 +246,9 @@ export default function EnrollmentView({
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     }
     setSignatureData(null);
+    setSignatureMode('draw');
+    setSignatureImageFile(null);
+    setSignatureImagePreview('');
     setShowPaymentModal(false);
     setGeneratedReceipt(null);
     setRegisteredStudentId(null);
@@ -251,6 +261,13 @@ export default function EnrollmentView({
   const canvasRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [signatureData, setSignatureData] = useState(initialStudent?.family?.guardian?.signatureData || null);
+  const [signatureMode, setSignatureMode] = useState('draw');
+  const [signatureImageFile, setSignatureImageFile] = useState(null);
+  const [signatureImagePreview, setSignatureImagePreview] = useState('');
+
+  useEffect(() => () => {
+    if (signatureImagePreview.startsWith('blob:')) URL.revokeObjectURL(signatureImagePreview);
+  }, [signatureImagePreview]);
 
   const handleStudentPhotoChange = (file) => {
     setStudentPhotoFile(file || null);
@@ -275,6 +292,7 @@ export default function EnrollmentView({
     true,
     ['Cuarto Nivel', 'Quinto Nivel', 'Sexto Nivel', 'Septimo Nivel', 'Confirma'].includes(student.level)
   ].filter(Boolean).length;
+  const needsFirstCommunionDetails = ['Cuarto Nivel', 'Quinto Nivel', 'Sexto Nivel', 'Septimo Nivel', 'Confirma'].includes(student.level);
   const documentCardSpanClass = documentCount === 1 ? 'lg:col-span-6' : documentCount === 2 ? 'lg:col-span-3' : 'lg:col-span-2';
 
   const getPaymentConcept = (option = paymentOption) => {
@@ -527,7 +545,7 @@ export default function EnrollmentView({
     // Validar Firma
     const existingSignatureData = initialStudent?.family?.guardian?.signatureData || null;
     const existingSignatureUrl = initialStudent?.family?.guardian?.signatureUrl || null;
-    if (!isEditing && !signatureData && !existingSignatureData && !existingSignatureUrl) {
+    if (!isEditing && !signatureData && !signatureImageFile && !existingSignatureData && !existingSignatureUrl) {
       alert('Es obligatoria la firma digital del encargado.');
       return;
     }
@@ -564,10 +582,14 @@ export default function EnrollmentView({
         photoUrl = await uploadToDrive(compressedPhoto.split(',')[1], 'Foto_Catequizando.jpg', 'image/jpeg');
       }
 
-      // Se conserva la firma anterior al editar; solo se sube cuando se dibuja una nueva.
+      // Se conserva la firma anterior al editar; una imagen física se comprime antes de subirla.
       let signatureUrl = existingSignatureUrl;
       let signatureDataToSave = signatureData || existingSignatureData;
-      if (signatureData?.startsWith('data:image/')) {
+      if (signatureImageFile) {
+        const compressedSignature = await compressImage(signatureImageFile, 800, 0.7);
+        signatureDataToSave = compressedSignature;
+        signatureUrl = await uploadToDrive(compressedSignature.split(',')[1], 'Firma_Fisica.jpg', 'image/jpeg');
+      } else if (signatureData?.startsWith('data:image/')) {
         const signatureCleanB64 = signatureData.split(',')[1];
         signatureUrl = await uploadToDrive(signatureCleanB64, 'Firma.png', 'image/png');
       }
@@ -599,7 +621,6 @@ export default function EnrollmentView({
         phone: student.phone || null,
         level: student.level,
         gender: student.gender || null,
-        birthPlace: student.birthPlace || '',
         educationCenter: student.educationCenter || '',
         schoolGrade: student.schoolGrade || '',
         curricularAdaptation: student.curricularAdaptation || 'NO',
@@ -614,7 +635,11 @@ export default function EnrollmentView({
         siblingCount: student.siblingCount || 'N/A',
         siblingDetails: student.siblingCount !== 'N/A' ? student.siblingDetails || '' : '',
         authorizedPickupPeople: student.authorizedPickupPeople || '',
+        livesWith: student.livesWith || '',
         baptismDate: student.baptismDate || '',
+        baptismPlace: student.baptismPlace || '',
+        firstCommunionDate: student.firstCommunionDate || '',
+        firstCommunionPlace: student.firstCommunionPlace || '',
         photoConsent: student.photoConsent || 'SI',
         acceptsCatechesisCommitment: isEditing
           ? Boolean(student.acceptsCatechesisCommitment || initialStudent?.acceptsCatechesisCommitment)
@@ -942,7 +967,7 @@ export default function EnrollmentView({
       {successToast && (
         <div className="fixed top-20 right-4 sm:right-6 z-50 max-w-md bg-emerald-600 text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center justify-between gap-3 text-sm font-semibold animate-bounce border-2 border-emerald-400">
           <div className="flex items-center gap-2.5">
-            <span className="text-xl">🎉</span>
+            <MaterialIcon name="celebration" className="text-xl" />
             <span>{successToast}</span>
           </div>
           <button onClick={() => setSuccessToast(null)} className="text-white hover:text-emerald-200 text-xs font-bold px-2 py-1 bg-emerald-700/50 rounded-lg">
@@ -1017,9 +1042,31 @@ export default function EnrollmentView({
               {studentPhotoPreview ? (
                 <img src={studentPhotoPreview} alt="Vista previa del catequizando" className="h-28 w-24 object-cover rounded-lg border border-slate-500" />
               ) : (
-                <div className="h-28 w-24 rounded-lg bg-slate-700/70 flex items-center justify-center text-3xl" aria-label="Sin foto">👤</div>
+                <div className="h-28 w-24 rounded-lg bg-slate-700/70 flex items-center justify-center text-3xl" aria-label="Sin foto"><MaterialIcon name="person" /></div>
               )}
-              {!readOnly && <input type="file" accept="image/*" onChange={(e) => handleStudentPhotoChange(e.target.files?.[0])} className="mt-3 w-full text-xs text-slate-400" />}
+              {!readOnly && (
+                <div className="mt-3 grid w-full grid-cols-2 gap-2">
+                  <label className="enrollment-file-action">
+                    <MaterialIcon name="photo_camera" /> Cámara
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      aria-label="Tomar foto del catequizando"
+                      onChange={(e) => handleStudentPhotoChange(e.target.files?.[0])}
+                    />
+                  </label>
+                  <label className="enrollment-file-action">
+                    <MaterialIcon name="folder_open" /> Archivo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      aria-label="Seleccionar foto del catequizando desde archivos"
+                      onChange={(e) => handleStudentPhotoChange(e.target.files?.[0])}
+                    />
+                  </label>
+                </div>
+              )}
               {studentPhotoPreview && <button type="button" onClick={() => handleStudentPhotoChange(null)} className="mt-2 text-xs text-rose-400 hover:underline">Quitar foto nueva</button>}
             </div>
             <div className="md:col-span-2">
@@ -1046,6 +1093,7 @@ export default function EnrollmentView({
               <input
                 required
                 type="date"
+                style={{ colorScheme: themeMode === 'dark' ? 'dark' : 'light' }}
                 min="1900-01-01"
                 max={new Date().toISOString().split('T')[0]}
                 value={student.birthDate}
@@ -1090,12 +1138,12 @@ export default function EnrollmentView({
             </div>
             <div className="md:col-span-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Lugar de nacimiento</label>
-                <input type="text" value={student.birthPlace} onChange={(e) => setStudent({ ...student, birthPlace: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Fecha de Bautismo</label>
+                <input type="date" style={{ colorScheme: themeMode === 'dark' ? 'dark' : 'light' }} value={student.baptismDate} onChange={(e) => setStudent({ ...student, baptismDate: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Fecha de Bautismo</label>
-                <input type="date" value={student.baptismDate} onChange={(e) => setStudent({ ...student, baptismDate: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Lugar de Bautismo</label>
+                <input type="text" value={student.baptismPlace} onChange={(e) => setStudent({ ...student, baptismPlace: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Centro educativo</label>
@@ -1105,10 +1153,22 @@ export default function EnrollmentView({
                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Grado que cursa</label>
                 <input type="text" value={student.schoolGrade} onChange={(e) => setStudent({ ...student, schoolGrade: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
               </div>
+              {needsFirstCommunionDetails && (
+                <>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Fecha de Primera Comunión (opcional)</label>
+                    <input type="date" style={{ colorScheme: themeMode === 'dark' ? 'dark' : 'light' }} value={student.firstCommunionDate} onChange={(e) => setStudent({ ...student, firstCommunionDate: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Lugar de Primera Comunión (opcional)</label>
+                    <input type="text" value={student.firstCommunionPlace} onChange={(e) => setStudent({ ...student, firstCommunionPlace: e.target.value })} className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
+                  </div>
+                </>
+              )}
             </div>
             <div className="md:col-span-3 space-y-1">
               <div className="flex justify-between items-center">
-                <label className="block text-xs font-bold text-slate-400 uppercase">Alergias / Padecimientos o Notas Médicas</label>
+                <label className="block text-xs font-bold text-slate-400 uppercase">Alergias / Padecimientos o Notas del Estudiante</label>
                 <label className="inline-flex items-center text-xs text-slate-300 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1132,7 +1192,7 @@ export default function EnrollmentView({
                 disabled={medicalNotesNa}
                 value={student.medicalNotes}
                 onChange={(e) => setStudent({ ...student, medicalNotes: e.target.value })}
-                placeholder={medicalNotesNa ? 'Ninguna (N/A)' : 'Describa cualquier alergia, condición médica especial o notas...'}
+                placeholder={medicalNotesNa ? 'Ninguna (N/A)' : 'Describa cualquier alergia, padecimiento o nota del estudiante...'}
                 className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass} ${medicalNotesNa ? 'opacity-60 cursor-not-allowed' : ''}`}
               />
             </div>
@@ -1189,6 +1249,10 @@ export default function EnrollmentView({
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Detalle de hermanos (opcional)</label>
               <input type="text" disabled={student.siblingCount === 'N/A'} value={student.siblingDetails} onChange={(e) => setStudent({ ...student, siblingDetails: e.target.value })} placeholder="Ej.: 2 mayores y 1 menor" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass} ${student.siblingCount === 'N/A' ? 'opacity-60 cursor-not-allowed' : ''}`} />
+            </div>
+            <div className="md:col-span-3">
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">¿Con quiénes vive el catequizando?</label>
+              <input type="text" value={student.livesWith} onChange={(e) => setStudent({ ...student, livesWith: e.target.value })} placeholder="Ej.: madre, padre y hermanos" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
             </div>
             <div className="md:col-span-3">
               <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Personas autorizadas para retirar al niño</label>
@@ -1255,7 +1319,7 @@ export default function EnrollmentView({
               {motherIdFiles.length > 0 && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
-                    📎 {motherIdFiles.length} archivo(s): {motherIdFiles.map(f => f.name).join(', ')}
+                    <><MaterialIcon name="attach_file" /> {motherIdFiles.length} archivo(s): {motherIdFiles.map(f => f.name).join(', ')}</>
                   </span>
                   <button
                     type="button"
@@ -1283,7 +1347,7 @@ export default function EnrollmentView({
               {fatherIdFiles.length > 0 && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
-                    📎 {fatherIdFiles.length} archivo(s): {fatherIdFiles.map(f => f.name).join(', ')}
+                    <><MaterialIcon name="attach_file" /> {fatherIdFiles.length} archivo(s): {fatherIdFiles.map(f => f.name).join(', ')}</>
                   </span>
                   <button
                     type="button"
@@ -1311,7 +1375,7 @@ export default function EnrollmentView({
               {guardianIdFiles.length > 0 && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
-                    📎 {guardianIdFiles.length} archivo(s): {guardianIdFiles.map(f => f.name).join(', ')}
+                    <><MaterialIcon name="attach_file" /> {guardianIdFiles.length} archivo(s): {guardianIdFiles.map(f => f.name).join(', ')}</>
                   </span>
                   <button
                     type="button"
@@ -1342,7 +1406,7 @@ export default function EnrollmentView({
                 {minorIdFiles.length > 0 && (
                   <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                     <span className="text-emerald-400 font-semibold truncate max-w-[200px]">
-                      📎 {minorIdFiles.length} archivo(s): {minorIdFiles.map(f => f.name).join(', ')}
+                      <MaterialIcon name="attach_file" /> {minorIdFiles.length} archivo(s): {minorIdFiles.map(f => f.name).join(', ')}
                     </span>
                     <button
                       type="button"
@@ -1370,7 +1434,7 @@ export default function EnrollmentView({
               {baptismFile && (
                 <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                   <span className="text-emerald-400 font-semibold truncate max-w-[300px]">
-                    📎 Archivo: {baptismFile.name}
+                    <><MaterialIcon name="attach_file" /> Archivo: {baptismFile.name}</>
                   </span>
                   <button
                     type="button"
@@ -1398,7 +1462,7 @@ export default function EnrollmentView({
                 {communionFile && (
                   <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-xs">
                     <span className="text-emerald-400 font-semibold truncate max-w-[300px]">
-                      📎 Archivo: {communionFile.name}
+                      <><MaterialIcon name="attach_file" /> Archivo: {communionFile.name}</>
                     </span>
                     <button
                       type="button"
@@ -1420,32 +1484,120 @@ export default function EnrollmentView({
         <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm space-y-3`}>
           <div className="border-b border-slate-700 pb-2">
             <h3 className="text-base sm:text-lg font-bold text-red-700 dark:text-red-400">Sección IV: Firma Digital del Encargado *</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Firme con el dedo en pantallas táctiles o con el mouse.</p>
+            <p className="text-xs text-slate-400 mt-0.5">Puede firmar aquí o adjuntar una imagen de una firma física.</p>
+          </div>
+
+          <div className="flex flex-wrap justify-center gap-5 text-sm">
+            {[
+              ['draw', 'Firmar en pantalla'],
+              ['upload', 'Adjuntar imagen de firma física']
+            ].map(([mode, label]) => (
+              <label key={mode} className="inline-flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="signature-mode"
+                  value={mode}
+                  checked={signatureMode === mode}
+                  onChange={() => {
+                    setSignatureMode(mode);
+                    setSignatureData(null);
+                    setSignatureImageFile(null);
+                    setSignatureImagePreview('');
+                    if (canvasRef.current) {
+                      const ctx = canvasRef.current.getContext('2d');
+                      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+                    }
+                  }}
+                  className="text-red-800 focus:ring-red-800"
+                />
+                {label}
+              </label>
+            ))}
           </div>
 
           <div className="flex flex-col items-center pt-2">
-            {initialStudent && (signatureData || initialStudent?.family?.guardian?.signatureUrl) && (
+            {(signatureImagePreview || signatureData || initialStudent?.family?.guardian?.signatureData || initialStudent?.family?.guardian?.signatureUrl) && (
               <div className="mb-3 text-center">
-                <p className="text-xs text-slate-400 mb-1">Firma actualmente registrada</p>
-                <img src={signatureData || initialStudent?.family?.guardian?.signatureUrl} alt="Firma registrada" className="max-h-20 mx-auto rounded border border-slate-600 bg-white p-1" />
+                <p className="text-xs text-slate-400 mb-1">{signatureImagePreview ? 'Vista previa de la firma' : 'Firma actualmente registrada'}</p>
+                <img
+                  src={signatureImagePreview || signatureData || initialStudent?.family?.guardian?.signatureData || initialStudent?.family?.guardian?.signatureUrl}
+                  alt="Firma del encargado"
+                  className="max-h-24 max-w-full mx-auto rounded border border-slate-600 bg-white p-1"
+                />
               </div>
             )}
-            <canvas
-              ref={canvasRef}
-              width={400}
-              height={160}
-              onMouseDown={startDrawing}
-              onMouseMove={draw}
-              onMouseUp={stopDrawing}
-              onMouseLeave={stopDrawing}
-              onTouchStart={startDrawing}
-              onTouchMove={draw}
-              onTouchEnd={stopDrawing}
-              className="border-2 border-dashed border-slate-600 bg-white rounded-xl touch-none"
-            />
-            <button type="button" onClick={clearCanvas} className="mt-2 text-xs text-rose-400 hover:underline font-semibold">
-              Limpiar firma
-            </button>
+            {signatureMode === 'draw' ? (
+              <>
+                <canvas
+                  ref={canvasRef}
+                  width={400}
+                  height={160}
+                  onMouseDown={startDrawing}
+                  onMouseMove={draw}
+                  onMouseUp={stopDrawing}
+                  onMouseLeave={stopDrawing}
+                  onTouchStart={startDrawing}
+                  onTouchMove={draw}
+                  onTouchEnd={stopDrawing}
+                  className="border-2 border-dashed border-slate-600 bg-white rounded-xl touch-none"
+                />
+                <button type="button" onClick={clearCanvas} className="mt-2 text-xs text-rose-400 hover:underline font-semibold">
+                  Limpiar firma
+                </button>
+              </>
+            ) : (
+              <div className="w-full max-w-xl rounded-xl border border-dashed border-slate-500 p-4 text-center space-y-3">
+                {!readOnly && (
+                  <div className="grid w-full grid-cols-2 gap-2">
+                    <label className="enrollment-file-action">
+                      <MaterialIcon name="photo_camera" /> Cámara
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        aria-label="Tomar foto de la firma física"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setSignatureImageFile(file);
+                          setSignatureImagePreview(file ? URL.createObjectURL(file) : '');
+                          setSignatureData(null);
+                        }}
+                      />
+                    </label>
+                    <label className="enrollment-file-action">
+                      <MaterialIcon name="folder_open" /> Archivo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        aria-label="Elegir imagen de firma física desde archivos"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          setSignatureImageFile(file);
+                          setSignatureImagePreview(file ? URL.createObjectURL(file) : '');
+                          setSignatureData(null);
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
+                {signatureImageFile && (
+                  <div className="flex items-center justify-center gap-3 text-xs">
+                    <span className="text-emerald-400 font-semibold truncate">{signatureImageFile.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSignatureImageFile(null);
+                        setSignatureImagePreview('');
+                      }}
+                      className="text-rose-400 hover:underline font-semibold"
+                    >
+                      Quitar imagen
+                    </button>
+                  </div>
+                )}
+                <p className="text-xs text-slate-400">Adjunte una foto o imagen clara de la firma, en formato JPG, PNG u otro formato de imagen.</p>
+              </div>
+            )}
           </div>
 
           <div className="rounded-xl border border-slate-600/70 p-3.5 bg-slate-800/20 space-y-2">
@@ -1660,7 +1812,7 @@ export default function EnrollmentView({
                       onClick={() => handleViewPaymentQr(generatedReceipt)}
                       className="bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 border border-sky-500/30 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1"
                     >
-                      🖼️ Ver Comprobante QR
+                      <MaterialIcon name="qr_code_2" /> Ver Comprobante QR
                     </button>
                   )}
                   {typeof handleGeneratePaymentProofPdf === 'function' && (
@@ -1669,7 +1821,7 @@ export default function EnrollmentView({
                       onClick={() => handleGeneratePaymentProofPdf(generatedReceipt)}
                       className="bg-violet-600/20 hover:bg-violet-600/30 text-violet-400 border border-violet-500/30 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1"
                     >
-                      📄 Descargar PDF
+                      <MaterialIcon name="picture_as_pdf" /> Descargar PDF
                     </button>
                   )}
                   {typeof handlePrintPaymentReceipt === 'function' && (
@@ -1678,7 +1830,7 @@ export default function EnrollmentView({
                       onClick={() => handlePrintPaymentReceipt(generatedReceipt)}
                       className="col-span-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1"
                     >
-                      🖨️ Imprimir Comprobante Oficial (Ticket + QR)
+                      <MaterialIcon name="print" /> Imprimir Comprobante Oficial (Ticket + QR)
                     </button>
                   )}
                   <button
@@ -1687,7 +1839,7 @@ export default function EnrollmentView({
                     disabled={isSendingEmail}
                     className="col-span-2 bg-sky-600 text-white py-2 rounded-lg text-xs font-bold hover:bg-sky-700 transition"
                   >
-                    {isSendingEmail ? 'Enviando...' : '📧 Enviar por Correo a Encargados'}
+                    {isSendingEmail ? 'Enviando...' : <><MaterialIcon name="mail" /> Enviar por Correo a Encargados</>}
                   </button>
                   <button
                     type="button"

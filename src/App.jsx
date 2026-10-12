@@ -1,14 +1,14 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { auth, db, googleProvider, microsoftProvider } from './config/firebase';
-import { AssistantWidget } from './components/AssistantWidget';
 import { AuthModal } from './components/AuthModal';
 import { QrModal } from './components/Modals/QrModal';
 import { ScannerModal } from './components/Modals/ScannerModal';
-import { MaintenanceModal } from './components/Modals/MaintenanceModal';
 import { ConfirmModal } from './components/Modals/ConfirmModal';
 import { AsisCateLogo } from './components/Shared/AsisCateLogo';
 import { CountryCodeSelect } from './components/Shared/CountryCodeSelect';
+import { MaterialIcon } from './components/Shared/MaterialIcon';
 const DashboardView = lazy(() => import('./components/Views/DashboardView').then(module => ({ default: module.DashboardView })));
+const AssistantWidget = lazy(() => import('./components/AssistantWidget').then(module => ({ default: module.AssistantWidget })));
 const GroupsView = lazy(() => import('./components/Views/GroupsView').then(module => ({ default: module.GroupsView })));
 const ReportsView = lazy(() => import('./components/Views/ReportsView').then(module => ({ default: module.ReportsView })));
 const InventoryView = lazy(() => import('./components/Views/InventoryView').then(module => ({ default: module.InventoryView })));
@@ -29,12 +29,12 @@ import { useVisibleInventory } from './hooks/useVisibleInventory';
 import { useDashboardAttendance } from './hooks/useDashboardAttendance';
 import { useRealtimeSubscriptions } from './hooks/useRealtimeSubscriptions';
 import { useRoleAccess } from './hooks/useRoleAccess';
-import { usePrimaryDataCache } from './hooks/usePrimaryDataCache';
 import { useInventoryCleanup } from './hooks/useInventoryCleanup';
 import { usePersistedState } from './hooks/usePersistedState';
 import { mapSnapshotDocs, normalizeStudentRecord, sortPaymentRecords } from './services/firestoreDataMappers';
 import { savePaymentRecord } from './services/paymentService';
 import { resolveUserProfile } from './services/userProfileService';
+import { disableAttendanceReminders, enableAttendanceReminders, isInstalledApp as isStandaloneApp, refreshAttendanceReminderToken } from './services/attendanceReminderService';
 import { loadXlsx } from './services/spreadsheetService';
 import { hasDuplicateGroup, hasDuplicateReservation, isRecentDuplicatePayment, sameNormalized } from './utils/recordValidation';
 import { 
@@ -52,7 +52,8 @@ import {
   addDoc, 
   getDocs, 
   updateDoc,
-  deleteDoc
+  deleteDoc,
+  writeBatch
 } from 'firebase/firestore';
 
 const loadFaviconAsPng = async () => {
@@ -79,6 +80,79 @@ const DEFAULT_GROUP_SCHEDULE_OPTIONS = {
   days: ['Sábado'],
   times: ['08:00-10:00', '10:30-12:30'],
   rooms: ['Salón principal']
+};
+
+const CATECHIST_GROUP_PREFIX = 'catequistas:';
+const CATECHIST_USER_PREFIX = 'catequista:user:';
+const CATECHIST_PENDING_PREFIX = 'catequista:pending:';
+const EXCLUDED_CATECHIST_EMAIL = 'asiscate.elcarmen@gmail.com';
+
+const buildQrImageUrl = (payload) => (
+  `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=2&ecc=L&data=${encodeURIComponent(payload)}`
+);
+
+const isCatechistGroup = (group) => group?.type === 'catequistas'
+  || String(group?.id || '').startsWith(CATECHIST_GROUP_PREFIX);
+
+const getCatechistGroupId = (diaconiaId) => `${CATECHIST_GROUP_PREFIX}${diaconiaId}`;
+
+const getCatechistAttendanceMembers = (diaconiaId, allUsers, catechistRoster, groupId) => {
+  const existingUsers = allUsers.filter(userItem => (
+    userItem.diaconiaId === diaconiaId
+    && String(userItem.email || '').trim().toLowerCase() !== EXCLUDED_CATECHIST_EMAIL
+  ));
+  const registeredEmails = new Set(existingUsers.map(userItem => String(userItem.email || '').trim().toLowerCase()));
+  const registeredMembers = existingUsers.map(userItem => ({
+    id: `${CATECHIST_USER_PREFIX}${userItem.id}`,
+    memberType: 'catechistUser',
+    memberDocId: userItem.id,
+    name: userItem.name || userItem.email || 'Catequista',
+    email: userItem.email || '',
+    phone: userItem.phone || '',
+    attendance: Array.isArray(userItem.attendance) ? userItem.attendance : [],
+    groupId
+  }));
+  const pendingMembers = catechistRoster
+    .filter(entry => (
+      (entry.groupId || getCatechistGroupId(entry.diaconiaId)) === groupId
+      && String(entry.email || '').trim().toLowerCase() !== EXCLUDED_CATECHIST_EMAIL
+      && !registeredEmails.has(String(entry.email || '').trim().toLowerCase())
+    ))
+    .map(entry => ({
+      id: `${CATECHIST_PENDING_PREFIX}${entry.id}`,
+      memberType: 'pendingCatechist',
+      memberDocId: entry.id,
+      name: entry.name || entry.email || 'Catequista',
+      email: entry.email || '',
+      phone: entry.phone || '',
+      attendance: Array.isArray(entry.attendance) ? entry.attendance : [],
+      groupId
+    }));
+
+  return [...registeredMembers, ...pendingMembers]
+    .sort((first, second) => String(first.name).localeCompare(String(second.name), 'es', { sensitivity: 'base' }));
+};
+
+const getGroupAttendanceMembers = (groupId, students, allUsers, catechistRoster, groups = []) => {
+  if (String(groupId || '').startsWith(CATECHIST_GROUP_PREFIX)) {
+    const group = groups.find(item => item.id === groupId);
+    return getCatechistAttendanceMembers(
+      group?.diaconiaId || String(groupId).slice(CATECHIST_GROUP_PREFIX.length),
+      allUsers,
+      catechistRoster,
+      groupId
+    );
+  }
+  return students.filter(student => student.groupId === groupId);
+};
+
+const getAttendanceDocumentRef = (member) => {
+  const collectionName = member.memberType === 'catechistUser'
+    ? 'users'
+    : member.memberType === 'pendingCatechist'
+      ? 'catechistRoster'
+      : 'students';
+  return doc(db, collectionName, member.memberDocId || member.id);
 };
 
 const normalizeLoadedScheduleDays = (days) => {
@@ -125,12 +199,19 @@ export default function App() {
   const [themeMode, setThemeMode] = useState('light'); // 'light' | 'dark'
   const [navbarColor, setNavbarColor] = useState('#7f1d1d');
   const [isOnline, setIsOnline] = useState(() => navigator.onLine !== false);
+  const [hasPendingWrites, setHasPendingWrites] = useState(false);
+  const [queuedAttendanceWrites, setQueuedAttendanceWrites] = useState(0);
+  const [attendanceRemindersEnabled, setAttendanceRemindersEnabled] = useState(false);
+  const [attendanceRemindersConfigReady, setAttendanceRemindersConfigReady] = useState(false);
+  const [savingAttendanceReminders, setSavingAttendanceReminders] = useState(false);
+  const [savingGlobalReminderSetting, setSavingGlobalReminderSetting] = useState(false);
   
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [openNavMenu, setOpenNavMenu] = useState(null);
+  const [openMobileSection, setOpenMobileSection] = useState(null);
   const [appToasts, setAppToasts] = useState([]);
   const [appModal, setAppModal] = useState(null);
-  const { installPromptEvent, isAppInstalled, installApp } = useInstallPrompt();
+  const { isAppInstalled, installApp } = useInstallPrompt();
 
   const notify = useCallback((message, type = 'info') => {
     const id = `${Date.now()}-${Math.random()}`;
@@ -177,9 +258,11 @@ export default function App() {
   const [allUsers, setAllUsers] = useState([]);
   const [allowedEmails, setAllowedEmails] = useState([]);
   const [newAllowedEmailInput, setNewAllowedEmailInput] = useState('');
+  const [catechistRoster, setCatechistRoster] = useState([]);
 
   // Navegación
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [groupCycleFilter, setGroupCycleFilter] = useState('');
   const [isUserNameModalOpen, setIsUserNameModalOpen] = useState(false);
   const [userNameDraft, setUserNameDraft] = useState('');
 
@@ -226,8 +309,7 @@ export default function App() {
     generalDiaconiaId
   });
   const [reportStudentIds, setReportStudentIds] = useState(null);
-  const [maintenanceGroup, setMaintenanceGroup] = useState(null);
-  const [maintenanceMode, setMaintenanceMode] = useState('view');
+  const [rosterMode, setRosterMode] = useState('view');
   const [isAddStudentFormOpen, setIsAddStudentFormOpen] = useState(false);
   const [messageModal, setMessageModal] = useState(null);
   const [isSendingAttendanceEmail, setIsSendingAttendanceEmail] = useState(false);
@@ -298,6 +380,7 @@ export default function App() {
   });
   const [paymentFilters, setPaymentFilters] = useState({ search: '', groupId: 'all', date: '' });
   const [paymentCurrentPage, setPaymentCurrentPage] = useState(1);
+  const [paymentPageSize, setPaymentPageSize] = useState(10);
   const [showGroupPaymentTracker, setShowGroupPaymentTracker] = useState(false);
   const [trackerGroupId, setTrackerGroupId] = useState('');
   const [qrModal, setQrModal] = useState(null);
@@ -348,6 +431,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    try {
+      [
+        'asiscate-parroquias-cache',
+        'asiscate-diaconias-cache',
+        'asiscate-groups-cache',
+        'asiscate-students-cache',
+        'asiscate-users-cache'
+      ].forEach(key => localStorage.removeItem(key));
+    } catch (error) {
+      console.warn('No se pudo limpiar la caché local antigua:', error);
+    }
+  }, []);
+
+  useEffect(() => {
     const handleOutsideNavbarMenuClick = (event) => {
       if (!event.target.closest('[data-navbar-menu]')) {
         setOpenNavMenu(null);
@@ -361,14 +458,6 @@ export default function App() {
   useEffect(() => {
     document.title = 'AsisCate';
   }, []);
-
-  usePrimaryDataCache({
-    parroquias,
-    diaconias,
-    groups,
-    students,
-    users: allUsers
-  });
 
   useInventoryCleanup({
     activeTab,
@@ -439,17 +528,51 @@ export default function App() {
         console.warn('No se pudieron cargar los horarios por diaconía:', scheduleError);
       }
 
-      const parroquiasSnap = await getDocs(collection(db, 'parroquias'));
+      const [
+        parroquiasSnap,
+        diaconiasSnap,
+        usersSnap,
+        catechistRosterSnap,
+        allowedEmailsSnap,
+        groupsSnap,
+        studentsSnap,
+        paymentsSnap,
+        inventoryItemsSnap,
+        inventoryAssetsSnap,
+        inventoryReservationsSnap,
+        certificatesSnap
+      ] = await Promise.all([
+        getDocs(collection(db, 'parroquias')),
+        getDocs(collection(db, 'diaconias')),
+        getDocs(collection(db, 'users')),
+        getDocs(collection(db, 'catechistRoster')).catch(rosterError => {
+          console.warn('No se pudo cargar el padrón de catequistas:', rosterError);
+          return null;
+        }),
+        getDocs(collection(db, 'allowedEmails')).catch(error => {
+          console.warn('No se pudo cargar allowedEmails:', error);
+          return null;
+        }),
+        getDocs(collection(db, 'groups')),
+        getDocs(collection(db, 'students')),
+        getDocs(collection(db, 'payments')),
+        getDocs(collection(db, 'inventoryItems')),
+        getDocs(collection(db, 'inventoryAssets')),
+        getDocs(collection(db, 'inventoryReservations')),
+        getDocs(collection(db, 'certificates'))
+      ]);
       const nextParroquias = mapSnapshotDocs(parroquiasSnap);
       setParroquias(nextParroquias);
 
-      const diaconiasSnap = await getDocs(collection(db, 'diaconias'));
       const nextDiaconias = mapSnapshotDocs(diaconiasSnap);
       setDiaconias(nextDiaconias);
 
-      const usersSnap = await getDocs(collection(db, 'users'));
       const nextUsers = mapSnapshotDocs(usersSnap);
       setAllUsers(nextUsers);
+
+      if (catechistRosterSnap) {
+        setCatechistRoster(mapSnapshotDocs(catechistRosterSnap));
+      }
 
       if (user) {
         const currentUserFreshData = nextUsers.find(u => u.id === user.uid);
@@ -458,34 +581,24 @@ export default function App() {
         }
       }
 
-      try {
-        const allowedEmailsSnap = await getDocs(collection(db, 'allowedEmails'));
+      if (allowedEmailsSnap) {
         const nextAllowedEmails = mapSnapshotDocs(allowedEmailsSnap);
         setAllowedEmails(nextAllowedEmails);
-      } catch (e) {
-        console.warn('No se pudo cargar allowedEmails:', e);
       }
 
-      const groupsSnap = await getDocs(collection(db, 'groups'));
       const nextGroups = mapSnapshotDocs(groupsSnap);
       setGroups(nextGroups);
 
-      const studentsSnap = await getDocs(collection(db, 'students'));
       const nextStudents = studentsSnap.docs.map(normalizeStudentRecord);
       setStudents(nextStudents);
 
-      const paymentsSnap = await getDocs(collection(db, 'payments'));
       const nextPaymentRecords = sortPaymentRecords(mapSnapshotDocs(paymentsSnap));
       setPaymentRecords(nextPaymentRecords);
 
-      const inventoryItemsSnap = await getDocs(collection(db, 'inventoryItems'));
-      const inventoryAssetsSnap = await getDocs(collection(db, 'inventoryAssets'));
-      const inventoryReservationsSnap = await getDocs(collection(db, 'inventoryReservations'));
       const today = new Date().toISOString().split('T')[0];
       const oneYearAgo = new Date();
       oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
 
-      const certificatesSnap = await getDocs(collection(db, 'certificates'));
       const nextCertificates = mapSnapshotDocs(certificatesSnap);
       setIssuedCertificates(nextCertificates);
 
@@ -507,22 +620,6 @@ export default function App() {
     } catch (error) {
       console.error("Error cargando Firestore:", error);
       setIsOnline(false);
-
-      try {
-        const cachedParroquias = JSON.parse(localStorage.getItem('asiscate-parroquias-cache') || '[]');
-        const cachedDiaconias = JSON.parse(localStorage.getItem('asiscate-diaconias-cache') || '[]');
-        const cachedUsers = JSON.parse(localStorage.getItem('asiscate-users-cache') || '[]');
-        const cachedGroups = JSON.parse(localStorage.getItem('asiscate-groups-cache') || '[]');
-        const cachedStudents = JSON.parse(localStorage.getItem('asiscate-students-cache') || '[]');
-
-        setParroquias(cachedParroquias);
-        setDiaconias(cachedDiaconias);
-        setAllUsers(cachedUsers);
-        setGroups(cachedGroups);
-        setStudents(cachedStudents);
-      } catch (cacheError) {
-        console.warn('No se pudieron restaurar los datos en caché:', cacheError);
-      }
     }
   }, []);
 
@@ -541,13 +638,34 @@ export default function App() {
     onSignedOut: () => {
       setUserData(null);
       setUserRole(null);
+      setAttendanceRemindersEnabled(false);
+      setAttendanceRemindersConfigReady(false);
+      setHasPendingWrites(false);
+      setQueuedAttendanceWrites(0);
       setGroups([]);
       setStudents([]);
       setAllUsers([]);
     }
   });
 
-  useRealtimeSubscriptions({ user, setIssuedCertificates, setPaymentRecords, setIsEnrollmentEnabled });
+  useRealtimeSubscriptions({
+    user,
+    setIssuedCertificates,
+    setPaymentRecords,
+    setIsEnrollmentEnabled,
+    setStudents,
+    setAttendanceRemindersEnabled,
+    setAttendanceRemindersConfigReady,
+    setHasPendingWrites
+  });
+
+  useEffect(() => {
+    if (!user?.uid || !isOnline || userData?.attendanceRemindersEnabled !== true) return;
+
+    refreshAttendanceReminderToken(user.uid).catch(error => {
+      console.warn('No se pudo actualizar el registro de notificaciones de este dispositivo:', error);
+    });
+  }, [isOnline, user?.uid, userData?.attendanceRemindersEnabled]);
 
   const isTerritoryPending = Boolean(user && userData && (!userData.parroquiaId || !userData.diaconiaId || !userData.phoneNumber));
   const isUserUnapproved = Boolean(user && userData && userData.approved === false);
@@ -629,6 +747,59 @@ export default function App() {
       alert("Error al guardar la selección. Intenta nuevamente.");
     } finally {
       setSavingTerritory(false);
+    }
+  };
+
+  const handleTogglePersonalAttendanceReminders = async () => {
+    if (!user?.uid || savingAttendanceReminders) return;
+
+    const nextEnabled = userData?.attendanceRemindersEnabled !== true;
+    setSavingAttendanceReminders(true);
+    if (!nextEnabled) {
+      setUserData(previous => ({ ...previous, attendanceRemindersEnabled: false }));
+      const disablePromise = disableAttendanceReminders(user.uid);
+      setSavingAttendanceReminders(false);
+      if (!isOnline || navigator.onLine === false) {
+        notify('Se guardó la pausa en este dispositivo; se sincronizará al recuperar conexión.', 'warning');
+      } else {
+        notify('Los recordatorios de asistencia quedaron desactivados en este perfil.', 'success');
+      }
+      disablePromise.catch(error => {
+        console.error('Error sincronizando la preferencia de recordatorios:', error);
+        setUserData(previous => ({ ...previous, attendanceRemindersEnabled: true }));
+        notify('No se pudo sincronizar la desactivación de recordatorios.', 'error');
+      });
+      return;
+    }
+
+    try {
+      if (!isStandaloneApp()) {
+        throw new Error('Instala AsisCate en este dispositivo para activar los recordatorios en segundo plano.');
+      }
+      await enableAttendanceReminders(user.uid);
+      setUserData(previous => ({ ...previous, attendanceRemindersEnabled: nextEnabled }));
+      notify('Los recordatorios de asistencia quedaron activados en este perfil.', 'success');
+    } catch (error) {
+      console.error('Error actualizando los recordatorios de asistencia:', error);
+      notify(error.message || 'No se pudo actualizar la preferencia de recordatorios.', 'error');
+    } finally {
+      setSavingAttendanceReminders(false);
+    }
+  };
+
+  const handleConfigureAttendanceRemindersForDevice = async () => {
+    if (!user?.uid || savingAttendanceReminders) return;
+
+    setSavingAttendanceReminders(true);
+    try {
+      await enableAttendanceReminders(user.uid);
+      setUserData(previous => ({ ...previous, attendanceRemindersEnabled: true }));
+      notify('Este dispositivo quedó configurado para recibir recordatorios.', 'success');
+    } catch (error) {
+      console.error('Error configurando recordatorios en este dispositivo:', error);
+      notify(error.message || 'No se pudieron configurar los recordatorios en este dispositivo.', 'error');
+    } finally {
+      setSavingAttendanceReminders(false);
     }
   };
 
@@ -1230,19 +1401,43 @@ export default function App() {
     }
   };
 
-  const handleOpenMaintenanceModal = (group) => {
-    setMaintenanceGroup(group);
-    setSelectedGroupForStudent(group.id);
-    setReportStudentIds(students.filter(student => student.groupId === group.id).map(student => student.id));
-    setMaintenanceMode('view');
-    setEditingStudentId(null);
+  const handleOpenGroupReports = (group) => {
+    setSelectedGroupId(group.id);
+    setGroupCycleFilter(String(group.year || '').trim());
+    if (isCatechistGroup(group)) {
+      setAttendanceType('formacion');
+      setReportAttendanceType('formacion');
+    } else {
+      if (attendanceType === 'formacion') setAttendanceType('encuentro');
+      if (reportAttendanceType === 'formacion') setReportAttendanceType('all');
+    }
+    setSelectedGroupForStudent(isCatechistGroup(group) ? '' : group.id);
+    setReportStudentIds(getGroupAttendanceMembers(group.id, students, allUsers, catechistRoster, attendanceGroups).map(student => student.id));
+    setPaymentFilters(previous => ({ ...previous, groupId: isCatechistGroup(group) ? 'all' : group.id, search: '', date: '' }));
+    setPaymentCurrentPage(1);
+    setReportSubTab('asistencia');
+    setRosterMode('view');
     setIsAddStudentFormOpen(false);
+    setActiveTab('history');
+    setEditingStudentId(null);
   };
 
-  const handleCloseMaintenanceModal = () => {
-    setMaintenanceGroup(null);
-    setEditingStudentId(null);
-    setIsAddStudentFormOpen(false);
+  const handleNavigateToGroups = () => {
+    if (activeViewMode === 'catequista' && userRole === 'catequista' && visibleGroups.length === 1) {
+      handleOpenGroupReports(visibleGroups[0]);
+      return;
+    }
+    setActiveTab('groups');
+  };
+
+  const handleGroupCycleChange = (cycle) => {
+    setGroupCycleFilter(cycle);
+    const groupsForCycle = attendanceGroups.filter(group => String(group.year || '').trim() === cycle);
+    if (groupsForCycle.length === 1) {
+      if (groupsForCycle[0].id !== selectedGroupId) handleOpenGroupReports(groupsForCycle[0]);
+      return;
+    }
+    setActiveTab('groups');
   };
 
   const handleFileUpload = async (e) => {
@@ -1320,12 +1515,84 @@ export default function App() {
 
   const handleMarkAttendance = useCallback(async (studentId, status, targetDate = attendanceDate, label = attendanceLabel, targetType = attendanceType) => {
     try {
-      const studentDocRef = doc(db, 'students', studentId);
-      const student = students.find(s => s.id === studentId);
-      if (!student) return;
+      const student = students.find(item => item.id === studentId);
+      const userMember = String(studentId).startsWith(CATECHIST_USER_PREFIX)
+        ? allUsers.find(item => item.id === String(studentId).slice(CATECHIST_USER_PREFIX.length))
+        : null;
+      const pendingMember = String(studentId).startsWith(CATECHIST_PENDING_PREFIX)
+        ? catechistRoster.find(item => item.id === String(studentId).slice(CATECHIST_PENDING_PREFIX.length))
+        : null;
+      const attendanceOwner = student
+        ? { ...student, memberType: 'student', memberDocId: student.id }
+        : userMember
+          ? { ...userMember, memberType: 'catechistUser', memberDocId: userMember.id }
+          : pendingMember
+            ? { ...pendingMember, memberType: 'pendingCatechist', memberDocId: pendingMember.id }
+            : null;
+      if (!attendanceOwner) return;
+      const attendanceDocRef = getAttendanceDocumentRef(attendanceOwner);
 
-      let updatedAttendance = [...(student.attendance || [])];
+      const saveAttendance = async (updatedAttendance) => {
+        const writePromise = updateDoc(attendanceDocRef, { attendance: updatedAttendance });
+        const offline = !isOnline || navigator.onLine === false;
+
+        if (offline) {
+          if (attendanceOwner.memberType === 'catechistUser') {
+            setAllUsers(previous => previous.map(item => item.id === attendanceOwner.id
+              ? { ...item, attendance: updatedAttendance }
+              : item));
+            if (attendanceOwner.id === user?.uid) {
+              setUserData(previous => ({ ...previous, attendance: updatedAttendance }));
+            }
+          } else if (attendanceOwner.memberType === 'pendingCatechist') {
+            setCatechistRoster(previous => previous.map(item => item.id === attendanceOwner.id
+              ? { ...item, attendance: updatedAttendance }
+              : item));
+          }
+          setQueuedAttendanceWrites(previous => previous + 1);
+          notify('Asistencia guardada en este dispositivo; se sincronizará al recuperar conexión.', 'warning');
+          writePromise
+            .then(() => fetchAllData())
+            .catch(error => {
+              console.error('Error sincronizando asistencia guardada sin conexión:', error);
+              if (attendanceOwner.memberType === 'catechistUser') {
+                setAllUsers(previous => previous.map(item => item.id === attendanceOwner.id
+                  ? { ...item, attendance: attendanceOwner.attendance || [] }
+                  : item));
+                if (attendanceOwner.id === user?.uid) {
+                  setUserData(previous => ({ ...previous, attendance: attendanceOwner.attendance || [] }));
+                }
+              } else if (attendanceOwner.memberType === 'pendingCatechist') {
+                setCatechistRoster(previous => previous.map(item => item.id === attendanceOwner.id
+                  ? { ...item, attendance: attendanceOwner.attendance || [] }
+                  : item));
+              }
+              notify('No se pudo sincronizar un cambio de asistencia. Revisa tu conexión y permisos.', 'error');
+            })
+            .finally(() => setQueuedAttendanceWrites(previous => Math.max(0, previous - 1)));
+          return;
+        }
+
+        setQueuedAttendanceWrites(previous => previous + 1);
+        try {
+          await writePromise;
+          fetchAllData();
+        } finally {
+          setQueuedAttendanceWrites(previous => Math.max(0, previous - 1));
+        }
+      };
+
+      let updatedAttendance = [...(attendanceOwner.attendance || [])];
       const existingIndex = updatedAttendance.findIndex(a => a.date === targetDate && (a.type || 'encuentro') === targetType);
+      const existingRecord = existingIndex >= 0 ? updatedAttendance[existingIndex] : null;
+
+      const existingStatus = existingRecord?.status || (existingRecord?.present ? 'present' : 'absent');
+      if (existingRecord && existingStatus === status) {
+        updatedAttendance = updatedAttendance.filter((_, index) => index !== existingIndex);
+        await saveAttendance(updatedAttendance);
+        return;
+      }
+
       const newRecord = {
         date: targetDate,
         status: status,
@@ -1340,17 +1607,17 @@ export default function App() {
         updatedAttendance.push(newRecord);
       }
 
-      await updateDoc(studentDocRef, { attendance: updatedAttendance });
-      fetchAllData();
+      await saveAttendance(updatedAttendance);
     } catch (error) {
       console.error("Error registrando asistencia:", error);
+      notify("No se pudo actualizar la asistencia. Inténtalo de nuevo.", 'error');
     }
-  }, [attendanceDate, attendanceLabel, attendanceType, fetchAllData, students]);
+  }, [allUsers, attendanceDate, attendanceLabel, attendanceType, catechistRoster, fetchAllData, isOnline, notify, setAllUsers, setCatechistRoster, setUserData, students, user?.uid]);
 
   const handleSaveAttendanceLabelForDate = async (groupId, dateStr, nextLabel = attendanceLabel, targetType = attendanceType) => {
     if (!groupId || !dateStr) return;
     const cleanedLabel = (nextLabel || '').trim();
-    const groupStudents = students.filter(student => student.groupId === groupId);
+    const groupStudents = getGroupAttendanceMembers(groupId, students, allUsers, catechistRoster, attendanceGroups);
 
     try {
       await Promise.all(groupStudents.map(async (student) => {
@@ -1369,7 +1636,7 @@ export default function App() {
           return;
         }
 
-        await updateDoc(doc(db, 'students', student.id), { attendance: updatedAttendance });
+        await updateDoc(getAttendanceDocumentRef(student), { attendance: updatedAttendance });
       }));
 
       fetchAllData();
@@ -1382,11 +1649,11 @@ export default function App() {
     if (!groupId || !dateStr) return;
 
     try {
-      const groupStudents = students.filter(student => student.groupId === groupId);
+      const groupStudents = getGroupAttendanceMembers(groupId, students, allUsers, catechistRoster, attendanceGroups);
 
       await Promise.all(groupStudents.map(async (student) => {
         const updatedAttendance = (student.attendance || []).filter(record => !(record.date === dateStr && (record.type || 'encuentro') === targetType));
-        await updateDoc(doc(db, 'students', student.id), { attendance: updatedAttendance });
+        await updateDoc(getAttendanceDocumentRef(student), { attendance: updatedAttendance });
       }));
 
       fetchAllData();
@@ -1407,10 +1674,11 @@ export default function App() {
 
   const handleUpdateAttendanceDate = async (groupId, oldDate, targetType, nextDate) => {
     if (!groupId || !oldDate || !nextDate) return;
-    if (!window.confirm(`¿Deseas mover todos los registros de ${targetType === 'misa' ? 'Misa' : 'Encuentro'} del día ${oldDate} a ${nextDate}?`)) return;
+    const attendanceTypeLabel = targetType === 'misa' ? 'Misa' : targetType === 'formacion' ? 'Formación' : 'Encuentro';
+    if (!window.confirm(`¿Deseas mover todos los registros de ${attendanceTypeLabel} del día ${oldDate} a ${nextDate}?`)) return;
 
     try {
-      const groupStudents = students.filter(student => student.groupId === groupId);
+      const groupStudents = getGroupAttendanceMembers(groupId, students, allUsers, catechistRoster, attendanceGroups);
       await Promise.all(groupStudents.map(async (student) => {
         const updatedAttendance = (student.attendance || []).map(record => {
           if (record.date === oldDate && (record.type || 'encuentro') === targetType) {
@@ -1418,7 +1686,7 @@ export default function App() {
           }
           return record;
         });
-        await updateDoc(doc(db, 'students', student.id), { attendance: updatedAttendance });
+        await updateDoc(getAttendanceDocumentRef(student), { attendance: updatedAttendance });
       }));
       fetchAllData();
       setAttendanceDateEditor(null);
@@ -1461,12 +1729,7 @@ export default function App() {
 
   const handleGenerateStudentQr = (student) => {
     const studentName = student.name || student.fullName || 'Catequizando';
-    const payload = JSON.stringify({
-      type: 'student',
-      studentId: student.id,
-      name: studentName,
-      groupId: student.groupId || ''
-    });
+    const payload = String(student.id);
 
     const group = groups.find(item => item.id === student.groupId);
     const parroquia = parroquias.find(item => item.id === (group?.parroquiaId || student.parroquiaId))?.name
@@ -1479,7 +1742,27 @@ export default function App() {
       name: studentName,
       level: group?.level || student.level || 'Sin nivel asignado',
       parroquia,
-      imageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(payload)}`,
+      imageUrl: buildQrImageUrl(payload),
+      payload
+    });
+  };
+
+  const handleGenerateCatechistQr = (catechist, group) => {
+    const catechistName = catechist.name || 'Catequista';
+    const payload = String(catechist.memberDocId || catechist.id);
+    const diaconia = diaconias.find(item => item.id === group?.diaconiaId);
+    const parroquia = parroquias.find(item => item.id === diaconia?.parroquiaId)?.name
+      || diaconia?.parroquiaName
+      || 'Parroquia';
+
+    setQrCardLoading(true);
+    setQrModal({
+      type: 'catechist',
+      title: catechistName,
+      name: catechistName,
+      level: group?.diaconiaName || group?.name || 'Catequistas',
+      parroquia,
+      imageUrl: buildQrImageUrl(payload),
       payload
     });
   };
@@ -1525,6 +1808,26 @@ export default function App() {
     } catch (error) {
       console.error('Error generando la imagen del carnet:', error);
       alert('No se pudo copiar la imagen del carnet.');
+    }
+  };
+
+  const handleDownloadQrCardImage = async () => {
+    if (!qrCardRef.current || !qrModal) return;
+
+    try {
+      const { toPng } = await import('html-to-image');
+      const dataUrl = await toPng(qrCardRef.current, {
+        cacheBust: true,
+        pixelRatio: 3,
+        skipFonts: false
+      });
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `carnet_${(qrModal.name || 'catequizando').trim().replace(/\s+/g, '_')}.png`;
+      link.click();
+    } catch (error) {
+      console.error('Error descargando la imagen del carnet:', error);
+      alert('No se pudo descargar la imagen del carnet.');
     }
   };
 
@@ -1647,8 +1950,36 @@ export default function App() {
                 return;
               }
 
-              if (parsed?.type === 'student' && parsed?.studentId) {
-                const student = students.find(s => s.id === parsed.studentId || (parsed?.name && s.name.toLowerCase() === parsed.name.toLowerCase()));
+              const isPersonQr = parsed && typeof parsed === 'object' && ['student', 'catechist'].includes(parsed.type);
+              const rawQrId = parsed === null || typeof parsed !== 'object' ? value : '';
+              if (scannerModal?.type === 'attendance' && (isPersonQr || rawQrId)) {
+                if (String(selectedGroupId).startsWith(CATECHIST_GROUP_PREFIX)) {
+                  const members = getGroupAttendanceMembers(selectedGroupId, students, allUsers, catechistRoster);
+                  const scannedIds = [parsed?.userId, parsed?.catechistId, parsed?.memberId, parsed?.studentId, rawQrId].filter(Boolean).map(String);
+                  const scannedEmail = String(parsed?.email || '').trim().toLowerCase();
+                  const scannedName = String(parsed?.name || parsed?.catechistName || '').trim();
+                  const member = members.find(item => (
+                    scannedIds.includes(String(item.memberDocId || ''))
+                    || (scannedEmail && String(item.email || '').trim().toLowerCase() === scannedEmail)
+                    || (scannedName && sameNormalized(item.name, scannedName))
+                  ));
+                  if (member) {
+                    await handleMarkAttendance(member.id, 'present', attendanceDate, attendanceLabel, attendanceType);
+                    setScannerModal({ open: true, type: 'attendance', status: 'ok', result: member.name || scannedName || 'Catequista' });
+                  } else {
+                    setScannerModal({ open: true, type: 'attendance', status: 'not_found', result: scannedName || scannedEmail || value || 'Catequista' });
+                  }
+                  setTimeout(() => setScannerModal(null), 2000);
+                  return;
+                }
+
+                const scannedStudentId = parsed?.studentId || rawQrId;
+                if (!scannedStudentId) {
+                  setScannerModal({ open: true, type: 'attendance', status: 'not_found', result: parsed?.name || parsed?.email || value || 'Catequizando' });
+                  setTimeout(() => setScannerModal(null), 2000);
+                  return;
+                }
+                const student = students.find(s => s.id === scannedStudentId || (parsed?.name && s.name.toLowerCase() === parsed.name.toLowerCase()));
                 if (student) {
                   await handleMarkAttendance(student.id, 'present', attendanceDate, attendanceLabel, attendanceType);
                   setScannerModal({ open: true, type: 'attendance', status: 'ok', result: student.name || parsed.name || 'Catequizando' });
@@ -1681,7 +2012,7 @@ export default function App() {
         stream.getTracks().forEach(track => track.stop());
       }
     };
-  }, [scannerModal?.open, attendanceDate, attendanceLabel, attendanceType, handleMarkAttendance, paymentRecords, generatedCertificates, levelCertificateHistory, attendanceLetterHistory, issuedCertificates, students]);
+  }, [scannerModal?.open, attendanceDate, attendanceLabel, attendanceType, allUsers, catechistRoster, selectedGroupId, handleMarkAttendance, paymentRecords, generatedCertificates, levelCertificateHistory, attendanceLetterHistory, issuedCertificates, students]);
 
   const getAttendanceStatus = (student, dateStr, targetType = attendanceType) => {
     if (!student.attendance) return null;
@@ -1689,7 +2020,8 @@ export default function App() {
 
     if (targetType === 'all') {
       record = student.attendance.find(a => a.date === dateStr && (a.type || 'encuentro') === 'encuentro')
-        || student.attendance.find(a => a.date === dateStr && (a.type || 'encuentro') === 'misa');
+        || student.attendance.find(a => a.date === dateStr && (a.type || 'encuentro') === 'misa')
+        || student.attendance.find(a => a.date === dateStr);
     } else {
       record = student.attendance.find(a => a.date === dateStr && (a.type || 'encuentro') === targetType);
     }
@@ -1705,7 +2037,8 @@ export default function App() {
 
       if (targetType === 'all') {
         rec = (st.attendance || []).find(a => a.date === dateStr && (a.type || 'encuentro') === 'encuentro')
-          || (st.attendance || []).find(a => a.date === dateStr && (a.type || 'encuentro') === 'misa');
+          || (st.attendance || []).find(a => a.date === dateStr && (a.type || 'encuentro') === 'misa')
+          || (st.attendance || []).find(a => a.date === dateStr);
       } else {
         rec = (st.attendance || []).find(a => a.date === dateStr && (a.type || 'encuentro') === targetType);
       }
@@ -1724,6 +2057,11 @@ export default function App() {
     for (const st of studentList) {
       const misa = (st.attendance || []).find(a => a.date === dateStr && (a.type || 'encuentro') === 'misa');
       if (misa) return 'misa';
+    }
+
+    for (const st of studentList) {
+      const formacion = (st.attendance || []).find(a => a.date === dateStr && a.type === 'formacion');
+      if (formacion) return 'formacion';
     }
 
     return 'encuentro';
@@ -1746,13 +2084,25 @@ export default function App() {
 
   const handleOpenAttendanceMessage = (student, channel) => {
     const status = getAttendanceStatus(student, attendanceDate, attendanceType);
+    const isCatechistAttendanceGroup = isCatechistGroup(attendanceGroups.find(group => group.id === selectedGroupId));
+    if (isCatechistAttendanceGroup && status !== 'absent') return;
     const unjustifiedAbsences = (student.attendance || []).filter(record => {
       const recordStatus = record.status || (record.present ? 'present' : 'absent');
       return recordStatus === 'absent';
     }).length;
     const statusText = status === 'present' ? 'PRESENTE' : status === 'justified' ? 'AUSENCIA JUSTIFICADA' : status === 'absent' ? 'AUSENTE' : 'SIN REGISTRO';
     const catechistName = user?.displayName || userData?.name || 'Catequista';
-    const message = `¡Hola! 👋✨
+    const attendanceTypeLabel = attendanceType === 'formacion'
+      ? 'Formación de catequistas'
+      : attendanceType === 'misa' ? 'Misa' : 'Encuentro';
+    const message = isCatechistAttendanceGroup
+      ? `Hola ${student.name || 'catequista'}:
+
+Vimos que apareces como ausente el día *${attendanceDate}* en *${attendanceTypeLabel}*. Por favor, indícanos el motivo por el que faltaste para justificar tu ausencia.
+
+Gracias,
+${catechistName}`
+      : `¡Hola! 👋✨
 
 Le enviamos un cordial saludo. Le informamos que el día *${attendanceDate}*, el/la catequizando *${student.name}* registró el siguiente estado en su encuentro de catequesis: *${statusText}* 📖🙏
 ${status === 'absent' ? `\nActualmente cuenta con *${unjustifiedAbsences}* ausencia(s) injustificada(s) acumulada(s). Agradecemos su apoyo para mantener la asistencia al día. 💛\n` : ''}
@@ -1766,7 +2116,9 @@ ${catechistName}`;
   const handleSendAttendanceEmail = async () => {
     const recipient = messageModal?.student?.parentEmail?.trim();
     if (!recipient || !messageModal?.message) {
-      alert('Este catequizando no tiene un correo electrónico registrado.');
+      alert(isCatechistGroup(attendanceGroups.find(group => group.id === selectedGroupId))
+        ? 'Este catequista no tiene un correo electrónico registrado.'
+        : 'Este catequizando no tiene un correo electrónico registrado.');
       return;
     }
 
@@ -1808,7 +2160,7 @@ ${catechistName}`;
   };
 
   const getAttendanceReportView = (groupId) => {
-    const groupStudents = visibleStudents.filter(student => (
+    const groupStudents = attendanceStudents.filter(student => (
       student.groupId === groupId &&
       (!reportFilters.search || String(student.name || student.fullName || '').toLowerCase().includes(reportFilters.search.toLowerCase()))
     )).sort((a, b) => String(a.name || a.fullName || '').localeCompare(String(b.name || b.fullName || ''), 'es', { sensitivity: 'base' }));
@@ -1840,7 +2192,7 @@ ${catechistName}`;
   };
 
   const handleExportAttendanceToExcel = async (groupId, selectedStudentIds = reportStudentIds) => {
-    const group = groups.find(g => g.id === groupId);
+    const group = attendanceGroups.find(g => g.id === groupId);
     const reportView = getAttendanceReportView(groupId);
     const selectedIds = selectedStudentIds === null
       ? null
@@ -1848,7 +2200,9 @@ ${catechistName}`;
     const groupStudents = reportView.groupStudents.filter(student => selectedIds === null || selectedIds.includes(student.id));
 
     if (groupStudents.length === 0) {
-      alert("No hay Catequizandos registrados en este grupo para exportar.");
+      alert(isCatechistGroup(attendanceGroups.find(g => g.id === groupId))
+        ? 'No hay catequistas registrados en este grupo para exportar.'
+        : 'No hay Catequizandos registrados en este grupo para exportar.');
       return;
     }
 
@@ -1856,9 +2210,11 @@ ${catechistName}`;
       const { dateMap, sortedDates } = reportView;
       const minDate = sortedDates[0] || 'N/A';
       const maxDate = sortedDates[sortedDates.length - 1] || 'N/A';
-      const catechistsStr = group?.catechistNames ? group.catechistNames.join(', ') : 'Sin asignar';
+      const catechistsStr = group?.type === 'catequistas'
+        ? group.diaconiaName || 'Diaconía'
+        : group?.catechistNames ? group.catechistNames.join(', ') : 'Sin asignar';
 
-      const headers = ['Nombre Catequizando'];
+      const headers = [group?.type === 'catequistas' ? 'Nombre Catequista' : 'Nombre Catequizando'];
       sortedDates.forEach(d => {
         const lbl = dateMap.get(d);
         headers.push(lbl ? `${d} (${lbl})` : d);
@@ -1883,7 +2239,7 @@ ${catechistName}`;
       const metadata = [
         ['Grupo:', group ? group.name : 'N/A'],
         ['Ciclo Catequético:', group ? (group.year || '2026-2027') : '2026-2027'],
-        ['Catequistas a Cargo:', catechistsStr],
+        [group?.type === 'catequistas' ? 'Diaconía:' : 'Catequistas a Cargo:', catechistsStr],
         ['Rango de Fechas:', `${minDate} al ${maxDate}`]
       ];
       metadata.forEach(([label, value], index) => {
@@ -1959,7 +2315,7 @@ ${catechistName}`;
   };
 
   const handleExportAttendanceToPdf = async (groupId, selectedStudentIds = reportStudentIds) => {
-    const group = groups.find(g => g.id === groupId);
+    const group = attendanceGroups.find(g => g.id === groupId);
     const reportView = getAttendanceReportView(groupId);
     const selectedIds = selectedStudentIds === null
       ? null
@@ -1967,7 +2323,9 @@ ${catechistName}`;
     const groupStudents = reportView.groupStudents.filter(student => selectedIds === null || selectedIds.includes(student.id));
 
     if (groupStudents.length === 0) {
-      alert("Selecciona al menos un catequizando para exportar.");
+      alert(isCatechistGroup(attendanceGroups.find(item => item.id === groupId))
+        ? 'Selecciona al menos un catequista para exportar.'
+        : 'Selecciona al menos un catequizando para exportar.');
       return;
     }
 
@@ -1998,12 +2356,14 @@ ${catechistName}`;
       doc.setFontSize(9);
       doc.text(`Grupo: ${group?.name || 'N/A'}`, 14, 32);
       doc.text(`Ciclo Catequético: ${group?.year || '2026-2027'}`, 14, 38);
-      doc.text(`Catequistas: ${group?.catechistNames?.join(', ') || 'Sin asignar'}`, 14, 44);
-      doc.text(`Catequizandos incluidos: ${groupStudents.length}`, pageWidth - 70, 32);
+      doc.text(group?.type === 'catequistas'
+        ? `Diaconía: ${group.diaconiaName || 'Diaconía'}`
+        : `Catequistas: ${group?.catechistNames?.join(', ') || 'Sin asignar'}`, 14, 44);
+      doc.text(`${group?.type === 'catequistas' ? 'Catequistas' : 'Catequizandos'} incluidos: ${groupStudents.length}`, pageWidth - 70, 32);
 
       autoTable(doc, {
         startY: 50,
-        head: [['Nombre Catequizando', ...headers]],
+        head: [[group?.type === 'catequistas' ? 'Nombre Catequista' : 'Nombre Catequizando', ...headers]],
         body: groupStudents.map(student => [
           student.name,
           ...sortedDates.map(date => statusText(student, date))
@@ -2040,9 +2400,9 @@ ${catechistName}`;
   });
 
   const getGroupStatistics = (groupId, selectedStudentIds = reportStudentIds) => {
-    const items = students.filter(student => (
+    const items = attendanceStudents.filter(student => (
       student.groupId === groupId &&
-      (!reportFilters.search || student.name.toLowerCase().includes(reportFilters.search.toLowerCase())) &&
+      (!reportFilters.search || String(student.name || student.fullName || '').toLowerCase().includes(reportFilters.search.toLowerCase())) &&
       (selectedStudentIds === null || selectedStudentIds.includes(student.id))
     ));
 
@@ -3109,7 +3469,7 @@ ${catechistName}`;
 
     if (!finalInvoiceName || !paymentForm.amount || Number(paymentForm.amount) <= 0) {
       alert('Completa la información del pago correctamente.');
-      return;
+      return false;
     }
 
     const maxReceiptNum = paymentRecords.reduce((max, r) => {
@@ -3142,7 +3502,7 @@ ${catechistName}`;
 
     if (isRecentDuplicatePayment(paymentRecords, newRecord)) {
       alert('Este pago parece haberse registrado recientemente. Verifica el historial antes de repetirlo.');
-      return;
+      return false;
     }
 
     try {
@@ -3158,9 +3518,11 @@ ${catechistName}`;
         withoutMatricula: false,
         invoiceName: ''
       });
+      return true;
     } catch (error) {
       console.error('Error guardando pago en Firestore:', error);
       alert('No se pudo guardar el pago en la base de datos. Verifica tus permisos e inténtalo de nuevo.');
+      return false;
     }
   };
 
@@ -3180,7 +3542,7 @@ ${catechistName}`;
 
   const buildPaymentProofQrUrl = (record) => {
     const payload = buildPaymentProofPayload(record);
-    return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=2&ecc=L&data=${encodeURIComponent(payload)}`;
+    return buildQrImageUrl(payload);
   };
 
   const buildPaymentQrDataUrl = async (record) => {
@@ -3553,9 +3915,13 @@ ${catechistName}`;
       line('Fecha de nacimiento', `${studentRecord.birthDate || 'N/A'} (${studentRecord.age ?? 'N/A'} años)`, margin, y); line('Identificación', `${studentRecord.idType || 'NACIONAL'} · ${studentRecord.nationalId || 'N/A'}`, 110, y, 82); y += 9;
       line('Ciclo', studentRecord.cycle, margin, y); line('Teléfono', studentRecord.phone, 110, y, 82); y += 9;
       line('Dirección', studentRecord.address, margin, y); y += 11;
-      line('Datos adicionales', `Género: ${studentRecord.gender || 'N/A'} · Lugar de nacimiento: ${studentRecord.birthPlace || 'N/A'} · Centro educativo: ${studentRecord.educationCenter || 'N/A'} · Grado: ${studentRecord.schoolGrade || 'N/A'}`, margin, y); y += 16;
+      line('Datos adicionales', `Género: ${studentRecord.gender || 'N/A'} · Centro educativo: ${studentRecord.educationCenter || 'N/A'} · Grado: ${studentRecord.schoolGrade || 'N/A'}`, margin, y); y += 12;
+      line('Bautismo', `Fecha: ${studentRecord.baptismDate || 'N/A'} · Lugar: ${studentRecord.baptismPlace || 'N/A'}`, margin, y); y += 10;
+      if (studentRecord.firstCommunionDate || studentRecord.firstCommunionPlace) {
+        line('Primera comunión', `Fecha: ${studentRecord.firstCommunionDate || 'N/A'} · Lugar: ${studentRecord.firstCommunionPlace || 'N/A'}`, margin, y); y += 10;
+      }
       line('Preguntas de salud', `Adecuación: ${studentRecord.curricularAdaptation || 'NO'} · Conducta: ${studentRecord.behaviorIssue || 'NO'} · Impedimento físico: ${studentRecord.physicalImpairment || 'NO'}`, margin, y); y += 12;
-      line('Notas médicas', studentRecord.medicalNotes, margin, y); y += 14;
+      line('Notas del estudiante', studentRecord.medicalNotes, margin, y); y += 14;
 
       y = section('II. FAMILIARES Y ENCARGADOS', y);
       const family = studentRecord.family || {};
@@ -3565,6 +3931,7 @@ ${catechistName}`;
         y += 9;
       });
       line('Estado civil', studentRecord.maritalStatus, margin, y); line('Hermanos', `${studentRecord.siblingCount || 'N/A'}${studentRecord.siblingDetails ? ` · ${studentRecord.siblingDetails}` : ''}`, 110, y, 82); y += 13;
+      line('Vive con', studentRecord.livesWith, margin, y); y += 10;
 
       y = section('III. ESTADO DE DOCUMENTACIÓN', y);
       const documentStatus = (item) => item?.status === 'COMPLETED' || item?.url ? 'ADJUNTO' : 'PENDIENTE';
@@ -3669,6 +4036,7 @@ ${catechistName}`;
       'Cate-Kinder': { fill: [22, 163, 74], text: [255, 255, 255] },
       'Primer Nivel': { fill: [37, 99, 235], text: [255, 255, 255] },
       'Segundo Nivel': { fill: [124, 58, 237], text: [255, 255, 255] },
+      'Tercer Nivel': { fill: [255, 255, 255], text: [17, 24, 39] },
       'Tercer Nivel (Primera Comunión)': { fill: [255, 255, 255], text: [17, 24, 39] },
       'Cuarto Nivel': { fill: [250, 204, 21], text: [255, 255, 255] },
       'Quinto Nivel': { fill: [249, 115, 22], text: [255, 255, 255] },
@@ -3736,7 +4104,7 @@ ${catechistName}`;
       group.scheduleDay && group.scheduleTime && group.room
     ));
     if (!scheduledGroups.length) return '';
-    const levelClasses = { 'Cate-Kinder': 'nivel-kinder', 'Primer Nivel': 'nivel-primero', 'Segundo Nivel': 'nivel-segundo', 'Tercer Nivel (Primera Comunión)': 'nivel-tercero', 'Cuarto Nivel': 'nivel-cuarto', 'Quinto Nivel': 'nivel-quinto', 'Sexto Nivel': 'nivel-sexto', 'Septimo Nivel': 'nivel-septimo', 'Confirma': 'nivel-confirma' };
+    const levelClasses = { 'Cate-Kinder': 'nivel-kinder', 'Primer Nivel': 'nivel-primero', 'Segundo Nivel': 'nivel-segundo', 'Tercer Nivel': 'nivel-tercero', 'Tercer Nivel (Primera Comunión)': 'nivel-tercero', 'Cuarto Nivel': 'nivel-cuarto', 'Quinto Nivel': 'nivel-quinto', 'Sexto Nivel': 'nivel-sexto', 'Septimo Nivel': 'nivel-septimo', 'Confirma': 'nivel-confirma' };
     const days = [...new Set(scheduledGroups.map(group => group.scheduleDay))];
     const dayOrder = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
     days.sort((a, b) => dayOrder.indexOf(a) - dayOrder.indexOf(b));
@@ -3897,6 +4265,152 @@ ${catechistName}`;
     }
   };
 
+  const savePreregisteredCatechists = async (entries, groupId) => {
+    const canManageCatechists = ['admin', 'coordinador', 'coordinadorGeneral'].includes(userRole)
+      && ['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode)
+      && !isUserInactive;
+    const group = attendanceGroups.find(item => item.id === groupId && isCatechistGroup(item));
+    const diaconiaId = group?.diaconiaId || '';
+    if (!canManageCatechists || !group || !diaconiaId || (activeViewMode !== 'admin' && diaconiaId !== effectiveDiaconiaId)) {
+      throw new Error('No tienes permisos para agregar catequistas a esta diaconía.');
+    }
+
+    const uniqueEntries = new Map();
+    const entriesWithoutEmail = [];
+    entries.forEach(entry => {
+      const name = String(entry.name || '').trim();
+      const email = String(entry.email || '').trim().toLowerCase();
+      if (!name || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+        throw new Error('Cada catequista debe tener nombre y, si se indica, un correo válido.');
+      }
+      if (email) {
+        if (email === EXCLUDED_CATECHIST_EMAIL) return;
+        const existingUser = allUsers.find(userItem => String(userItem.email || '').trim().toLowerCase() === email);
+        if (existingUser) {
+          if (existingUser.diaconiaId === diaconiaId) return;
+          throw new Error(`${email} ya pertenece a una cuenta de la app; asígnala a la diaconía desde Usuarios.`);
+        }
+        const existingRosterEntry = catechistRoster.find(item => String(item.email || '').trim().toLowerCase() === email);
+        const existingRosterGroupId = existingRosterEntry?.groupId
+          || (existingRosterEntry?.diaconiaId ? getCatechistGroupId(existingRosterEntry.diaconiaId) : '');
+        if (existingRosterEntry && existingRosterGroupId !== groupId) {
+          throw new Error(`${email} ya está preregistrado en otro grupo de catequistas.`);
+        }
+        uniqueEntries.set(email, { name, email });
+      } else {
+        entriesWithoutEmail.push({ name, email: '' });
+      }
+    });
+    const entriesToSave = [...uniqueEntries.values(), ...entriesWithoutEmail];
+    if (!entriesToSave.length) throw new Error('No hay catequistas nuevos para agregar; las cuentas ya aparecen en esta diaconía.');
+    if (entriesToSave.length > 450) throw new Error('Importa un máximo de 450 catequistas por archivo.');
+
+    const batch = writeBatch(db);
+    const now = new Date().toISOString();
+    entriesToSave.forEach(({ name, email }) => {
+      const rosterRef = email
+        ? doc(db, 'catechistRoster', email)
+        : doc(collection(db, 'catechistRoster'));
+      batch.set(rosterRef, {
+        name,
+        email,
+        groupId,
+        diaconiaId,
+        parroquiaId: diaconias.find(item => item.id === diaconiaId)?.parroquiaId || '',
+        addedBy: user?.uid || '',
+        createdAt: now
+      }, { merge: true });
+      if (email) {
+        batch.set(doc(db, 'allowedEmails', email), {
+          email,
+          createdAt: now,
+          addedBy: user?.email || ''
+        }, { merge: true });
+      }
+    });
+    await batch.commit();
+    await fetchAllData();
+    return {
+      total: entriesToSave.length,
+      preauthorized: entriesToSave.filter(entry => entry.email).length
+    };
+  };
+
+  const handleAddPreregisteredCatechist = async (name, email, diaconiaId) => {
+    try {
+      await savePreregisteredCatechists([{ name, email }], diaconiaId);
+      return true;
+    } catch (error) {
+      console.error('Error agregando catequista preregistrado:', error);
+      alert(error.message || 'No se pudo agregar al catequista.');
+      return false;
+    }
+  };
+
+  const handleImportPreregisteredCatechists = async (file, diaconiaId) => {
+    if (!file) return;
+    try {
+      const XLSX = await loadXlsx();
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+      if (rows.length < 2) throw new Error('El archivo debe incluir encabezados y al menos un catequista.');
+
+      const headers = rows[0].map(value => String(value).trim().toLowerCase());
+      const nameIndex = headers.findIndex(value => ['nombre', 'name'].includes(value));
+      const emailIndex = headers.findIndex(value => ['correo', 'email', 'correo electrónico'].includes(value));
+      if (nameIndex < 0) {
+        throw new Error('El archivo debe tener una columna llamada «Nombre».');
+      }
+
+      const entries = rows.slice(1)
+        .filter(row => row[nameIndex] || (emailIndex >= 0 && row[emailIndex]))
+        .map(row => ({ name: row[nameIndex], email: emailIndex >= 0 ? row[emailIndex] : '' }));
+      const result = await savePreregisteredCatechists(entries, diaconiaId);
+      alert(`Se agregaron ${result.total} catequista(s); ${result.preauthorized} correo(s) quedaron preautorizados.`);
+    } catch (error) {
+      console.error('Error importando catequistas preregistrados:', error);
+      alert(error.message || 'No se pudo importar el archivo de catequistas.');
+    }
+  };
+
+  const handleToggleGlobalAttendanceReminders = async () => {
+    if (userRole !== 'admin' || activeViewMode !== 'admin') {
+      notify('Solo un administrador puede cambiar la pausa global de recordatorios.', 'error');
+      return;
+    }
+    if (!attendanceRemindersConfigReady) {
+      notify('Espera a que se cargue la configuración de recordatorios antes de cambiarla.', 'warning');
+      return;
+    }
+    if (!isOnline) {
+      notify('Conéctate a internet para cambiar la pausa global de recordatorios.', 'warning');
+      return;
+    }
+
+    const nextEnabled = !attendanceRemindersEnabled;
+    setSavingGlobalReminderSetting(true);
+    try {
+      await setDoc(doc(db, 'config', 'attendanceReminders'), {
+        enabled: nextEnabled,
+        updatedAt: new Date().toISOString(),
+        updatedBy: user.uid
+      }, { merge: true });
+      setAttendanceRemindersEnabled(nextEnabled);
+      notify(
+        nextEnabled
+          ? 'Se reanudaron los recordatorios para quienes los tienen activados en su perfil.'
+          : 'Se pausaron los recordatorios para todos los catequistas.',
+        'success'
+      );
+    } catch (error) {
+      console.error('Error actualizando la pausa global de recordatorios:', error);
+      notify('No se pudo actualizar la pausa global de recordatorios.', 'error');
+    } finally {
+      setSavingGlobalReminderSetting(false);
+    }
+  };
+
   const handleToggleActiveUser = async (targetUserId, currentActiveStatus) => {
     if (userRole !== 'admin' && userRole !== 'coordinador' && userRole !== 'coordinadorGeneral') return;
     const targetUserObj = allUsers.find(u => u.id === targetUserId);
@@ -3998,6 +4512,38 @@ ${catechistName}`;
     effectiveDiaconiaId
   });
 
+  const currentCatechistCycle = new Date().getMonth() <= 3
+    ? `${new Date().getFullYear() - 1}-${new Date().getFullYear()}`
+    : `${new Date().getFullYear()}-${new Date().getFullYear() + 1}`;
+  const catechistDiaconias = activeViewMode === 'coordinador'
+    ? diaconias.filter(diaconia => diaconia.id === effectiveDiaconiaId)
+    : ['admin', 'coordinadorGeneral'].includes(activeViewMode)
+      ? (effectiveDiaconiaId
+        ? diaconias.filter(diaconia => diaconia.id === effectiveDiaconiaId)
+        : activeViewMode === 'admin' ? diaconias : [])
+      : [];
+  const catechistGroups = catechistDiaconias.map(diaconia => ({
+    id: getCatechistGroupId(diaconia.id),
+    name: 'Catequistas',
+    level: 'Catequistas',
+    year: currentCatechistCycle,
+    parroquiaId: diaconia.parroquiaId || '',
+    diaconiaId: diaconia.id,
+    diaconiaName: diaconia.name || '',
+    type: 'catequistas',
+    catechistIds: [],
+    catechistNames: [],
+    isVisibleForCatechists: false,
+    scheduleDay: '',
+    scheduleTime: '',
+    room: ''
+  }));
+  const attendanceGroups = [...visibleGroups, ...catechistGroups];
+  const catechistGroupMembers = catechistGroups.flatMap(group => (
+    getCatechistAttendanceMembers(group.diaconiaId, allUsers, catechistRoster, group.id)
+  ));
+  const attendanceStudents = [...visibleStudents, ...catechistGroupMembers];
+
   useEffect(() => {
     const firstVisibleGroupId = visibleGroups[0]?.id || '';
     setDashboardGroupId(previousGroupId => (
@@ -4031,10 +4577,11 @@ ${catechistName}`;
     effectiveDiaconiaId
   });
 
-  const { visiblePaymentRecords, filteredPaymentRecords, paginatedPaymentRecords, paymentPageSize, paymentTotalPages, totalCollected } = useVisiblePayments({
+  const { visiblePaymentRecords, filteredPaymentRecords, paginatedPaymentRecords, paymentTotalPages, totalCollected } = useVisiblePayments({
     paymentRecords,
     paymentFilters,
     paymentCurrentPage,
+    paymentPageSize,
     groups,
     activeViewMode,
     effectiveDiaconiaId,
@@ -4042,7 +4589,7 @@ ${catechistName}`;
     visibleGroupIds
   });
   const { dashboardAttendanceRecords, dashboardAttendanceStats, absentRate, dashboardDonutStyle } = useDashboardAttendance({
-    visibleStudents,
+    visibleStudents: attendanceStudents,
     dashboardGroupId,
     dashboardAttendanceType,
     dashboardDate
@@ -4095,126 +4642,159 @@ ${catechistName}`;
   const inputBgClass = themeMode === 'dark' ? 'border bg-neutral-950 border-neutral-700 text-white placeholder-neutral-400' : 'border bg-white border-slate-300 text-slate-800 placeholder-slate-400';
   const labelTextClass = themeMode === 'dark' ? 'text-slate-300' : 'text-slate-600';
   const browserThemeStyle = { colorScheme: themeMode === 'dark' ? 'dark' : 'light' };
+  const canSelectViewMode = ['admin', 'coordinador', 'coordinadorGeneral'].includes(userRole);
+  const navbarUserName = (userData?.name || user?.displayName || 'Usuario').trim().split(/\s+/)[0] || 'Usuario';
 
   return (
     <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-semibold text-slate-700 dark:bg-slate-950 dark:text-slate-200">Cargando AsisCate…</div>}>
       <div className={`min-h-screen flex flex-col ${mainBgClass}`}>
       {/* HEADER DE NAVEGACIÓN */}
-      {!isOnline && (
+      {(!isOnline || hasPendingWrites || queuedAttendanceWrites > 0) && (
         <div className="bg-amber-500 text-amber-950 text-center text-xs font-bold py-2 px-4 border-b border-amber-400">
-          Modo offline activado • Se están usando datos guardados en este dispositivo.
+          {!isOnline
+            ? `Sin conexión • ${hasPendingWrites || queuedAttendanceWrites > 0 ? 'Hay cambios pendientes de sincronizar.' : 'Se muestran los datos disponibles en este dispositivo.'}`
+            : 'Cambios pendientes de sincronizar con Firebase.'}
         </div>
       )}
 
       <header
-        className="border-b sticky top-0 z-40 shadow-sm transition-colors"
+        className="relative border-b sticky top-0 z-40 shadow-sm transition-colors"
         style={{ backgroundColor: navbarColor, borderColor: darkenHex(navbarColor, 0.22) }}
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex justify-between items-center h-14">
+            <div className="flex items-center gap-2">
               <button onClick={() => setActiveTab('dashboard')} className="flex items-center gap-2 sm:gap-3">
-              <img src="/faviconclaro.svg" alt="AsisCate" className="w-7 h-7 sm:w-8 sm:h-8 flex-shrink-0" />
-              <span className="font-bold text-base sm:text-lg text-white">AsisCate</span>
+              <img src="/faviconclaro.svg" alt="AsisCate" className="w-7 h-7 flex-shrink-0" />
+              <span className="font-bold text-base text-white">AsisCate</span>
               </button>
-              <select
-                value={activeViewMode}
-                onChange={(event) => handleToggleViewMode(event.target.value)}
-                className="hidden xl:block rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
-                aria-label="Seleccionar vista"
-              >
-                {userRole === 'admin' && <option value="admin">Admin</option>}
-                {(userRole === 'admin' || userRole === 'coordinador') && <option value="coordinador">Coordinador</option>}
-                {(userRole === 'admin' || userRole === 'coordinadorGeneral') && <option value="coordinadorGeneral">Cord. General</option>}
-                <option value="catequista">Catequista</option>
-              </select>
-              {(activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
-                <select
-                  value={generalDiaconiaId}
-                  onChange={(event) => {
-                    setGeneralDiaconiaId(event.target.value);
-                    setSelectedGroupId('');
-                    setDashboardGroupId('');
-                    setSelectedGroupForStudent('');
-                    setPaymentFilters(previous => ({ ...previous, groupId: 'all' }));
-                  }}
-                  className="hidden xl:block max-w-44 rounded-lg border border-red-700 bg-red-950 px-3 py-2 text-xs font-bold text-white"
-                  aria-label="Seleccionar diaconía"
-                >
-                  <option value="">Selecciona diaconía</option>
-                  {diaconias
-                    .filter(diaconia => activeViewMode === 'admin' || !userData?.parroquiaId || diaconia.parroquiaId === userData.parroquiaId)
-                    .map(diaconia => <option key={diaconia.id} value={diaconia.id}>{diaconia.name}</option>)}
-                </select>
+              {(canSelectViewMode || activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
+                <div className="hidden xl:flex items-center rounded-full border border-white/25 bg-black/20 px-1">
+                  {canSelectViewMode && (
+                    <div className="relative flex items-center">
+                      <select
+                        value={activeViewMode}
+                        onChange={(event) => handleToggleViewMode(event.target.value)}
+                        className="max-w-28 appearance-none bg-transparent py-1.5 pl-2 pr-5 text-[11px] font-bold text-white outline-none"
+                        aria-label="Seleccionar vista"
+                      >
+                        {userRole === 'admin' && <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="admin">Admin</option>}
+                        {(userRole === 'admin' || userRole === 'coordinador') && <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="coordinador">Coordinador</option>}
+                        {(userRole === 'admin' || userRole === 'coordinadorGeneral') && <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="coordinadorGeneral">Coord. General</option>}
+                        <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="catequista">Catequista</option>
+                      </select>
+                      <MaterialIcon name="arrow_drop_down" className="pointer-events-none absolute right-0 text-base text-white/80" />
+                    </div>
+                  )}
+                  {canSelectViewMode && (activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
+                    <span className="h-5 w-px bg-white/25" aria-hidden="true" />
+                  )}
+                  {(activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
+                    <div className="relative flex items-center">
+                      <select
+                        value={generalDiaconiaId}
+                        onChange={(event) => {
+                          setGeneralDiaconiaId(event.target.value);
+                          setSelectedGroupId('');
+                          setDashboardGroupId('');
+                          setSelectedGroupForStudent('');
+                          setPaymentFilters(previous => ({ ...previous, groupId: 'all' }));
+                        }}
+                        className="max-w-32 appearance-none bg-transparent py-1.5 pl-2 pr-5 text-[11px] font-bold text-white outline-none"
+                        aria-label="Seleccionar diaconía"
+                      >
+                        <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="">Diaconía...</option>
+                        {diaconias
+                          .filter(diaconia => activeViewMode === 'admin' || !userData?.parroquiaId || diaconia.parroquiaId === userData.parroquiaId)
+                          .map(diaconia => <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} key={diaconia.id} value={diaconia.id}>{diaconia.name}</option>)}
+                      </select>
+                      <MaterialIcon name="arrow_drop_down" className="pointer-events-none absolute right-0 text-base text-white/80" />
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
             {/* Menú Desktop */}
-            <div className="hidden xl:flex items-center gap-4">
-              <nav className="flex items-center gap-1">
+            <div className="hidden xl:flex items-center gap-2">
+              <nav className="flex items-center gap-0.5">
                 <button
                   onClick={() => setActiveTab('dashboard')}
-                  className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
+                  title="Inicio"
+                  aria-label="Inicio"
+                  className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg font-medium text-xs transition-colors ${
                     activeTab === 'dashboard' 
                       ? 'bg-white text-red-900 font-bold'
-                      : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
+                      : 'text-white/80 hover:bg-white/10 hover:text-white'
                   }`}
                 >
-                  Inicio
+                  <MaterialIcon name="home" className="text-base" /> Inicio
                 </button>
                 <button
-                  onClick={() => setActiveTab('groups')}
-                  className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${
+                  onClick={handleNavigateToGroups}
+                  title="Grupos"
+                  className={`px-2 py-1.5 rounded-lg font-medium text-xs transition-colors ${
                     activeTab === 'groups' 
                       ? 'bg-white text-red-900 font-bold'
-                      : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
+                      : 'text-white/80 hover:bg-white/10 hover:text-white'
                   }`}
                 >
-                  Grupos
+                  <MaterialIcon name="groups" /> Grupos
                 </button>
                 {(canAccessEnrollment || canAccessEnrollmentDashboard) && (
                   <div className="relative" data-navbar-menu>
                     {canAccessEnrollment && canAccessEnrollmentDashboard ? (
-                      <button onClick={() => setOpenNavMenu(openNavMenu === 'enrollment' ? null : 'enrollment')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['enrollment', 'enrollmentDashboard'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Matrículas ▾</button>
+                      <button onClick={() => setOpenNavMenu(openNavMenu === 'enrollment' ? null : 'enrollment')} className={`px-2 py-1.5 rounded-lg font-medium text-xs transition-colors ${['enrollment', 'enrollmentDashboard'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-white/80 hover:bg-white/10 hover:text-white'}`}><MaterialIcon name="school" /> Matrículas <MaterialIcon name="expand_more" /></button>
                     ) : (
-                      <button onClick={() => setActiveTab(canAccessEnrollment ? 'enrollment' : 'enrollmentDashboard')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['enrollment', 'enrollmentDashboard'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>{canAccessEnrollment ? 'Matriculas' : 'Dash. Matrículas'}</button>
+                      <button onClick={() => setActiveTab(canAccessEnrollment ? 'enrollment' : 'enrollmentDashboard')} className={`px-2 py-1.5 rounded-lg font-medium text-xs transition-colors ${['enrollment', 'enrollmentDashboard'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-white/80 hover:bg-white/10 hover:text-white'}`}><MaterialIcon name="school" /> {canAccessEnrollment ? 'Matrículas' : 'Dash. Matrículas'}</button>
                     )}
                     {openNavMenu === 'enrollment' && canAccessEnrollment && canAccessEnrollmentDashboard && (
                       <div className="absolute left-0 top-full mt-1 w-48 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
-                        <button onClick={() => { setActiveTab('enrollment'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Matriculas</button>
-                        <button onClick={() => { setActiveTab('enrollmentDashboard'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Dash. Matrículas</button>
+                        <button onClick={() => { setActiveTab('enrollment'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700"><MaterialIcon name="how_to_reg" /> Matrículas</button>
+                        <button onClick={() => { setActiveTab('enrollmentDashboard'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700"><MaterialIcon name="dashboard" /> Dash. Matrículas</button>
                       </div>
                     )}
                   </div>
                 )}
-                <div className="relative" data-navbar-menu>
-                  <button onClick={() => setOpenNavMenu(openNavMenu === 'tools' ? null : 'tools')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['students', 'history', 'inventario', 'pagos'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Herramientas ▾</button>
-                  {openNavMenu === 'tools' && (
-                    <div className="absolute left-0 top-full mt-1 w-44 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
-                      {activeViewMode === 'admin' && (
-                        <button onClick={() => { setActiveTab('students'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700 font-semibold">Catequizandos</button>
-                      )}
-                      <button onClick={() => { setActiveTab('history'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Reportes</button>
-                      <button onClick={() => { setActiveTab('pagos'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Pagos</button>
-                      <button onClick={() => { setActiveTab('inventario'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Inventario</button>
-                    </div>
-                  )}
-                </div>
+                {activeViewMode === 'catequista' ? (
+                  <button
+                    onClick={() => setActiveTab('inventario')}
+                    title="Inventario"
+                    className={`px-2 py-1.5 rounded-lg font-medium text-xs transition-colors ${
+                      activeTab === 'inventario' ? 'bg-white text-red-900 font-bold' : 'text-white/80 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    <MaterialIcon name="inventory_2" /> Inventario
+                  </button>
+                ) : (
+                  <div className="relative" data-navbar-menu>
+                    <button onClick={() => setOpenNavMenu(openNavMenu === 'tools' ? null : 'tools')} className={`px-2 py-1.5 rounded-lg font-medium text-xs transition-colors ${['students', 'inventario', 'pagos'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-white/80 hover:bg-white/10 hover:text-white'}`}><MaterialIcon name="build" /> Herramientas <MaterialIcon name="expand_more" /></button>
+                    {openNavMenu === 'tools' && (
+                      <div className="absolute left-0 top-full mt-1 w-44 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
+                        {activeViewMode === 'admin' && (
+                          <button onClick={() => { setActiveTab('students'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700 font-semibold"><MaterialIcon name="child_care" /> Catequizandos</button>
+                        )}
+                        <button onClick={() => { setActiveTab('pagos'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700"><MaterialIcon name="payments" /> Pagos</button>
+                        <button onClick={() => { setActiveTab('inventario'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700"><MaterialIcon name="inventory_2" /> Inventario</button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {showPreferencesMenu && (
                   <div className="relative" data-navbar-menu>
-                  <button onClick={() => setOpenNavMenu(openNavMenu === 'preferences' ? null : 'preferences')} className={`px-3 py-2 rounded-lg font-medium text-sm transition-colors ${['parroquias', 'horarios', 'admin'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'}`}>Preferencias ▾</button>
+                  <button onClick={() => setOpenNavMenu(openNavMenu === 'preferences' ? null : 'preferences')} className={`px-2 py-1.5 rounded-lg font-medium text-xs transition-colors ${['parroquias', 'horarios', 'admin'].includes(activeTab) ? 'bg-white text-red-900 font-bold' : 'text-white/80 hover:bg-white/10 hover:text-white'}`}><MaterialIcon name="settings" /> Preferencias <MaterialIcon name="expand_more" /></button>
                     {openNavMenu === 'preferences' && (
                       <div className="absolute right-0 top-full mt-1 w-48 rounded-lg border border-slate-700 bg-slate-900 p-1 shadow-xl z-50">
-                        {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Parroquias y diaconías</button>}
-                        {canManageScheduleOptions && <button onClick={() => { setActiveTab('horarios'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Horarios y salones</button>}
-                        {canAccessUserManagement && <button onClick={() => { setActiveTab('admin'); setOpenNavMenu(null); }} className="w-full px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700">Usuarios</button>}
+                        {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700"><MaterialIcon name="account_tree" /> Parroquias y diaconías</button>}
+                        {canManageScheduleOptions && <button onClick={() => { setActiveTab('horarios'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700"><MaterialIcon name="calendar_month" /> Horarios y salones</button>}
+                        {canAccessUserManagement && <button onClick={() => { setActiveTab('admin'); setOpenNavMenu(null); }} className="flex w-full items-center gap-2 px-3 py-2 rounded text-left text-xs text-slate-200 hover:bg-slate-700"><MaterialIcon name="manage_accounts" /> Usuarios</button>}
                       </div>
                     )}
                   </div>
                 )}
               </nav>
 
-              <div className="flex items-center gap-3 border-l pl-4 border-slate-700">
+              <div className="flex items-center gap-1.5 border-l pl-2 border-white/20">
                 <div className="relative">
                   <button
                     onClick={() => {
@@ -4225,19 +4805,27 @@ ${catechistName}`;
                       setUserPhoneNumber(userData?.phoneNumber || '');
                       setIsUserNameModalOpen(true);
                     }}
-                    className={`flex flex-col text-right text-white hover:text-red-100 transition-colors p-1.5 rounded-lg ${
+                    title="Perfil y preferencias"
+                    aria-label="Perfil y preferencias"
+                    className={`flex items-center gap-2 text-white hover:text-red-100 transition-colors p-1 rounded-lg ${
                       isTerritoryPending ? 'ring-2 ring-amber-400 ring-offset-2 ring-offset-red-900 animate-pulse bg-amber-500/20' : ''
                     }`}
                   >
-                    <span className="text-xs font-semibold text-white max-w-[160px] truncate">{userData?.name || user.displayName}</span>
-                    <span className="text-[10px] text-slate-200 hidden 2xl:block max-w-[160px] truncate">{user.email}</span>
+                    {user?.photoURL ? (
+                      <img src={user.photoURL} alt="" referrerPolicy="no-referrer" className="h-7 w-7 rounded-full object-cover ring-1 ring-white/40" />
+                    ) : (
+                      <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white">
+                        {navbarUserName.charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                    <span className="max-w-24 truncate text-xs font-semibold text-white">{navbarUserName}</span>
                   </button>
 
                   {/* Mensaje Flotante / Tooltip prominente cuando falta la Parroquia y Diaconía */}
                   {isTerritoryPending && (
                     <div className="absolute right-0 top-full mt-2 w-72 bg-amber-400 text-amber-950 p-3 rounded-2xl shadow-2xl border-2 border-amber-300 text-xs font-extrabold z-50 animate-bounce">
                       <div className="flex items-start gap-2.5">
-                        <span className="text-lg leading-none">📍</span>
+                        <MaterialIcon name="location_on" className="text-lg" />
                         <div>
                           <div className="font-extrabold text-xs uppercase tracking-wide text-amber-950 mb-0.5">¡Configura tu ubicación aquí!</div>
                           <p className="font-medium text-[11px] leading-tight text-amber-900">
@@ -4248,34 +4836,64 @@ ${catechistName}`;
                     </div>
                   )}
                 </div>
+                {!isAppInstalled && (
+                  <button
+                    type="button"
+                    onClick={handleInstallApp}
+                    title="Instalar app"
+                    aria-label="Instalar app"
+                    className="p-2 text-white/80 hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+                  >
+                    <MaterialIcon name="install_mobile" className="text-lg" />
+                  </button>
+                )}
                 <button
                   onClick={handleLogout}
-                  className="p-2 text-rose-500 hover:text-rose-600 rounded-lg hover:bg-rose-50/10 transition-colors text-xs font-semibold"
+                  title="Cerrar sesión"
+                  aria-label="Cerrar sesión"
+                  className="p-2 text-white/80 hover:text-white rounded-lg hover:bg-white/10 transition-colors"
                 >
-                  Salir
+                  <MaterialIcon name="logout" className="text-lg" />
                 </button>
                 <button
                   onClick={handleToggleTheme}
                   title="Cambiar Modo Claro/Oscuro"
-                  className="p-2 rounded-lg border text-xs font-bold transition-all bg-slate-700 border-slate-600 text-amber-300 hover:bg-slate-600"
+                  aria-label="Cambiar modo claro u oscuro"
+                  style={{ backgroundColor: navbarColor, borderColor: darkenHex(navbarColor, 0.22) }}
+                  className="p-2 rounded-lg border text-amber-200 transition-all hover:brightness-110"
                 >
-                  {themeMode === 'dark' ? '🌙' : '☀️'}
+                  <MaterialIcon name={themeMode === 'dark' ? 'dark_mode' : 'light_mode'} />
                 </button>
               </div>
             </div>
 
             {/* Menú Móvil / Tablet */}
             <div className="xl:hidden flex items-center gap-2">
+              {!isAppInstalled && (
+                <button
+                  type="button"
+                  onClick={handleInstallApp}
+                  title="Instalar app"
+                  aria-label="Instalar app"
+                  className="p-2 text-white/80 hover:text-white rounded-lg hover:bg-white/10 transition-colors"
+                >
+                  <MaterialIcon name="install_mobile" className="text-lg" />
+                </button>
+              )}
               <button
                 onClick={handleToggleTheme}
                 title="Cambiar Modo Claro/Oscuro"
-                className={`p-2 rounded-lg border text-xs font-bold transition-all ${themeMode === 'dark' ? 'bg-slate-700 border-slate-600 text-amber-300 hover:bg-slate-600' : 'border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                aria-label="Cambiar modo claro u oscuro"
+                style={{ backgroundColor: navbarColor, borderColor: darkenHex(navbarColor, 0.22) }}
+                className="p-2 rounded-lg border text-amber-200 transition-all hover:brightness-110"
               >
-                {themeMode === 'dark' ? '🌙' : '☀️'}
+                <MaterialIcon name={themeMode === 'dark' ? 'dark_mode' : 'light_mode'} />
               </button>
 
               <button
                 onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+                title={isMobileMenuOpen ? 'Cerrar menú' : 'Abrir menú'}
+                aria-label={isMobileMenuOpen ? 'Cerrar menú' : 'Abrir menú'}
                 className={`p-2 rounded-lg focus:outline-none ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-800' : 'text-slate-400 hover:bg-slate-200'}`}
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -4291,73 +4909,128 @@ ${catechistName}`;
         </div>
 
         {/* Desplegable Móvil / Tablet */}
-        {isMobileMenuOpen && (
-          <div className={`mobile-menu ${themeMode === 'light' ? 'mobile-menu-light' : ''} xl:hidden border-b px-4 pt-2 pb-4 space-y-3 ${themeMode === 'dark' ? 'border-neutral-800 bg-black text-slate-100' : 'border-slate-200 bg-white text-slate-800'}`}>
-            <div className="flex flex-col space-y-1">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pb-2">
-                <select value={activeViewMode} onChange={(event) => handleToggleViewMode(event.target.value)} className={`w-full rounded-lg border px-3 py-2 text-xs font-bold ${themeMode === 'dark' ? 'border-red-700 bg-red-950 text-white' : 'border-slate-300 bg-white text-slate-800'}`} aria-label="Seleccionar vista">
-                  {userRole === 'admin' && <option value="admin">Admin</option>}
-                  {(userRole === 'admin' || userRole === 'coordinador') && <option value="coordinador">Coordinador</option>}
-                  {(userRole === 'admin' || userRole === 'coordinadorGeneral') && <option value="coordinadorGeneral">Coord. General</option>}
-                  <option value="catequista">Catequista</option>
-                </select>
-                {(activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
-                  <select value={generalDiaconiaId} onChange={(event) => { setGeneralDiaconiaId(event.target.value); setSelectedGroupId(''); setDashboardGroupId(''); setSelectedGroupForStudent(''); setPaymentFilters(previous => ({ ...previous, groupId: 'all' })); }} className={`w-full rounded-lg border px-3 py-2 text-xs font-bold ${themeMode === 'dark' ? 'border-red-700 bg-red-950 text-white' : 'border-slate-300 bg-white text-slate-800'}`} aria-label="Seleccionar diaconía">
-                    <option value="">Selecciona diaconía</option>
-                    {diaconias.filter(diaconia => activeViewMode === 'admin' || !userData?.parroquiaId || diaconia.parroquiaId === userData.parroquiaId).map(diaconia => <option key={diaconia.id} value={diaconia.id}>{diaconia.name}</option>)}
-                  </select>
-                )}
-              </div>
-              <button
-                onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }}
-                className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'dashboard' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-              >
-                Panel Principal
-              </button>
-              <button
-                onClick={() => { setActiveTab('groups'); setIsMobileMenuOpen(false); }}
-                className={`px-3 py-2 rounded-lg text-left font-medium text-sm ${activeTab === 'groups' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-white text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-400' : 'text-slate-400'}`}
-              >
-                Grupos
-              </button>
-              {(canAccessEnrollment || canAccessEnrollmentDashboard) && (
-                <div className="rounded-lg border border-slate-700/60 overflow-hidden">
-                  {canAccessEnrollment && canAccessEnrollmentDashboard ? <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Matrículas</div> : null}
-                  {canAccessEnrollment && <button onClick={() => { setActiveTab('enrollment'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">{canAccessEnrollmentDashboard ? '↳ Matriculas' : 'Matriculas'}</button>}
-                  {canAccessEnrollmentDashboard && <button onClick={() => { setActiveTab('enrollmentDashboard'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">{canAccessEnrollment ? '↳ Dash. Matrículas' : 'Dash. Matrículas'}</button>}
+        <div
+          aria-hidden={!isMobileMenuOpen}
+          inert={!isMobileMenuOpen}
+          className={`mobile-menu ${themeMode === 'light' ? 'mobile-menu-light' : ''} absolute right-3 top-full z-50 mt-2 w-80 max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl border p-3 shadow-2xl transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none xl:hidden ${themeMode === 'dark' ? 'border-neutral-700 bg-neutral-950 text-slate-100' : 'border-slate-200 bg-white text-slate-800'} ${isMobileMenuOpen ? 'pointer-events-auto translate-y-0 scale-100 opacity-100' : 'pointer-events-none -translate-y-2 scale-95 opacity-0'}`}
+          style={{ maxHeight: 'calc(100dvh - 5rem)', transformOrigin: 'top right' }}
+        >
+            <div className="flex flex-col gap-1">
+              {(canSelectViewMode || activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
+                <div className={`mb-2 flex w-full min-w-0 flex-wrap items-center gap-1 rounded-2xl border p-1 ${themeMode === 'dark' ? 'border-white/20 bg-white/5' : 'border-slate-300 bg-slate-100'}`}>
+                  {canSelectViewMode && (
+                    <div className="relative flex min-w-0 flex-1 basis-32 items-center">
+                      <select value={activeViewMode} onChange={(event) => handleToggleViewMode(event.target.value)} className={`w-full min-w-0 max-w-full truncate appearance-none bg-transparent py-1.5 pl-3 pr-6 text-xs font-bold ${themeMode === 'dark' ? 'text-white' : 'text-slate-800'}`} aria-label="Seleccionar vista">
+                        {userRole === 'admin' && <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="admin">Admin</option>}
+                        {(userRole === 'admin' || userRole === 'coordinador') && <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="coordinador">Coordinador</option>}
+                        {(userRole === 'admin' || userRole === 'coordinadorGeneral') && <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="coordinadorGeneral">Coord. General</option>}
+                        <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="catequista">Catequista</option>
+                      </select>
+                      <MaterialIcon name="arrow_drop_down" className={`pointer-events-none absolute right-0 text-lg ${themeMode === 'dark' ? 'text-white/80' : 'text-slate-600'}`} />
+                    </div>
+                  )}
+                  {(activeViewMode === 'coordinadorGeneral' || activeViewMode === 'admin') && (
+                    <div className="relative flex min-w-0 flex-1 basis-32 items-center">
+                      <select value={generalDiaconiaId} onChange={(event) => { setGeneralDiaconiaId(event.target.value); setSelectedGroupId(''); setDashboardGroupId(''); setSelectedGroupForStudent(''); setPaymentFilters(previous => ({ ...previous, groupId: 'all' })); }} className={`w-full min-w-0 max-w-full truncate appearance-none bg-transparent py-1.5 pl-3 pr-6 text-xs font-bold ${themeMode === 'dark' ? 'text-white' : 'text-slate-800'}`} aria-label="Seleccionar diaconía">
+                        <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} value="">Diaconía...</option>
+                        {diaconias.filter(diaconia => activeViewMode === 'admin' || !userData?.parroquiaId || diaconia.parroquiaId === userData.parroquiaId).map(diaconia => <option className={themeMode === 'dark' ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} key={diaconia.id} value={diaconia.id}>{diaconia.name}</option>)}
+                      </select>
+                      <MaterialIcon name="arrow_drop_down" className={`pointer-events-none absolute right-0 text-lg ${themeMode === 'dark' ? 'text-white/80' : 'text-slate-600'}`} />
+                    </div>
+                  )}
                 </div>
               )}
-              <div className="rounded-lg border border-slate-700/60 overflow-hidden">
-                <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Herramientas</div>
-                {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('students'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Catequizandos</button>}
-                <button onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Reportes</button>
-                <button onClick={() => { setActiveTab('pagos'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Pagos</button>
-                <button onClick={() => { setActiveTab('inventario'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Inventario</button>
-              </div>
+              <button
+                onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${activeTab === 'dashboard' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-slate-100 text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-300 hover:bg-white/5' : 'text-slate-600 hover:bg-slate-100'}`}
+              >
+                <MaterialIcon name="home" /> Inicio
+              </button>
+              <button
+                onClick={() => { handleNavigateToGroups(); setIsMobileMenuOpen(false); }}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${activeTab === 'groups' ? (themeMode === 'dark' ? 'bg-slate-700 text-white font-bold' : 'bg-slate-100 text-red-900 font-bold') : themeMode === 'dark' ? 'text-slate-300 hover:bg-white/5' : 'text-slate-600 hover:bg-slate-100'}`}
+              >
+                <MaterialIcon name="groups" /> Grupos
+              </button>
+              {(canAccessEnrollment || canAccessEnrollmentDashboard) && (
+                <div className={`overflow-hidden rounded-xl border ${themeMode === 'dark' ? 'border-slate-700/60' : 'border-slate-200'}`}>
+                  <button type="button" onClick={() => setOpenMobileSection(openMobileSection === 'enrollment' ? null : 'enrollment')} aria-expanded={openMobileSection === 'enrollment'} className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-bold ${themeMode === 'dark' ? 'text-slate-200 hover:bg-white/5' : 'text-slate-700 hover:bg-slate-50'}`}><span className="flex items-center gap-2"><MaterialIcon name="school" /> Matrículas</span><MaterialIcon name="expand_more" className={`transition-transform ${openMobileSection === 'enrollment' ? 'rotate-180' : ''}`} /></button>
+                  <div className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${openMobileSection === 'enrollment' ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} aria-hidden={openMobileSection !== 'enrollment'}>
+                    <div inert={openMobileSection !== 'enrollment'} className={`min-h-0 overflow-hidden border-t p-1 transition-opacity duration-150 motion-reduce:transition-none ${openMobileSection === 'enrollment' ? 'opacity-100' : 'opacity-0'} ${themeMode === 'dark' ? 'border-slate-700/60' : 'border-slate-200'}`}>
+                      {canAccessEnrollment && <button onClick={() => { setActiveTab('enrollment'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="how_to_reg" /> Matrículas</button>}
+                      {canAccessEnrollmentDashboard && <button onClick={() => { setActiveTab('enrollmentDashboard'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="dashboard" /> Dash. Matrículas</button>}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {activeViewMode === 'catequista' ? (
+                <button
+                  onClick={() => { setActiveTab('inventario'); setIsMobileMenuOpen(false); }}
+                  className={`flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
+                    activeTab === 'inventario' ? 'bg-slate-700 text-white font-bold' : themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <MaterialIcon name="inventory_2" /> Inventario
+                </button>
+              ) : (
+                <div className={`overflow-hidden rounded-xl border ${themeMode === 'dark' ? 'border-slate-700/60' : 'border-slate-200'}`}>
+                  <button type="button" onClick={() => setOpenMobileSection(openMobileSection === 'tools' ? null : 'tools')} aria-expanded={openMobileSection === 'tools'} className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-bold ${themeMode === 'dark' ? 'text-slate-200 hover:bg-white/5' : 'text-slate-700 hover:bg-slate-50'}`}><span className="flex items-center gap-2"><MaterialIcon name="build" /> Herramientas</span><MaterialIcon name="expand_more" className={`transition-transform ${openMobileSection === 'tools' ? 'rotate-180' : ''}`} /></button>
+                  <div className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${openMobileSection === 'tools' ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} aria-hidden={openMobileSection !== 'tools'}>
+                    <div inert={openMobileSection !== 'tools'} className={`min-h-0 overflow-hidden border-t p-1 transition-opacity duration-150 motion-reduce:transition-none ${openMobileSection === 'tools' ? 'opacity-100' : 'opacity-0'} ${themeMode === 'dark' ? 'border-slate-700/60' : 'border-slate-200'}`}>
+                      {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('students'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="child_care" /> Catequizandos</button>}
+                      <button onClick={() => { setActiveTab('pagos'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="payments" /> Pagos</button>
+                      <button onClick={() => { setActiveTab('inventario'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="inventory_2" /> Inventario</button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {showPreferencesMenu && (
-                <div className="rounded-lg border border-slate-700/60 overflow-hidden">
-                  <div className="px-3 py-2 text-xs font-bold text-slate-300 bg-slate-800/40">Preferencias</div>
-                  {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Parroquias y diaconías</button>}
-                  {canManageScheduleOptions && <button onClick={() => { setActiveTab('horarios'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Horarios y salones</button>}
-                  {canAccessUserManagement && <button onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className="w-full px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700/50">↳ Usuarios</button>}
+                <div className={`overflow-hidden rounded-xl border ${themeMode === 'dark' ? 'border-slate-700/60' : 'border-slate-200'}`}>
+                  <button type="button" onClick={() => setOpenMobileSection(openMobileSection === 'preferences' ? null : 'preferences')} aria-expanded={openMobileSection === 'preferences'} className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-bold ${themeMode === 'dark' ? 'text-slate-200 hover:bg-white/5' : 'text-slate-700 hover:bg-slate-50'}`}><span className="flex items-center gap-2"><MaterialIcon name="settings" /> Preferencias</span><MaterialIcon name="expand_more" className={`transition-transform ${openMobileSection === 'preferences' ? 'rotate-180' : ''}`} /></button>
+                  <div className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${openMobileSection === 'preferences' ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} aria-hidden={openMobileSection !== 'preferences'}>
+                    <div inert={openMobileSection !== 'preferences'} className={`min-h-0 overflow-hidden border-t p-1 transition-opacity duration-150 motion-reduce:transition-none ${openMobileSection === 'preferences' ? 'opacity-100' : 'opacity-0'} ${themeMode === 'dark' ? 'border-slate-700/60' : 'border-slate-200'}`}>
+                      {activeViewMode === 'admin' && <button onClick={() => { setActiveTab('parroquias'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="account_tree" /> Parroquias y diaconías</button>}
+                      {canManageScheduleOptions && <button onClick={() => { setActiveTab('horarios'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="calendar_month" /> Horarios y salones</button>}
+                      {canAccessUserManagement && <button onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm ${themeMode === 'dark' ? 'text-slate-300 hover:bg-slate-700/50' : 'text-slate-600 hover:bg-slate-100'}`}><MaterialIcon name="manage_accounts" /> Usuarios</button>}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className={`pt-3 border-t flex items-center justify-between ${themeMode === 'dark' ? 'border-slate-700' : 'border-slate-200'}`}>
-              <div className="flex flex-col text-white">
-                <span className="text-xs font-semibold text-white">{userData?.name || user.displayName || user.email}</span>
-                <span className="text-[10px] text-slate-200">{user.email}</span>
-              </div>
+            <div className={`mt-2 flex items-center justify-between border-t pt-3 ${themeMode === 'dark' ? 'border-slate-700' : 'border-slate-200'}`}>
+              <button
+                onClick={() => {
+                  setUserNameDraft(userData?.name || user?.displayName || '');
+                  setModalParroquiaId(userData?.parroquiaId || '');
+                  setModalDiaconiaId(userData?.diaconiaId || '');
+                  setUserPhoneCode(userData?.phoneCode || '+506');
+                  setUserPhoneNumber(userData?.phoneNumber || '');
+                  setIsUserNameModalOpen(true);
+                  setIsMobileMenuOpen(false);
+                }}
+                title="Perfil y preferencias"
+                className="flex items-center gap-2"
+              >
+                {user?.photoURL ? (
+                  <img src={user.photoURL} alt="" referrerPolicy="no-referrer" className="h-8 w-8 rounded-full object-cover ring-1 ring-white/30" />
+                ) : (
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-sm font-bold text-white">
+                    {navbarUserName.charAt(0).toUpperCase()}
+                  </span>
+                )}
+                <span className="max-w-48 truncate text-xs font-semibold">{navbarUserName}</span>
+              </button>
               <button
                 onClick={handleLogout}
-                className="px-3 py-1.5 bg-rose-500/10 text-rose-500 rounded-lg text-xs font-bold"
+                title="Cerrar sesión"
+                aria-label="Cerrar sesión"
+                className="rounded-lg p-2 text-current hover:bg-slate-700/20"
               >
-                Cerrar Sesión
+                <MaterialIcon name="logout" className="text-lg" />
               </button>
             </div>
-          </div>
-        )}
+        </div>
       </header>
 
       {/* CONTENIDO PRINCIPAL */}
@@ -4366,7 +5039,7 @@ ${catechistName}`;
         {isTerritoryPending && (
           <div className="mb-6 bg-amber-500/10 border-2 border-amber-500/40 text-amber-500 rounded-2xl p-4 text-xs sm:text-sm font-semibold flex flex-col sm:flex-row items-center justify-between gap-3 shadow-md">
             <div className="flex items-center gap-3">
-              <span className="text-2xl flex-shrink-0">⚠️</span>
+              <MaterialIcon name="warning" className="text-2xl flex-shrink-0" />
               <div>
                 <strong className="text-sm font-bold text-amber-400 block mb-0.5">Configuración de ubicación pendiente:</strong>
                 Para habilitar las funciones de la app debes asignar tu Parroquia, Diaconía y Teléfono en tus Preferencias (haz clic en tu usuario en el navbar).
@@ -4384,7 +5057,7 @@ ${catechistName}`;
               }}
               className="w-full sm:w-auto bg-amber-500 hover:bg-amber-600 text-amber-950 font-extrabold px-4 py-2 rounded-xl text-xs shadow transition-colors whitespace-nowrap"
             >
-              Configurar Ahora ➔
+              Configurar Ahora <MaterialIcon name="arrow_forward" />
             </button>
           </div>
         )}
@@ -4392,7 +5065,7 @@ ${catechistName}`;
         {isUserUnapproved && !isTerritoryPending && (
           <div className="mb-6 bg-amber-500/10 border-2 border-amber-500/40 text-amber-400 rounded-2xl p-5 text-xs sm:text-sm shadow-lg space-y-3">
             <div className="flex items-start gap-3">
-              <span className="text-3xl flex-shrink-0">⏳</span>
+              <MaterialIcon name="hourglass_top" className="text-3xl flex-shrink-0" />
               <div className="space-y-1">
                 <strong className="text-base font-extrabold text-amber-300 block">
                   Perfil Pendiente de Aprobación
@@ -4406,7 +5079,7 @@ ${catechistName}`;
             {/* Lista de aprobadores asignados según Parroquia y Diaconía */}
             <div className="pt-2 border-t border-amber-500/30 space-y-2">
               <span className="font-bold text-xs text-amber-300 block">
-                👥 Usuarios autorizados para aprobar tu perfil en tu Parroquia y Diaconía:
+                <MaterialIcon name="group" /> Usuarios autorizados para aprobar tu perfil en tu Parroquia y Diaconía:
               </span>
               {(() => {
                 const approvers = allUsers.filter(u => 
@@ -4442,7 +5115,7 @@ ${catechistName}`;
 
         {isUserInactive && (
           <div className="mb-6 bg-rose-500/10 border-2 border-rose-500/40 text-rose-400 rounded-2xl p-4 text-xs sm:text-sm font-semibold flex items-center gap-3 shadow-md">
-            <span className="text-2xl flex-shrink-0">⛔</span>
+            <MaterialIcon name="block" className="text-2xl flex-shrink-0" />
             <div>
               <strong className="text-sm font-bold text-rose-300 block mb-0.5">Cuenta Inactiva:</strong>
               Tu usuario ha sido desactivado temporalmente. No puedes realizar modificaciones en la app. Contacta al Coordinador de tu Diaconía para reactivarlo.
@@ -4460,9 +5133,6 @@ ${catechistName}`;
             cardBgClass={cardBgClass}
             dashboardPanelOpen={dashboardPanelOpen}
             setDashboardPanelOpen={setDashboardPanelOpen}
-            installPromptEvent={installPromptEvent}
-            isAppInstalled={isAppInstalled}
-            handleInstallApp={handleInstallApp}
             attendanceType={attendanceType}
             setAttendanceType={setAttendanceType}
             dashboardGroupId={dashboardGroupId}
@@ -4470,7 +5140,7 @@ ${catechistName}`;
             dashboardAttendanceType={dashboardAttendanceType}
             setDashboardAttendanceType={setDashboardAttendanceType}
             userRole={userRole}
-            visibleGroups={visibleGroups}
+            visibleGroups={attendanceGroups}
             dashboardDate={dashboardDate}
             setDashboardDate={setDashboardDate}
             browserThemeStyle={browserThemeStyle}
@@ -4486,7 +5156,7 @@ ${catechistName}`;
             setAttendanceDate={handleSetAttendanceDate}
             setAttendanceLabel={setAttendanceLabel}
             getAttendanceLabel={getAttendanceLabel}
-            visibleStudents={visibleStudents}
+            visibleStudents={attendanceStudents}
             selectedGroupId={selectedGroupId}
             attendanceLabel={attendanceLabel}
             attendanceLabelSaveTimeoutRef={attendanceLabelSaveTimeoutRef}
@@ -4556,8 +5226,11 @@ ${catechistName}`;
             setNewStudentParentEmail={setNewStudentParentEmail}
             selectedGroupForStudent={selectedGroupForStudent}
             setSelectedGroupForStudent={setSelectedGroupForStudent}
-            visibleGroups={visibleGroups}
+            visibleGroups={attendanceGroups}
             visibleStudents={visibleStudents}
+            catechistGroupMembers={catechistGroupMembers}
+            groupCycleFilter={groupCycleFilter}
+            setGroupCycleFilter={setGroupCycleFilter}
             editingStudentId={editingStudentId}
             setEditingStudentId={setEditingStudentId}
             editStudentName={editStudentName}
@@ -4568,6 +5241,7 @@ ${catechistName}`;
             groups={groups}
             handleStartEditStudent={handleStartEditStudent}
             handleDeleteStudent={handleDeleteStudent}
+            onOpenGroupReports={handleOpenGroupReports}
           />
         )}
 
@@ -4575,10 +5249,15 @@ ${catechistName}`;
           <ReportsView
             cardBgClass={cardBgClass}
             selectedGroupId={selectedGroupId}
-            setSelectedGroupId={setSelectedGroupId}
             setReportStudentIds={setReportStudentIds}
-            visibleStudents={visibleStudents}
-            visibleGroups={visibleGroups}
+            visibleStudents={attendanceStudents}
+            visibleGroups={attendanceGroups}
+            showGroupSettings={userRole === 'catequista' && activeViewMode === 'catequista' && visibleGroups.length === 1}
+            groupCycleFilter={groupCycleFilter}
+            onGroupCycleChange={handleGroupCycleChange}
+            onOpenCreateGroup={() => setIsCreateGroupModalOpen(true)}
+            onOpenImportStudents={() => setIsImportModalOpen(true)}
+            allUsers={allUsers}
             activeViewMode={activeViewMode}
             handleDeleteOrphanedAttendance={handleDeleteOrphanedAttendance}
             reportSubTab={reportSubTab}
@@ -4640,6 +5319,51 @@ ${catechistName}`;
             setAttendanceLetterHistory={setAttendanceLetterHistory}
             handleDeleteLevelCertificate={handleDeleteLevelCertificate}
             handleDeleteCertificate={handleDeleteCertificate}
+            rosterMode={rosterMode}
+            setRosterMode={setRosterMode}
+            isAddStudentFormOpen={isAddStudentFormOpen}
+            setIsAddStudentFormOpen={setIsAddStudentFormOpen}
+            newStudentName={newStudentName}
+            setNewStudentName={setNewStudentName}
+            newStudentParentEmail={newStudentParentEmail}
+            setNewStudentParentEmail={setNewStudentParentEmail}
+            newStudentParentPhone={newStudentParentPhone}
+            setNewStudentParentPhone={setNewStudentParentPhone}
+            setSelectedGroupForStudent={setSelectedGroupForStudent}
+            handleStartEditStudent={handleStartEditStudent}
+            handleOpenStudentReadOnly={handleOpenStudentReadOnly}
+            handleDeleteStudent={handleDeleteStudent}
+            handleAddStudent={handleAddStudent}
+            handleGenerateStudentQr={handleGenerateStudentQr}
+            handleGenerateCatechistQr={handleGenerateCatechistQr}
+            handleExportGroupRosterToPdf={handleExportGroupRosterToPdf}
+            handleExportGroupRosterToExcel={handleExportGroupRosterToExcel}
+            buildWhatsAppLink={buildWhatsAppLink}
+            visiblePaymentRecords={visiblePaymentRecords}
+            paymentForm={paymentForm}
+            setPaymentForm={setPaymentForm}
+            handleAddPaymentRecord={handleAddPaymentRecord}
+            handleViewPaymentQr={handleViewPaymentQr}
+            handleGeneratePaymentProofPdf={handleGeneratePaymentProofPdf}
+            handlePrintPaymentReceipt={handlePrintPaymentReceipt}
+            handleDeletePaymentRecord={handleDeletePaymentRecord}
+            setShowGroupPaymentTracker={setShowGroupPaymentTracker}
+            setTrackerGroupId={setTrackerGroupId}
+            setPaymentFilters={setPaymentFilters}
+            setPaymentCurrentPage={setPaymentCurrentPage}
+            setPaymentPageSize={setPaymentPageSize}
+            students={students}
+            handleScanPaymentQr={handleScanPaymentQr}
+            paymentFilters={paymentFilters}
+            filteredPaymentRecords={filteredPaymentRecords}
+            paginatedPaymentRecords={paginatedPaymentRecords}
+            paymentPageSize={paymentPageSize}
+            paymentCurrentPage={paymentCurrentPage}
+            paymentTotalPages={paymentTotalPages}
+            onBackToGroups={() => setActiveTab('groups')}
+            canManageCatechistRoster={['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode)}
+            handleAddPreregisteredCatechist={handleAddPreregisteredCatechist}
+            handleImportPreregisteredCatechists={handleImportPreregisteredCatechists}
           />
         )}
         {activeTab === 'inventario' && (
@@ -4702,6 +5426,7 @@ ${catechistName}`;
             visibleStudents={visibleStudents}
             setPaymentFilters={setPaymentFilters}
             setPaymentCurrentPage={setPaymentCurrentPage}
+            setPaymentPageSize={setPaymentPageSize}
             setPaymentForm={setPaymentForm}
             handleAddPaymentRecord={handleAddPaymentRecord}
             paymentForm={paymentForm}
@@ -4761,7 +5486,7 @@ ${catechistName}`;
             />
           ) : (
             <div className={`${cardBgClass} p-8 rounded-2xl border border-slate-700 text-center space-y-3`}>
-              <div className="text-4xl">🔒</div>
+              <div className="text-4xl"><MaterialIcon name="lock" /></div>
               <h3 className="text-xl font-bold text-white">Módulo de Matrículas Deshabilitado</h3>
               <p className="text-sm text-slate-400 max-w-md mx-auto">
                 El período de matrículas digitales se encuentra cerrado temporalmente por la coordinación.
@@ -4813,8 +5538,11 @@ ${catechistName}`;
             setNewStudentParentEmail={setNewStudentParentEmail}
             selectedGroupForStudent={selectedGroupForStudent}
             setSelectedGroupForStudent={setSelectedGroupForStudent}
-            visibleGroups={visibleGroups}
+            visibleGroups={attendanceGroups}
             visibleStudents={visibleStudents}
+            catechistGroupMembers={catechistGroupMembers}
+            groupCycleFilter={groupCycleFilter}
+            setGroupCycleFilter={setGroupCycleFilter}
             editingStudentId={editingStudentId}
             setEditingStudentId={setEditingStudentId}
             editStudentName={editStudentName}
@@ -4851,7 +5579,7 @@ ${catechistName}`;
             handleSaveGroupEdit={handleSaveGroupEdit}
             handleDeleteGroup={handleDeleteGroup}
             handleDuplicateGroup={handleDuplicateGroup}
-            handleOpenMaintenanceModal={handleOpenMaintenanceModal}
+            onOpenGroupReports={handleOpenGroupReports}
             handleExportGroupSchedulePdf={handleExportGroupSchedulePdf}
             handleExportGroupScheduleImage={handleOpenSchedulePreview}
             themeMode={themeMode}
@@ -5008,6 +5736,10 @@ ${catechistName}`;
             setNewAllowedEmailInput={setNewAllowedEmailInput}
             allowedEmails={allowedEmails}
             handleDeleteAllowedEmail={handleDeleteAllowedEmail}
+            attendanceRemindersEnabled={attendanceRemindersEnabled}
+            attendanceRemindersConfigReady={attendanceRemindersConfigReady}
+            savingGlobalReminderSetting={savingGlobalReminderSetting}
+            handleToggleGlobalAttendanceReminders={handleToggleGlobalAttendanceReminders}
           />
         )}
 
@@ -5027,9 +5759,9 @@ ${catechistName}`;
               <iframe title="Vista previa del horario" srcDoc={schedulePreviewHtml} className="mx-auto h-[70vh] w-full min-w-[720px] border-0" />
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-slate-300 dark:border-slate-700 px-5 py-4">
-              <button type="button" onClick={handleDownloadSchedulePng} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700">🖼️ Descargar imagen PNG</button>
-              <button type="button" onClick={handleExportGroupSchedulePdf} className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-bold text-white hover:bg-sky-700">📄 Descargar PDF</button>
-              <button type="button" onClick={handleCopySchedulePng} className="rounded-lg bg-violet-600 px-4 py-2 text-xs font-bold text-white hover:bg-violet-700">📋 Copiar imagen PNG</button>
+              <button type="button" onClick={handleDownloadSchedulePng} className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700"><MaterialIcon name="image" /> Descargar imagen PNG</button>
+              <button type="button" onClick={handleExportGroupSchedulePdf} className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-bold text-white hover:bg-sky-700"><MaterialIcon name="picture_as_pdf" /> Descargar PDF</button>
+              <button type="button" onClick={handleCopySchedulePng} className="rounded-lg bg-violet-600 px-4 py-2 text-xs font-bold text-white hover:bg-violet-700"><MaterialIcon name="content_copy" /> Copiar imagen PNG</button>
             </div>
           </div>
         </div>
@@ -5095,7 +5827,7 @@ ${catechistName}`;
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-xs font-bold text-slate-400 uppercase">Ubicación Parroquial *</label>
                   {userData?.role === 'catequista' && (
-                    <span className="text-[10px] text-amber-400 font-semibold">🔒 Modificable por Coordinador</span>
+                    <span className="text-[10px] text-amber-400 font-semibold"><MaterialIcon name="lock" /> Modificable por Coordinador</span>
                   )}
                 </div>
                 <div className="space-y-2">
@@ -5159,6 +5891,62 @@ ${catechistName}`;
                     ? `Formato requerido para ${userPhoneCode}: exactamente ${COUNTRY_CODES.find(c => c.code === userPhoneCode)?.digits} dígitos.`
                     : 'Ingresa de 7 a 15 dígitos según tu país.'}
                 </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-700 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold">Notificaciones de asistencia de este perfil</p>
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      {!isStandaloneApp() && userData?.attendanceRemindersEnabled !== true
+                        ? 'Instala AsisCate en este dispositivo para activar avisos aunque la app esté cerrada.'
+                        : userData?.attendanceRemindersEnabled === true
+                        ? attendanceRemindersEnabled
+                          ? 'Recibirás un aviso al iniciar el horario de tus grupos.'
+                          : 'Tu preferencia está activa, pero la administración pausó los avisos para todos.'
+                        : 'Pausadas para este perfil. Actívalas para recibir un aviso al iniciar el horario de tus grupos.'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={userData?.attendanceRemindersEnabled === true}
+                    aria-label="Notificaciones de asistencia de este perfil"
+                    onClick={handleTogglePersonalAttendanceReminders}
+                    disabled={savingAttendanceReminders || (!isStandaloneApp() && userData?.attendanceRemindersEnabled !== true)}
+                    className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold text-white disabled:opacity-60 ${
+                      userData?.attendanceRemindersEnabled === true
+                        ? 'bg-emerald-600 hover:bg-emerald-700'
+                        : 'bg-slate-700 hover:bg-slate-600'
+                    }`}
+                  >
+                    {savingAttendanceReminders
+                      ? 'Guardando…'
+                      : userData?.attendanceRemindersEnabled === true ? 'Activadas' : 'Pausadas'}
+                  </button>
+                </div>
+                <p className="mt-2 text-[10px] text-slate-500">
+                  {!isStandaloneApp()
+                    ? 'Preferencia activada por defecto. Instala la PWA y configura el permiso en este dispositivo para recibir avisos en segundo plano. La pausa general no cambia esta preferencia.'
+                    : typeof Notification !== 'undefined' && Notification.permission !== 'granted'
+                      ? 'La preferencia está activada, pero este dispositivo aún necesita permiso para enviar avisos. La pausa general no cambia esta preferencia.'
+                      : 'La pausa general de administración no cambia esta preferencia.'}
+                </p>
+                {userData?.attendanceRemindersEnabled === true
+                  && isStandaloneApp() && (
+                    <button
+                      type="button"
+                      onClick={handleConfigureAttendanceRemindersForDevice}
+                      disabled={savingAttendanceReminders}
+                      className="mt-2 rounded-lg bg-blue-700 px-3 py-2 text-xs font-bold text-white hover:bg-blue-800 disabled:opacity-60"
+                    >
+                      {savingAttendanceReminders
+                        ? 'Configurando…'
+                        : typeof Notification !== 'undefined' && Notification.permission === 'granted'
+                          ? 'Verificar este dispositivo'
+                          : 'Configurar este dispositivo'}
+                    </button>
+                  )}
               </div>
             </div>
 
@@ -5259,7 +6047,7 @@ ${catechistName}`;
               </div>
 
               <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-amber-500 text-xs flex gap-2.5 items-start">
-                <span className="text-base leading-none">⚠️</span>
+                <MaterialIcon name="warning" className="text-base leading-none" />
                 <div>
                   <span className="font-bold block mb-0.5">Advertencia importante:</span>
                   Puedes omitir esta pantalla por ahora, pero la app estará bloqueada para crear o modificar registros hasta que configures tu ubicación en las Preferencias.
@@ -5296,35 +6084,6 @@ ${catechistName}`;
           </div>
         </div>
       )}
-
-      <MaintenanceModal
-        maintenanceGroup={maintenanceGroup}
-        setMaintenanceGroup={setMaintenanceGroup}
-        maintenanceMode={maintenanceMode}
-        setMaintenanceMode={setMaintenanceMode}
-        handleCloseMaintenanceModal={handleCloseMaintenanceModal}
-        handleExportGroupRosterToPdf={handleExportGroupRosterToPdf}
-        handleExportGroupRosterToExcel={handleExportGroupRosterToExcel}
-        visibleStudents={visibleStudents}
-        handleGenerateStudentQr={handleGenerateStudentQr}
-        handleStartEditStudent={handleStartEditStudent}
-        handleOpenStudentReadOnly={handleOpenStudentReadOnly}
-        handleDeleteStudent={handleDeleteStudent}
-        setSelectedGroupForStudent={setSelectedGroupForStudent}
-        setNewStudentName={setNewStudentName}
-        setNewStudentParentEmail={setNewStudentParentEmail}
-        setNewStudentParentPhone={setNewStudentParentPhone}
-        isAddStudentFormOpen={isAddStudentFormOpen}
-        setIsAddStudentFormOpen={setIsAddStudentFormOpen}
-        handleAddStudent={handleAddStudent}
-        newStudentName={newStudentName}
-        newStudentParentEmail={newStudentParentEmail}
-        newStudentParentPhone={newStudentParentPhone}
-        cardBgClass={cardBgClass}
-        inputBgClass={inputBgClass}
-        buildWhatsAppLink={buildWhatsAppLink}
-        themeMode={themeMode}
-      />
 
       {messageModal && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[60] flex justify-center items-center p-4">
@@ -5416,6 +6175,7 @@ ${catechistName}`;
         setQrCardLoading={setQrCardLoading}
         qrCardRef={qrCardRef}
         handleCopyQrCardImage={handleCopyQrCardImage}
+        handleDownloadQrCardImage={handleDownloadQrCardImage}
         cardBgClass={cardBgClass}
       />
 
@@ -5424,6 +6184,7 @@ ${catechistName}`;
         setScannerModal={setScannerModal}
         videoRef={videoRef}
         cardBgClass={cardBgClass}
+        isCatechistAttendanceScan={String(selectedGroupId).startsWith(CATECHIST_GROUP_PREFIX)}
       />
 
       {deleteDateTarget && (
@@ -5432,7 +6193,7 @@ ${catechistName}`;
             <div>
               <h3 className="text-lg font-bold">Confirmar eliminación</h3>
               <p className="text-sm text-slate-400 mt-2">
-                ¿Deseas borrar todos los registros de {deleteDateTarget.type === 'misa' ? 'Misa' : 'Encuentro'} del día {deleteDateTarget.dateStr} para este grupo?
+                ¿Deseas borrar todos los registros de {deleteDateTarget.type === 'misa' ? 'Misa' : deleteDateTarget.type === 'formacion' ? 'Formación' : 'Encuentro'} del día {deleteDateTarget.dateStr} para este grupo?
               </p>
             </div>
             <div className="flex justify-end gap-2">
@@ -5631,7 +6392,7 @@ ${catechistName}`;
                   onClick={() => handleDownloadEnrollmentExpediente?.(editingEnrollmentStudent)}
                   className="rounded-lg bg-sky-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-800"
                 >
-                  📄 Generar PDF
+                  <MaterialIcon name="picture_as_pdf" /> Generar PDF
                 </button>
                 <button
                   onClick={() => { setEditingEnrollmentStudent(null); setEditingEnrollmentReadOnly(false); }}
@@ -5659,7 +6420,6 @@ ${catechistName}`;
                 setEditingEnrollmentStudent(null);
                 setEditingEnrollmentReadOnly(false);
                 setEditingStudentId(null);
-                setMaintenanceMode('view');
                 fetchAllData();
               }}
               cardBgClass={cardBgClass}

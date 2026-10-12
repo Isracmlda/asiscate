@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { collection, addDoc, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../../config/firebase';
+import { MaterialIcon } from '../Shared/MaterialIcon';
 
 const loadFaviconAsPng = async () => {
   const response = await fetch('/favicon.svg');
@@ -44,6 +45,7 @@ export default function EnrollmentDashboardView({
 
   // Estado menú desplegable de permisos por usuario
   const [isUsersPermissionOpen, setIsUsersPermissionOpen] = useState(false);
+  const [areAdminToolsOpen, setAreAdminToolsOpen] = useState(false);
 
   // Modales
   const [selectedLevelModal, setSelectedLevelModal] = useState(null);
@@ -53,6 +55,7 @@ export default function EnrollmentDashboardView({
   // Asistente de Creación/Asignación Masiva
   const [targetLevel, setTargetLevel] = useState('Primer Nivel');
   const [groupChoiceMode, setGroupChoiceMode] = useState('NEW'); // 'NEW' | 'EXISTING'
+  const [isMassGroupAssistantOpen, setIsMassGroupAssistantOpen] = useState(false);
   const [selectedExistingGroupId, setSelectedExistingGroupId] = useState('');
   const [groupNameSuffix, setGroupNameSuffix] = useState('Sección A');
   const [massGroupCount, setMassGroupCount] = useState(1);
@@ -68,7 +71,7 @@ export default function EnrollmentDashboardView({
     'Cate-Kinder',
     'Primer Nivel',
     'Segundo Nivel',
-    'Tercer Nivel (Primera Comunión)',
+    'Tercer Nivel',
     'Cuarto Nivel',
     'Quinto Nivel',
     'Sexto Nivel',
@@ -167,7 +170,7 @@ export default function EnrollmentDashboardView({
       .join('\n');
     const overflowText = unassignedStudents.length > 15 ? `\n... y ${unassignedStudents.length - 15} catequizando(s) más.` : '';
 
-    const confirmMessage = `⚠️ ATENCIÓN: Se eliminarán permanentemente ${unassignedStudents.length} catequizando(s) que NO pertenecen a ningún grupo actualmente existente:\n\n${sampleList}${overflowText}\n\n¿Estás seguro de eliminar a estos ${unassignedStudents.length} catequizando(s)? Esta acción NO se puede deshacer.`;
+    const confirmMessage = `ATENCIÓN: Se eliminarán permanentemente ${unassignedStudents.length} catequizando(s) que NO pertenecen a ningún grupo actualmente existente:\n\n${sampleList}${overflowText}\n\n¿Estás seguro de eliminar a estos ${unassignedStudents.length} catequizando(s)? Esta acción NO se puede deshacer.`;
 
     if (!window.confirm(confirmMessage)) return;
 
@@ -410,12 +413,15 @@ export default function EnrollmentDashboardView({
     }
   };
 
-  // 6. Generador de Expediente PDF (Una sola página con la imagen de la firma incrustada)
+  // 6. Generador de expediente PDF con ajuste de texto y paginación automática
   const generateSinglePageExpedientePdf = async (st) => {
     const { jsPDF } = await import('jspdf');
     const docPdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const pageWidth = docPdf.internal.pageSize.getWidth();
+    const pageHeight = docPdf.internal.pageSize.getHeight();
     const margin = 12;
+    const leftX = margin + 3;
+    const contentWidth = pageWidth - margin * 2 - 6;
 
     const loadImageAsCleanPng = (srcUrl) => new Promise((resolve) => {
       if (!srcUrl) return resolve(null);
@@ -450,6 +456,46 @@ export default function EnrollmentDashboardView({
     docPdf.text(`AsisCate • Sistema Parroquial | Parroquia ${st.parish || 'El Carmen'}`, margin, 18);
 
     let y = 30;
+    const ensureSpace = (height) => {
+      if (y + height <= pageHeight - 17) return;
+      docPdf.addPage();
+      docPdf.setFillColor(127, 29, 29);
+      docPdf.rect(0, 0, pageWidth, 16, 'F');
+      docPdf.setTextColor(255, 255, 255);
+      docPdf.setFont('helvetica', 'bold');
+      docPdf.setFontSize(9);
+      docPdf.text('EXPEDIENTE DIGITAL DE MATRÍCULA · CONTINUACIÓN', margin, 10);
+      y = 23;
+    };
+    const addSection = (title) => {
+      ensureSpace(14);
+      docPdf.setFillColor(241, 245, 249);
+      docPdf.rect(margin, y, pageWidth - margin * 2, 7, 'F');
+      docPdf.setTextColor(127, 29, 29);
+      docPdf.setFont('helvetica', 'bold');
+      docPdf.setFontSize(10);
+      docPdf.text(title, margin + 3, y + 5);
+      y += 11;
+    };
+    const addWrappedText = (text, { fontSize = 8.5, lineHeight = 4, bold = false, width = contentWidth } = {}) => {
+      docPdf.setFont('helvetica', bold ? 'bold' : 'normal');
+      docPdf.setFontSize(fontSize);
+      const lines = docPdf.splitTextToSize(String(text || 'N/A'), width);
+      let lineIndex = 0;
+      while (lineIndex < lines.length) {
+        let availableLines = Math.floor((pageHeight - 17 - y) / lineHeight);
+        if (availableLines < 1) {
+          ensureSpace(lineHeight);
+          availableLines = Math.floor((pageHeight - 17 - y) / lineHeight);
+        }
+        const pageLines = lines.slice(lineIndex, lineIndex + availableLines);
+        docPdf.setFont('helvetica', bold ? 'bold' : 'normal');
+        docPdf.setFontSize(fontSize);
+        docPdf.text(pageLines, leftX, y);
+        y += pageLines.length * lineHeight;
+        lineIndex += pageLines.length;
+      }
+    };
 
     // Sección I: Datos Catequizando
     docPdf.setFillColor(241, 245, 249);
@@ -463,7 +509,6 @@ export default function EnrollmentDashboardView({
     docPdf.setTextColor(30, 41, 59);
     docPdf.setFontSize(9);
 
-    const leftX = margin + 3;
     const rightX = pageWidth / 2 + 5;
     const photoData = st.photoData || (st.photoUrl ? await loadImageAsCleanPng(st.photoUrl) : null);
     const studentInfoX = photoData ? leftX + 31 : leftX;
@@ -492,102 +537,76 @@ export default function EnrollmentDashboardView({
     docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.cycle || '2026-2027'} | ${st.parish || 'El Carmen'} (${st.diocesis || 'General'})`, studentInfoX + 32, y);
     y += 6;
 
-    docPdf.setFont('helvetica', 'bold'); docPdf.text('Dirección / Notas:', studentInfoX, y);
-    docPdf.setFont('helvetica', 'normal'); docPdf.text(`${st.address || 'Sin dirección'} | Med: ${st.medicalNotes || 'N/A'}`, studentInfoX + 32, y);
     y = Math.max(y + 10, photoData ? 73 : y + 10);
 
     docPdf.setFontSize(8);
     docPdf.setFont('helvetica', 'normal');
-    const educationalInfo = `Género: ${st.gender || 'N/A'} | Nacimiento: ${st.birthPlace || 'N/A'} | Centro educativo: ${st.educationCenter || 'N/A'} | Grado: ${st.schoolGrade || 'N/A'}`;
-    docPdf.text(docPdf.splitTextToSize(educationalInfo, pageWidth - margin * 2 - 6), leftX, y);
-    y += 8;
+    addWrappedText(`Dirección: ${st.address || 'Sin dirección'} | Notas del estudiante: ${st.medicalNotes || 'N/A'}`, { fontSize: 8, lineHeight: 3.8 });
+    const educationalInfo = `Género: ${st.gender || 'N/A'} | Centro educativo: ${st.educationCenter || 'N/A'} | Grado: ${st.schoolGrade || 'N/A'} | Vive con: ${st.livesWith || 'N/A'}`;
+    addWrappedText(educationalInfo, { fontSize: 8, lineHeight: 3.8 });
+    const sacramentInfo = `Bautismo: ${st.baptismDate || 'Fecha N/A'} · ${st.baptismPlace || 'Lugar N/A'}${st.firstCommunionDate || st.firstCommunionPlace ? ` | Primera Comunión: ${st.firstCommunionDate || 'Fecha N/A'} · ${st.firstCommunionPlace || 'Lugar N/A'}` : ''}`;
+    addWrappedText(sacramentInfo, { fontSize: 8, lineHeight: 3.8 });
     const specialNeeds = [
       ['Adecuación curricular', st.curricularAdaptation, st.curricularAdaptationDetails],
       ['Conducta', st.behaviorIssue, st.behaviorIssueDetails],
       ['Impedimento físico', st.physicalImpairment, st.physicalImpairmentDetails]
     ].map(([label, value, details]) => `${label}: ${value === 'SI' ? `Sí${details ? ` (${details})` : ''}` : 'No'}`).join(' | ');
-    docPdf.text(docPdf.splitTextToSize(specialNeeds, pageWidth - margin * 2 - 6), leftX, y);
-    y += 10;
+    addWrappedText(specialNeeds, { fontSize: 8, lineHeight: 3.8 });
+    y += 3;
 
     // Sección II: Encargados
-    docPdf.setFillColor(241, 245, 249);
-    docPdf.rect(margin, y, pageWidth - margin * 2, 7, 'F');
-    docPdf.setTextColor(127, 29, 29);
-    docPdf.setFont('helvetica', 'bold');
-    docPdf.setFontSize(10);
-    docPdf.text('II. INFORMACIÓN DE FAMILIARES Y ENCARGADOS', margin + 3, y + 5);
-    y += 11;
+    addSection('II. INFORMACIÓN DE FAMILIARES Y ENCARGADOS');
 
     const m = st.family?.mother || {};
     const f = st.family?.father || {};
     const g = st.family?.guardian || {};
 
-    docPdf.setTextColor(30, 41, 59);
-    docPdf.setFontSize(8.5);
+    const addFamilyMember = (label, person, includeRelationship = false) => {
+      if (!person?.fullName) return;
+      const name = `${label}: ${person.fullName}${includeRelationship ? ` (${person.relationship || 'Legal'})` : ''}`;
+      addWrappedText(name, { fontSize: 8.5, lineHeight: 4, bold: true });
+      const contact = [
+        `Cédula: ${person.nationalId || 'N/A'}`,
+        `Teléfono: ${person.phone1 || 'N/A'}${person.phone2 ? ` / ${person.phone2}` : ''}`,
+        person.email || ''
+      ].filter(Boolean).join(' | ');
+      addWrappedText(contact, { fontSize: 8, lineHeight: 3.8 });
+      y += 2;
+    };
+    addFamilyMember('Madre', m);
+    addFamilyMember('Padre', f);
+    addFamilyMember('Encargado', g, true);
 
-    if (m.fullName) {
-      docPdf.setFont('helvetica', 'bold'); docPdf.text(`Madre: ${m.fullName}`, leftX, y);
-      docPdf.setFont('helvetica', 'normal'); docPdf.text(`Céd: ${m.nationalId || 'N/A'} | Tel: ${m.phone1 || 'N/A'} ${m.phone2 ? '/ ' + m.phone2 : ''} | ${m.email || ''}`, leftX + 45, y);
-      y += 5.5;
-    }
-    if (f.fullName) {
-      docPdf.setFont('helvetica', 'bold'); docPdf.text(`Padre: ${f.fullName}`, leftX, y);
-      docPdf.setFont('helvetica', 'normal'); docPdf.text(`Céd: ${f.nationalId || 'N/A'} | Tel: ${f.phone1 || 'N/A'} ${f.phone2 ? '/ ' + f.phone2 : ''} | ${f.email || ''}`, leftX + 45, y);
-      y += 5.5;
-    }
-    if (g.fullName) {
-      docPdf.setFont('helvetica', 'bold'); docPdf.text(`Encargado: ${g.fullName} (${g.relationship || 'Legal'})`, leftX, y);
-      docPdf.setFont('helvetica', 'normal'); docPdf.text(`Céd: ${g.nationalId || 'N/A'} | Tel: ${g.phone1 || 'N/A'} | ${g.email || ''}`, leftX + 45, y);
-      y += 5.5;
-    }
     const familyDetails = `Estado civil: ${st.maritalStatus || 'N/A'} | Hermanos: ${st.siblingCount || 'N/A'}${st.siblingDetails ? ` (${st.siblingDetails})` : ''}`;
-    docPdf.setFont('helvetica', 'normal');
-    docPdf.text(docPdf.splitTextToSize(familyDetails, pageWidth - margin * 2 - 6), leftX, y);
-    y += 5.5;
+    addWrappedText(familyDetails, { fontSize: 8.5, lineHeight: 4 });
     if (st.authorizedPickupPeople) {
-      docPdf.text(docPdf.splitTextToSize(`Autorizados para retirar: ${st.authorizedPickupPeople}`, pageWidth - margin * 2 - 6), leftX, y);
-      y += 9;
+      addWrappedText(`Autorizados para retirar: ${st.authorizedPickupPeople}`, { fontSize: 8.5, lineHeight: 4 });
     }
     y += 4;
 
     // Sección III: Estado Documentos
-    docPdf.setFillColor(241, 245, 249);
-    docPdf.rect(margin, y, pageWidth - margin * 2, 7, 'F');
-    docPdf.setTextColor(127, 29, 29);
-    docPdf.setFont('helvetica', 'bold');
-    docPdf.setFontSize(10);
-    docPdf.text('III. ESTADO DE DOCUMENTACIÓN ADJUNTA', margin + 3, y + 5);
-    y += 11;
+    addSection('III. ESTADO DE DOCUMENTACIÓN ADJUNTA');
 
     docPdf.setFontSize(8.5);
     const docM = st.documents?.minorId?.status === 'COMPLETED' ? 'COMPLETADO' : 'PENDIENTE';
     const docB = st.documents?.bautismo?.status === 'COMPLETED' ? 'COMPLETADO' : 'PENDIENTE';
     const docC = st.documents?.comunion?.status === 'COMPLETED' ? 'COMPLETADO' : 'PENDIENTE';
 
-    docPdf.setFont('helvetica', 'normal');
-    docPdf.text(`• Cédula Menor: ${docM}    • Constancia Bautismo: ${docB}    • Comprobante Comunión: ${docC}`, leftX, y);
-    y += 12;
+    addWrappedText(`• Cédula Menor: ${docM}    • Constancia Bautismo: ${docB}    • Comprobante Comunión: ${docC}`, { fontSize: 8.5, lineHeight: 4 });
+    y += 4;
 
     // Sección IV: Firma del Encargado
-    docPdf.setFillColor(241, 245, 249);
-    docPdf.rect(margin, y, pageWidth - margin * 2, 7, 'F');
-    docPdf.setTextColor(127, 29, 29);
-    docPdf.setFont('helvetica', 'bold');
-    docPdf.setFontSize(10);
-    docPdf.text('IV. FIRMA DE CONFORMIDAD Y DECLARACIÓN JURADA', margin + 3, y + 5);
-    y += 12;
+    addSection('IV. FIRMA DE CONFORMIDAD Y DECLARACIÓN JURADA');
 
     docPdf.setFont('helvetica', 'bold');
     docPdf.setFontSize(7.5);
+    ensureSpace(8);
     docPdf.text('Compromiso de formación en la fe: ' + (st.acceptsCatechesisCommitment ? 'ACEPTADO' : 'No registrado'), leftX, y);
     y += 5;
 
-    docPdf.setFont('helvetica', 'normal');
-    docPdf.setFontSize(7);
     const commitmentText = 'Indico que esta decisión la asumo teniendo en cuenta de que tengo conocimiento de los requisitos y lineamientos del catequizando y mi persona como encargado legal, y deberé velar porque mi hijo o hija participe de manera puntual de los encuentros y eucaristías de la catequesis y que cumpla con las asignaciones otorgadas, celebraciones especiales de la diaconía. Así mismo acepto cumplir con los lineamientos establecidos por nuestra Parroquia y la Diócesis de Alajuela.';
-    const commitmentLines = docPdf.splitTextToSize(commitmentText, pageWidth - margin * 2 - 6);
-    docPdf.text(commitmentLines, leftX, y);
-    y += commitmentLines.length * 3.5 + 4;
+    addWrappedText(commitmentText, { fontSize: 7, lineHeight: 3.5 });
+    y += 4;
 
     const rawSig = st.family?.guardian?.signatureData || 
                    st.family?.guardian?.signatureUrl || 
@@ -601,6 +620,7 @@ export default function EnrollmentDashboardView({
       cleanSigB64 = await loadImageAsCleanPng(rawSig);
     }
 
+    ensureSpace(38);
     if (cleanSigB64) {
       try {
         docPdf.addImage(cleanSigB64, 'PNG', pageWidth / 2 - 30, y, 60, 24);
@@ -624,11 +644,13 @@ export default function EnrollmentDashboardView({
     docPdf.setTextColor(51, 65, 85);
     docPdf.text('Firma del Encargado / Tutor Legal', pageWidth / 2, y + 4, { align: 'center' });
 
-    // Pie de página
-    docPdf.setFont('helvetica', 'normal');
-    docPdf.setFontSize(7.5);
-    docPdf.setTextColor(100, 116, 139);
-    docPdf.text(`Documento emitido el ${new Date().toLocaleDateString('es-CR')} | AsisCate Parroquial`, margin, 285);
+    for (let page = 1; page <= docPdf.getNumberOfPages(); page += 1) {
+      docPdf.setPage(page);
+      docPdf.setFont('helvetica', 'normal');
+      docPdf.setFontSize(7.5);
+      docPdf.setTextColor(100, 116, 139);
+      docPdf.text(`Documento emitido el ${new Date().toLocaleDateString('es-CR')} | AsisCate Parroquial`, margin, pageHeight - 8);
+    }
 
     return docPdf;
   };
@@ -662,16 +684,16 @@ export default function EnrollmentDashboardView({
   return (
     <div className="space-y-6">
       {/* Encabezado y Control General de Apertura de Matrículas */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-slate-100 dark:bg-slate-800/40 border border-slate-300 dark:border-slate-700/60 p-5 rounded-2xl">
-        <div>
-          <h2 className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white">Dashboard Administrativo de Matrícula</h2>
-          <p className="text-xs sm:text-sm text-slate-400">Control general de matrículas, recaudación y asignación de grupos.</p>
+      <div className="flex min-w-0 flex-col gap-4 overflow-hidden rounded-2xl border border-slate-300 bg-slate-100 p-3 dark:border-slate-700/60 dark:bg-slate-800/40 sm:p-5 md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <h2 className="break-words text-xl font-black text-slate-800 dark:text-white sm:text-2xl">Dashboard Administrativo de Matrícula</h2>
+        <p className="text-xs text-slate-400 sm:text-sm">Control general de matrículas, recaudación y asignación de grupos.</p>
         </div>
 
         {/* Switch Control Habilitar / Deshabilitar Módulo de Matrículas (Persistido) & Permisos de Usuarios */}
-        <div className="flex flex-col gap-2 items-end">
-          <div className="flex items-center gap-3 bg-white dark:bg-slate-900/80 px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700">
-            <span className="text-xs font-bold text-slate-700 dark:text-slate-300">
+      <div className="flex min-w-0 flex-col gap-2 md:items-end">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-900/80 sm:gap-3 sm:px-4">
+          <span className="min-w-0 flex-1 text-xs font-bold text-slate-700 dark:text-slate-300 sm:flex-none">
               Módulo de Matrículas:
             </span>
             <label className="relative inline-flex items-center cursor-pointer">
@@ -689,15 +711,15 @@ export default function EnrollmentDashboardView({
             <button
               type="button"
               onClick={() => setIsUsersPermissionOpen(!isUsersPermissionOpen)}
-              className="ml-2 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-600 text-amber-300 px-3 py-1 rounded-lg font-bold transition flex items-center gap-1"
+              className="ml-auto inline-flex max-w-full min-w-0 items-center gap-1 rounded-lg border border-slate-600 bg-slate-800 px-2 py-1 text-left text-[11px] font-bold text-amber-300 transition hover:bg-slate-700 sm:ml-2 sm:px-3 sm:text-xs"
             >
-              👥 Permisos por Usuario {isUsersPermissionOpen ? '▲' : '▼'}
+              <MaterialIcon name="group" /> <span className="min-w-0 break-words">Permisos por Usuario</span> <MaterialIcon name="expand_more" className={`shrink-0 transition-transform ${isUsersPermissionOpen ? 'rotate-180' : ''}`} />
             </button>
           </div>
 
           {/* Menú Desplegable de Permisos Específicos por Usuario */}
           {isUsersPermissionOpen && (
-            <div className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-xl p-3 space-y-2 shadow-xl z-20">
+            <div className="z-20 w-full max-w-md space-y-2 rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-xl">
               <div className="flex justify-between items-center border-b border-slate-800 pb-1.5">
                 <span className="text-xs font-bold text-amber-400">Permiso Individual de Matrícula</span>
                 <span className="text-[10px] text-slate-400">Marque para permitir acceso</span>
@@ -728,14 +750,26 @@ export default function EnrollmentDashboardView({
 
       {/* Herramientas Admin */}
       {activeViewMode === 'admin' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => setAreAdminToolsOpen(open => !open)}
+            aria-expanded={areAdminToolsOpen}
+            className="flex w-full items-center justify-between gap-2 rounded-xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-left text-sm font-bold text-sky-300 transition hover:bg-sky-500/20"
+          >
+            <span className="flex min-w-0 items-center gap-2"><MaterialIcon name="build" /> Herramientas administrativas</span>
+            <MaterialIcon name="expand_more" className={`shrink-0 transition-transform duration-200 ${areAdminToolsOpen ? 'rotate-180' : ''}`} />
+          </button>
+          <div className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${areAdminToolsOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} aria-hidden={!areAdminToolsOpen}>
+            <div inert={!areAdminToolsOpen} className={`min-h-0 overflow-hidden transition-opacity duration-150 motion-reduce:transition-none ${areAdminToolsOpen ? 'opacity-100' : 'opacity-0'}`}>
+        <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
           {/* Sincronizar niveles */}
-          <div className={`${cardBgClass} p-4 rounded-xl border border-violet-500/30 flex flex-col justify-between gap-3`}>
+          <div className={`${cardBgClass} min-w-0 overflow-hidden p-4 rounded-xl border border-sky-500/30 flex flex-col justify-between gap-3`}>
             <div>
-              <p className="text-sm font-bold text-violet-400 flex items-center gap-2">
-                🔧 <span>Herramienta Admin · Sincronizar niveles desde grupos</span>
+              <p className="flex min-w-0 items-start gap-2 break-words text-sm font-bold text-sky-400">
+                <MaterialIcon name="build" className="shrink-0" /> <span>Herramienta Admin · Sincronizar niveles desde grupos</span>
               </p>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="mt-1 break-words text-xs text-slate-400">
                 Actualiza el campo <strong className="text-slate-300">nivel</strong> de todos los catequizandos que tengan grupo asignado, usando el nivel actual de su grupo.
               </p>
             </div>
@@ -744,31 +778,31 @@ export default function EnrollmentDashboardView({
                 type="button"
                 onClick={handleSyncLevelsFromGroups}
                 disabled={isSyncingLevels}
-                className="w-full sm:w-auto bg-violet-700 hover:bg-violet-800 disabled:bg-slate-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition shadow flex items-center justify-center gap-2"
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-xs font-bold text-white shadow transition hover:bg-sky-700 disabled:bg-slate-700 sm:w-auto"
               >
                 {isSyncingLevels ? (
-                  <><span className="animate-spin">⏳</span> Sincronizando...</>
+                  <><MaterialIcon name="progress_activity" className="animate-spin" /> Sincronizando...</>
                 ) : (
-                  <>🔄 Sincronizar niveles</>
+                  <><MaterialIcon name="sync" /> Sincronizar niveles</>
                 )}
               </button>
               {syncLevelsResult !== null && (
                 <p className={`text-xs font-bold ${syncLevelsResult.updated > 0 ? 'text-emerald-400' : 'text-slate-400'}`}>
                   {syncLevelsResult.updated > 0
-                    ? `✅ ${syncLevelsResult.updated} actualizado(s), ${syncLevelsResult.skipped} ya estaban correctos.`
-                    : `✅ Todos los niveles ya estaban correctos (${syncLevelsResult.skipped} catequizandos).`}
+                    ? <><MaterialIcon name="check_circle" /> {syncLevelsResult.updated} actualizado(s), {syncLevelsResult.skipped} ya estaban correctos.</>
+                    : <><MaterialIcon name="check_circle" /> Todos los niveles ya estaban correctos ({syncLevelsResult.skipped} catequizandos).</>}
                 </p>
               )}
             </div>
           </div>
 
           {/* Eliminar catequizandos sin grupo */}
-          <div className={`${cardBgClass} p-4 rounded-xl border border-rose-500/30 flex flex-col justify-between gap-3`}>
+          <div className={`${cardBgClass} min-w-0 overflow-hidden p-4 rounded-xl border border-rose-500/30 flex flex-col justify-between gap-3`}>
             <div>
-              <p className="text-sm font-bold text-rose-400 flex items-center gap-2">
-                🗑️ <span>Herramienta Admin · Eliminar catequizandos sin grupo</span>
+              <p className="flex min-w-0 items-start gap-2 break-words text-sm font-bold text-rose-400">
+                <MaterialIcon name="delete" className="shrink-0" /> <span>Herramienta Admin · Eliminar catequizandos sin grupo</span>
               </p>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="mt-1 break-words text-xs text-slate-400">
                 Elimina permanentemente los registros de catequizandos (vía matrícula o adhesión) que <strong className="text-rose-300">no estén asignados a ningún grupo existente</strong>. Se mostrará una confirmación con la lista antes de eliminar.
               </p>
             </div>
@@ -780,16 +814,19 @@ export default function EnrollmentDashboardView({
                 className="w-full sm:w-auto bg-rose-700 hover:bg-rose-800 disabled:bg-slate-700 text-white text-xs font-bold px-4 py-2 rounded-lg transition shadow flex items-center justify-center gap-2"
               >
                 {isDeletingUnassigned ? (
-                  <><span className="animate-spin">⏳</span> Eliminando...</>
+                  <><MaterialIcon name="progress_activity" className="animate-spin" /> Eliminando...</>
                 ) : (
-                  <>🗑️ Eliminar catequizandos sin grupo</>
+                  <><MaterialIcon name="delete" /> Eliminar catequizandos sin grupo</>
                 )}
               </button>
               {deleteUnassignedResult && (
                 <p className="text-xs font-bold text-emerald-400">
-                  ✅ {deleteUnassignedResult}
+                  <><MaterialIcon name="check_circle" /> {deleteUnassignedResult}</>
                 </p>
               )}
+            </div>
+          </div>
+        </div>
             </div>
           </div>
         </div>
@@ -798,7 +835,7 @@ export default function EnrollmentDashboardView({
       {/* Filtro de Ciclo Catequético */}
       <div className={`${cardBgClass} p-4 rounded-xl border border-slate-300 dark:border-slate-700/60 flex items-center justify-between gap-4 flex-wrap`}>
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-slate-700 dark:text-slate-300">📅 Ciclo Catequético:</span>
+          <span className="text-sm font-bold text-slate-700 dark:text-slate-300"><MaterialIcon name="calendar_month" /> Ciclo Catequético:</span>
           <select
             value={selectedCycle}
             onChange={(e) => setSelectedCycle(e.target.value)}
@@ -816,35 +853,35 @@ export default function EnrollmentDashboardView({
       </div>
 
       {/* Métricas de Recaudación y Matrícula */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-3 sm:gap-6 lg:grid-cols-2">
         {/* Recaudación por Contribución/Matrícula Exclusiva */}
-        <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-3 relative overflow-hidden`}>
-          <div className="flex justify-between items-center">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Recaudación Neta Parroquial</span>
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+        <div className={`${cardBgClass} relative space-y-2 overflow-hidden rounded-2xl border border-slate-300 p-3 dark:border-slate-700/60 sm:space-y-3 sm:p-6`}>
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <span className="min-w-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 sm:text-xs">Recaudación Neta Parroquial</span>
+            <span className="shrink-0 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[9px] font-black text-emerald-400 sm:px-2.5 sm:text-[10px]">
               Contribución/Matrícula
             </span>
           </div>
-          <div className="text-3xl sm:text-4xl font-black text-emerald-400">₡{netRevenue.total.toLocaleString('es-CR')}</div>
+          <div className="text-2xl font-black text-emerald-400 sm:text-4xl">₡{netRevenue.total.toLocaleString('es-CR')}</div>
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded-lg bg-slate-100 dark:bg-slate-900/60 p-2"><span className="block text-slate-500 dark:text-slate-400">SINPE</span><strong className="text-emerald-600 dark:text-emerald-300">₡{netRevenue.sinpe.toLocaleString('es-CR')}</strong></div>
-            <div className="rounded-lg bg-slate-100 dark:bg-slate-900/60 p-2"><span className="block text-slate-500 dark:text-slate-400">Efectivo</span><strong className="text-emerald-600 dark:text-emerald-300">₡{netRevenue.efectivo.toLocaleString('es-CR')}</strong></div>
+            <div className="rounded-lg bg-slate-100 p-1.5 dark:bg-slate-900/60 sm:p-2"><span className="block text-slate-500 dark:text-slate-400">SINPE</span><strong className="text-emerald-600 dark:text-emerald-300">₡{netRevenue.sinpe.toLocaleString('es-CR')}</strong></div>
+            <div className="rounded-lg bg-slate-100 p-1.5 dark:bg-slate-900/60 sm:p-2"><span className="block text-slate-500 dark:text-slate-400">Efectivo</span><strong className="text-emerald-600 dark:text-emerald-300">₡{netRevenue.efectivo.toLocaleString('es-CR')}</strong></div>
           </div>
           {netRevenue.otros > 0 && <p className="text-xs text-slate-400">Otros medios: ₡{netRevenue.otros.toLocaleString('es-CR')}</p>}
         </div>
 
         {/* Total de Catequizandos Inscritos */}
-        <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-3`}>
-          <div className="flex justify-between items-center">
-            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Total de Catequizandos</span>
-            <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-sky-500/10 text-sky-400 border border-sky-500/20">
+        <div className={`${cardBgClass} space-y-2 rounded-2xl border border-slate-300 p-3 dark:border-slate-700/60 sm:space-y-3 sm:p-6`}>
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <span className="min-w-0 text-[10px] font-bold uppercase tracking-wider text-slate-400 sm:text-xs">Total de Catequizandos</span>
+            <span className="shrink-0 rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-1 text-[9px] font-black text-sky-400 sm:px-2.5 sm:text-[10px]">
               Período {selectedCycle}
             </span>
           </div>
-          <div className="text-3xl sm:text-4xl font-black text-sky-400">
-            {cycleStudents.length} <span className="text-sm font-normal text-slate-400">matriculados</span>
+          <div className="text-2xl font-black text-sky-400 sm:text-4xl">
+            {cycleStudents.length} <span className="text-xs font-normal text-slate-400 sm:text-sm">matriculados</span>
           </div>
-          <p className="text-xs text-slate-400">
+          <p className="text-[11px] text-slate-400 sm:text-xs">
             Conteo de catequizandos inscritos en el ciclo catequético seleccionado.
           </p>
         </div>
@@ -897,12 +934,23 @@ export default function EnrollmentDashboardView({
       </div>
 
       {/* Asistente de Creación Masiva / Asignación a Grupo */}
-      <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-4`}>
-        <div className="border-b border-slate-300 dark:border-slate-700/60 pb-2">
-          <h3 className="text-lg font-bold text-red-700 dark:text-red-400">⚡ Asistente de Asignación y Creación Masiva de Grupos</h3>
-          <p className="text-xs text-slate-400">Agrupa automáticamente a los catequizandos sin grupo en el nivel seleccionado.</p>
-        </div>
+      <div className={`${cardBgClass} overflow-hidden rounded-2xl border border-slate-300 dark:border-slate-700/60`}>
+        <button
+          type="button"
+          onClick={() => setIsMassGroupAssistantOpen(open => !open)}
+          aria-expanded={isMassGroupAssistantOpen}
+          className="flex w-full items-center justify-between gap-3 p-4 text-left transition hover:bg-slate-100 dark:hover:bg-slate-800/30 sm:p-6"
+        >
+          <span className="min-w-0">
+            <span className="block text-base font-bold text-red-700 dark:text-red-400 sm:text-lg"><MaterialIcon name="bolt" /> Asistente de Asignación y Creación Masiva de Grupos</span>
+            <span className="mt-1 block text-xs text-slate-400">Agrupa automáticamente a los catequizandos sin grupo en el nivel seleccionado.</span>
+          </span>
+          <MaterialIcon name="expand_more" className={`shrink-0 transition-transform duration-200 ${isMassGroupAssistantOpen ? 'rotate-180' : ''}`} />
+        </button>
 
+        <div className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${isMassGroupAssistantOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} aria-hidden={!isMassGroupAssistantOpen}>
+          <div inert={!isMassGroupAssistantOpen} className={`min-h-0 overflow-hidden transition-opacity duration-150 motion-reduce:transition-none ${isMassGroupAssistantOpen ? 'opacity-100' : 'opacity-0'}`}>
+          <div className="space-y-4 border-t border-slate-300 p-4 dark:border-slate-700/60 sm:p-6">
         {creationMessage && (
           <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs rounded-xl font-bold">
             {creationMessage}
@@ -1009,22 +1057,26 @@ export default function EnrollmentDashboardView({
               disabled={isCreatingGroups}
               className="bg-red-800 hover:bg-red-900 text-white font-bold py-2.5 px-6 rounded-xl text-sm transition shadow-lg disabled:bg-slate-700"
             >
-              {isCreatingGroups ? 'Procesando...' : (groupChoiceMode === 'NEW' ? '⚡ Crear Grupo e Insertar Alumnos' : '⚡ Asignar Alumnos a Grupo Seleccionado')}
+              {isCreatingGroups ? 'Procesando...' : <><MaterialIcon name="bolt" /> {groupChoiceMode === 'NEW' ? 'Crear Grupo e Insertar Alumnos' : 'Asignar Alumnos a Grupo Seleccionado'}</>}
             </button>
+          </div>
+        </div>
+      </div>
           </div>
         </div>
       </div>
 
       <div className={`${cardBgClass} rounded-2xl border border-slate-300 dark:border-slate-700/60 overflow-hidden`}>
-        <button type="button" onClick={() => setShowBookControl((visible) => !visible)} className="w-full flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-5 text-left hover:bg-slate-100 dark:hover:bg-slate-800/30 transition">
-          <div><h3 className="text-base font-bold text-slate-800 dark:text-white">📚 Control de libros por entregar</h3><p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Oculto por defecto; se genera desde los recibos con libro del ciclo.</p></div>
-          <span className="text-xs font-bold text-amber-400">{showBookControl ? 'Ocultar ▲' : `Mostrar (${totalBooksToDeliver}) ▼`}</span>
+        <button type="button" onClick={() => setShowBookControl(visible => !visible)} aria-expanded={showBookControl} className="w-full flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-5 text-left hover:bg-slate-100 dark:hover:bg-slate-800/30 transition">
+          <div><h3 className="text-base font-bold text-slate-800 dark:text-white"><MaterialIcon name="menu_book" /> Control de libros por entregar</h3><p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Se genera desde los recibos con libro del ciclo.</p></div>
+          <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-400">{showBookControl ? 'Ocultar' : `Mostrar (${totalBooksToDeliver})`} <MaterialIcon name="expand_more" className={`transition-transform duration-200 ${showBookControl ? 'rotate-180' : ''}`} /></span>
         </button>
-        {showBookControl && (
-          <div className="border-t border-slate-300 dark:border-slate-700/60 p-5 space-y-4">
+        <div className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${showBookControl ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`} aria-hidden={!showBookControl}>
+          <div inert={!showBookControl} className={`min-h-0 overflow-hidden transition-opacity duration-150 motion-reduce:transition-none ${showBookControl ? 'opacity-100' : 'opacity-0'}`}>
+          <div className="space-y-4 border-t border-slate-300 p-5 dark:border-slate-700/60">
             <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
               <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 px-4 py-2"><span className="text-xs text-amber-300">Total de libros a entregar/comprar: </span><strong className="text-xl text-amber-400">{totalBooksToDeliver}</strong></div>
-              <button type="button" onClick={generateBooksSummaryPdf} className="bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold px-3 py-2 rounded-lg text-xs">📄 PDF: total por nivel</button>
+              <button type="button" onClick={generateBooksSummaryPdf} className="bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/40 text-amber-300 font-bold px-3 py-2 rounded-lg text-xs"><MaterialIcon name="picture_as_pdf" /> PDF: total por nivel</button>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
               <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-3"><span className="block text-slate-400">Recaudado por libros</span><strong className="text-lg text-emerald-400">₡{bookRevenue.total.toLocaleString('es-CR')}</strong></div>
@@ -1034,11 +1086,12 @@ export default function EnrollmentDashboardView({
             <div className="overflow-x-auto">
               <table className="w-full min-w-[570px] text-left text-xs">
                 <thead className="text-slate-500 dark:text-slate-400 uppercase border-b border-slate-300 dark:border-slate-700"><tr><th className="px-3 py-2">Nivel</th><th className="px-3 py-2 text-center">Libros</th><th className="px-3 py-2 text-right">Lista</th></tr></thead>
-                <tbody>{levelsList.map((level) => <tr key={level} className="border-b border-slate-200 dark:border-slate-800/80 text-slate-700 dark:text-slate-200"><td className="px-3 py-2 font-semibold">{level}</td><td className="px-3 py-2 text-center text-amber-500 dark:text-amber-400 font-bold">{booksByLevel[level].length}</td><td className="px-3 py-2 text-right"><button type="button" disabled={!booksByLevel[level].length} onClick={() => generateBookListPdf(level)} className="text-sky-600 dark:text-sky-300 hover:text-sky-700 dark:hover:text-sky-200 disabled:text-slate-400 dark:disabled:text-slate-600 disabled:cursor-not-allowed">📄 PDF de catequizandos</button></td></tr>)}</tbody>
+                <tbody>{levelsList.map((level) => <tr key={level} className="border-b border-slate-200 dark:border-slate-800/80 text-slate-700 dark:text-slate-200"><td className="px-3 py-2 font-semibold">{level}</td><td className="px-3 py-2 text-center text-amber-500 dark:text-amber-400 font-bold">{booksByLevel[level].length}</td><td className="px-3 py-2 text-right"><button type="button" disabled={!booksByLevel[level].length} onClick={() => generateBookListPdf(level)} className="text-sky-600 dark:text-sky-300 hover:text-sky-700 dark:hover:text-sky-200 disabled:text-slate-400 dark:disabled:text-slate-600 disabled:cursor-not-allowed"><MaterialIcon name="picture_as_pdf" /> PDF de catequizandos</button></td></tr>)}</tbody>
               </table>
             </div>
           </div>
-        )}
+          </div>
+        </div>
       </div>
 
       {/* MODAL 1: Lista de Expedientes por Nivel */}
@@ -1089,7 +1142,7 @@ export default function EnrollmentDashboardView({
                         onClick={() => setSelectedStudentDetail(st)}
                         className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition self-start sm:self-auto"
                       >
-                        📂 Abrir Expediente Completo
+                        <MaterialIcon name="folder_open" /> Abrir Expediente Completo
                       </button>
                     </div>
                   ))}
@@ -1132,7 +1185,11 @@ export default function EnrollmentDashboardView({
                   <div><strong>Fecha de Nacimiento:</strong> {selectedStudentDetail.birthDate || 'N/A'} ({selectedStudentDetail.age} años)</div>
                   <div><strong>Identificación:</strong> {selectedStudentDetail.idType || 'NACIONAL'} - {selectedStudentDetail.nationalId || 'N/A'}</div>
                   <div><strong>Género:</strong> {selectedStudentDetail.gender || 'N/A'}</div>
-                  <div><strong>Lugar de nacimiento:</strong> {selectedStudentDetail.birthPlace || 'N/A'}</div>
+                  <div><strong>Bautismo:</strong> {selectedStudentDetail.baptismDate || 'Fecha N/A'} · {selectedStudentDetail.baptismPlace || 'Lugar N/A'}</div>
+                  {(selectedStudentDetail.firstCommunionDate || selectedStudentDetail.firstCommunionPlace) && (
+                    <div><strong>Primera comunión:</strong> {selectedStudentDetail.firstCommunionDate || 'Fecha N/A'} · {selectedStudentDetail.firstCommunionPlace || 'Lugar N/A'}</div>
+                  )}
+                  <div><strong>Vive con:</strong> {selectedStudentDetail.livesWith || 'N/A'}</div>
                   <div><strong>Centro educativo:</strong> {selectedStudentDetail.educationCenter || 'N/A'}</div>
                   <div><strong>Grado:</strong> {selectedStudentDetail.schoolGrade || 'N/A'}</div>
                   <div><strong>Ciclo:</strong> {selectedStudentDetail.cycle || '2026-2027'}</div>
@@ -1225,7 +1282,7 @@ export default function EnrollmentDashboardView({
                     }}
                     className="bg-slate-700 hover:bg-slate-600 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1 flex-1 sm:flex-initial"
                   >
-                    ✏️ Editar Catequizando
+                    <MaterialIcon name="edit" /> Editar Catequizando
                   </button>
                 )}
                 {typeof handleDeleteStudent === 'function' && (
@@ -1238,7 +1295,7 @@ export default function EnrollmentDashboardView({
                     }}
                     className="bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1 flex-1 sm:flex-initial"
                   >
-                    🗑️ Eliminar Expediente
+                    <MaterialIcon name="delete" /> Eliminar Expediente
                   </button>
                 )}
               </div>
@@ -1249,14 +1306,14 @@ export default function EnrollmentDashboardView({
                   onClick={() => handlePrintExpediente(selectedStudentDetail)}
                   className="bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 flex-1 sm:flex-initial"
                 >
-                  🖨️ Imprimir PDF (1 Pág)
+                  <MaterialIcon name="print" /> Imprimir PDF (1 Pág)
                 </button>
                 <button
                   type="button"
                   onClick={() => handleDownloadExpediente(selectedStudentDetail)}
                   className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 flex-1 sm:flex-initial"
                 >
-                  📄 Descargar PDF (1 Pág)
+                  <MaterialIcon name="picture_as_pdf" /> Descargar PDF (1 Pág)
                 </button>
               </div>
             </div>

@@ -1,4 +1,67 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { MaterialIcon } from '../Shared/MaterialIcon';
+
+const stripCountryCode = phone => String(phone || '').replace(/^\s*(?:\+\d{1,3}|00\d{1,3})[\s().-]*/, '').trim();
+const formatDisplayPhone = phone => {
+  const nationalNumber = stripCountryCode(phone);
+  const digits = nationalNumber.replace(/\D/g, '');
+
+  if (digits.length === 8) return `${digits.slice(0, 4)} ${digits.slice(4)}`;
+  if (digits.length === 9) return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  if (digits.length === 10) return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  return nationalNumber;
+};
+
+function AnimatedHeight({ children, open = true, className = '' }) {
+  const containerRef = useRef(null);
+  const contentRef = useRef(null);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const content = contentRef.current;
+    if (!container || !content) return undefined;
+
+    let frameId = 0;
+    const updateHeight = () => {
+      const nextHeight = open ? content.scrollHeight : 0;
+      const currentHeight = container.getBoundingClientRect().height;
+
+      if (container.dataset.heightInitialized !== 'true') {
+        container.style.height = `${nextHeight}px`;
+        container.dataset.heightInitialized = 'true';
+        return;
+      }
+
+      if (Math.abs(currentHeight - nextHeight) < 1) return;
+
+      container.style.height = `${currentHeight}px`;
+      container.getBoundingClientRect();
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(() => {
+        container.style.height = `${nextHeight}px`;
+      });
+    };
+
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(content);
+
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={`overflow-hidden transition-[height] duration-300 ease-in-out motion-reduce:transition-none ${className}`}
+      style={{ height: 0 }}
+    >
+      <div ref={contentRef}>{children}</div>
+    </div>
+  );
+}
 
 export function DashboardView({
   userData,
@@ -8,8 +71,6 @@ export function DashboardView({
   cardBgClass,
   dashboardPanelOpen,
   setDashboardPanelOpen,
-  isAppInstalled,
-  handleInstallApp,
   attendanceType,
   setAttendanceType,
   dashboardGroupId,
@@ -73,6 +134,9 @@ export function DashboardView({
   const sortedAttendanceStudents = visibleStudents
     .filter(student => student.groupId === selectedGroupId)
     .sort((a, b) => String(a.name || a.fullName || '').localeCompare(String(b.name || b.fullName || ''), 'es', { sensitivity: 'base' }));
+  const selectedAttendanceGroup = visibleGroups.find(group => group.id === selectedGroupId);
+  const selectedDashboardGroup = visibleGroups.find(group => group.id === dashboardGroupId);
+  const isCatechistAttendanceGroup = selectedAttendanceGroup?.type === 'catequistas';
   const donutSegments = [
     { key: 'present', label: 'Presentes', value: dashboardAttendanceStats.present, color: '#10b981' },
     { key: 'justified', label: 'Justificados', value: dashboardAttendanceStats.justified, color: '#f59e0b' },
@@ -84,68 +148,65 @@ export function DashboardView({
   let donutOffset = 0;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold">
+          <h2 className="text-lg sm:text-xl font-bold">
             Bienvenido(a), {(userData?.name || user?.displayName || user?.email || 'Catequista').trim().split(/\s+/)[0]}
           </h2>
-          <p className="text-xs sm:text-sm text-slate-400">Panel operativo del ministerio de catequesis.</p>
         </div>
         {legacyPanelEnabled && (
           <button
             onClick={() => setIsImportModalOpen(true)}
             className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition-colors flex items-center justify-center gap-2"
           >
-            <span>📊</span> Cargar Catequizandos en Excel
+            <MaterialIcon name="table_view" /> Cargar Catequizandos en Excel
           </button>
         )}
       </div>
 
-      <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm`}>
-        <div className="flex items-center justify-between gap-4 mb-4">
+      <div className={`${cardBgClass} p-3 sm:p-4 rounded-xl border shadow-sm`}>
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-lg font-bold">Panel inteligente</h3>
-            <p className="text-xs text-slate-400">Ausencias y asistente IA</p>
+            <h3 className="text-base font-bold">Panel inteligente</h3>
+            <p className="text-[11px] text-slate-400">Ausencias y asistente IA</p>
           </div>
           <div className="flex items-center gap-2">
-            {!isAppInstalled && (
-              <button
-                type="button"
-                onClick={handleInstallApp}
-                className="px-3 py-2 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
-                title="Instalar AsisCate como aplicación"
-              >
-                ⬇ Instalar app
-              </button>
-            )}
             <button
               type="button"
               onClick={() => setDashboardPanelOpen(prev => !prev)}
-              className="dashboard-toggle-button px-3 py-2 text-xs font-bold rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
+              className="dashboard-toggle-button px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
             >
               {dashboardPanelOpen ? 'Ocultar' : 'Mostrar'}
             </button>
           </div>
         </div>
 
-        {dashboardPanelOpen && (
-          <div className="grid grid-cols-1 xl:grid-cols-[1fr_1.2fr] gap-6">
+        <AnimatedHeight open={dashboardPanelOpen}>
+          {dashboardPanelOpen && (
+            <div className="mt-3 grid grid-cols-1 xl:grid-cols-[1fr_1.2fr] gap-4">
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <p className="text-sm font-bold text-slate-300">Consulta de asistencia</p>
-                <span className="text-[11px] text-slate-400 uppercase">{dashboardAttendanceType === 'all' ? 'Todas' : dashboardAttendanceType === 'misa' ? 'Misa' : 'Encuentro'}</span>
+                <span className="text-[11px] text-slate-400 uppercase">{dashboardAttendanceType === 'all' ? 'Todas' : dashboardAttendanceType === 'misa' ? 'Misa' : dashboardAttendanceType === 'formacion' ? 'Formación' : 'Encuentro'}</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <select value={dashboardGroupId} onChange={(event) => setDashboardGroupId(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                <select value={dashboardGroupId} onChange={(event) => {
+                  const nextGroupId = event.target.value;
+                  setDashboardGroupId(nextGroupId);
+                  if (visibleGroups.find(group => group.id === nextGroupId)?.type !== 'catequistas' && dashboardAttendanceType === 'formacion') {
+                    setDashboardAttendanceType('all');
+                  }
+                }} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
                   <option value="">{userRole === 'catequista' ? 'Todos mis grupos' : 'Todos los grupos visibles'}</option>
-                  {visibleGroups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+                  {visibleGroups.map(group => <option key={group.id} value={group.id}>{group.name}{group.diaconiaName ? ` - ${group.diaconiaName}` : ''}</option>)}
                 </select>
                 <select value={dashboardAttendanceType} onChange={(event) => setDashboardAttendanceType(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} aria-label="Tipo de asistencia del gráfico">
                   <option value="all">Todas</option>
                   <option value="encuentro">Encuentro</option>
                   <option value="misa">Misa</option>
+                  {selectedDashboardGroup?.type === 'catequistas' && <option value="formacion">Formación</option>}
                 </select>
                 <input type="date" value={dashboardDate} onChange={(event) => setDashboardDate(event.target.value)} style={browserThemeStyle} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} />
               </div>
@@ -209,8 +270,9 @@ export function DashboardView({
                 attendanceDate={attendanceDate}
               />
             </div>
-          </div>
-        )}
+            </div>
+          )}
+        </AnimatedHeight>
       </div>
 
       {/* SECCIÓN PRINCIPAL DE TOMA DE ASISTENCIA */}
@@ -218,7 +280,7 @@ export function DashboardView({
         <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm space-y-4`}>
           <div className="flex items-center justify-between">
             <h2 className="text-lg sm:text-xl font-bold flex items-center gap-2">
-              <span>📋</span> Control de Asistencia
+              <MaterialIcon name="fact_check" /> {selectedAttendanceGroup?.type === 'catequistas' ? 'Control de Asistencia de Catequistas' : 'Control de Asistencia'}
             </h2>
           </div>
           
@@ -251,17 +313,18 @@ export function DashboardView({
               >
                 <option value="encuentro">Encuentro</option>
                 <option value="misa">Misa</option>
+                {selectedAttendanceGroup?.type === 'catequistas' && <option value="formacion">Formación</option>}
               </select>
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
-                Tema del Encuentro (Opcional)
+                {attendanceType === 'formacion' ? 'Tema de Formación (Opcional)' : 'Tema del Encuentro (Opcional)'}
               </label>
               <div className="flex gap-2">
                 <input
                   type="text"
-                  placeholder="Ej. Encuentro #3 - Los Mandamientos / Asistencia a Misa"
+                  placeholder={attendanceType === 'formacion' ? 'Ej. Formación de catequistas' : 'Ej. Encuentro #3 - Los Mandamientos / Asistencia a Misa'}
                   value={attendanceLabel}
                   onChange={(e) => {
                     const nextLabel = e.target.value;
@@ -306,13 +369,17 @@ export function DashboardView({
                 onChange={(e) => {
                   const groupId = e.target.value;
                   setSelectedGroupId(groupId);
-                  setAttendanceLabel(getAttendanceLabel(visibleStudents.filter(student => student.groupId === groupId), attendanceDate, attendanceType));
+                  const nextType = visibleGroups.find(group => group.id === groupId)?.type === 'catequistas'
+                    ? 'formacion'
+                    : attendanceType === 'formacion' ? 'encuentro' : attendanceType;
+                  setAttendanceType(nextType);
+                  setAttendanceLabel(getAttendanceLabel(visibleStudents.filter(student => student.groupId === groupId), attendanceDate, nextType));
                 }}
                 className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
               >
                 <option value="">Selecciona un Grupo...</option>
                 {visibleGroups.map(g => (
-                  <option key={g.id} value={g.id}>{g.name} ({g.year || '2026-2027'})</option>
+                  <option key={g.id} value={g.id}>{g.name}{g.diaconiaName ? ` - ${g.diaconiaName}` : ''} ({g.year || '2026-2027'})</option>
                 ))}
               </select>
             </div>
@@ -338,32 +405,32 @@ export function DashboardView({
           </div>
         </div>
 
-        {selectedGroupId ? (
+        <AnimatedHeight open={Boolean(selectedGroupId)}>
+          {selectedGroupId ? (
           <div className={`${cardBgClass} rounded-xl border shadow-sm overflow-hidden`}>
             {/* VISTA EN TARJETAS PARA PANTALLAS PEQUEÑAS */}
             <div className="block md:hidden divide-y divide-slate-700">
               {sortedAttendanceStudents.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400 italic">
-                  No hay Catequizandos matriculados en este grupo.
+                  {selectedAttendanceGroup?.type === 'catequistas' ? 'No hay catequistas registrados en este grupo.' : 'No hay Catequizandos matriculados en este grupo.'}
                 </div>
               ) : (
                 sortedAttendanceStudents.map(student => {
                     const status = getAttendanceStatus(student, attendanceDate);
-                    const displayEmail = student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
+                    const displayEmail = student.email || student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
                     const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
+                    const mobileDisplayPhone = formatDisplayPhone(displayPhone);
                     const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
+                    const canContactForAbsence = !isCatechistAttendanceGroup || status === 'absent';
                     return (
                       <div key={student.id} className="p-4 space-y-3">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <h4 className="font-bold text-sm">{student.fullName || student.name}</h4>
-                            <p className="text-xs text-slate-400 mt-0.5">
-                              {displayEmail ? `📧 ${displayEmail}` : <span className="italic text-slate-500">Sin correo</span>}
-                            </p>
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <h4 className="truncate font-bold text-sm">{student.fullName || student.name}</h4>
                           </div>
-                          <div className="flex gap-1">
-                            <button disabled={!displayEmail} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={displayEmail || 'Correo no registrado'} className="attendance-email-button max-w-36 truncate text-[11px] font-semibold px-2 py-1 rounded-md">✉ {displayEmail || 'Sin correo'}</button>
-                            <button disabled={!displayPhone} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={displayPhone || 'Teléfono no registrado'} className="attendance-phone-button max-w-36 truncate text-[11px] font-semibold px-2 py-1 rounded-md">☎ {displayPhone || 'Sin teléfono'}</button>
+                          <div className="flex shrink-0 gap-1">
+                            <button disabled={!displayEmail || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'} aria-label={displayEmail ? `Enviar correo a ${displayEmail}` : 'Correo no registrado'} className="attendance-email-button rounded-md p-2 text-[11px] font-semibold"><MaterialIcon name="mail" /></button>
+                            <button disabled={!displayPhone || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={canContactForAbsence ? mobileDisplayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'} aria-label={mobileDisplayPhone ? `Contactar al ${mobileDisplayPhone}` : 'Teléfono no registrado'} className="attendance-phone-button max-w-28 truncate rounded-md px-2 py-1 text-[11px] font-semibold"><MaterialIcon name="phone" /> {mobileDisplayPhone || 'Sin teléfono'}</button>
                           </div>
                         </div>
 
@@ -402,7 +469,7 @@ export function DashboardView({
                       </div>
                     );
                   })
-              )}
+                )}
             </div>
 
             {/* VISTA EN TABLA */}
@@ -410,7 +477,7 @@ export function DashboardView({
               <table className="min-w-full divide-y divide-slate-700">
                 <thead className={themeMode === 'dark' ? 'bg-black' : 'bg-slate-50'}>
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-bold text-slate-400 uppercase">Catequizando</th>
+                    <th className="px-6 py-3 text-left text-xs font-bold text-slate-400 uppercase">{selectedAttendanceGroup?.type === 'catequistas' ? 'Catequista' : 'Catequizando'}</th>
                     <th className="px-6 py-3 text-center text-xs font-bold text-slate-400 uppercase">Estado de Asistencia</th>
                     <th className="px-6 py-3 text-right text-xs font-bold text-slate-400 uppercase">Contacto</th>
                   </tr>
@@ -418,14 +485,15 @@ export function DashboardView({
                 <tbody className="divide-y divide-slate-700">
                   {sortedAttendanceStudents.length === 0 ? (
                     <tr>
-                      <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic">No hay Catequizandos matriculados en este grupo.</td>
+                      <td colSpan="3" className="px-6 py-8 text-center text-slate-400 italic">{selectedAttendanceGroup?.type === 'catequistas' ? 'No hay catequistas registrados en este grupo.' : 'No hay Catequizandos matriculados en este grupo.'}</td>
                     </tr>
                   ) : (
                     sortedAttendanceStudents.map(student => {
                         const status = getAttendanceStatus(student, attendanceDate);
-                        const displayEmail = student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
+                        const displayEmail = student.email || student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
                         const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
                         const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
+                        const canContactForAbsence = !isCatechistAttendanceGroup || status === 'absent';
 
                         return (
                           <tr key={student.id} className="hover:bg-slate-700/20 transition-colors">
@@ -469,20 +537,20 @@ export function DashboardView({
                             <td className="px-6 py-4 whitespace-nowrap text-right">
                               <div className="flex justify-end gap-2">
                                 <button
-                                  disabled={!displayEmail}
+                                  disabled={!displayEmail || !canContactForAbsence}
                                   onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')}
-                                  title={displayEmail || 'Correo no registrado'}
+                                  title={canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'}
                                   className="attendance-email-button max-w-64 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
                                 >
-                                  {displayEmail ? `✉ ${displayEmail}` : 'Correo no registrado'}
+                                  {displayEmail ? <><MaterialIcon name="mail" /> {displayEmail}</> : 'Correo no registrado'}
                                 </button>
                                 <button
-                                  disabled={!displayPhone}
+                                  disabled={!displayPhone || !canContactForAbsence}
                                   onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')}
-                                  title={displayPhone || 'Teléfono no registrado'}
+                                  title={canContactForAbsence ? displayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'}
                                   className="attendance-phone-button max-w-52 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
                                 >
-                                  {displayPhone ? `☎ ${displayPhone}` : 'Teléfono no registrado'}
+                                  {displayPhone ? <><MaterialIcon name="phone" /> {displayPhone}</> : 'Teléfono no registrado'}
                                 </button>
                               </div>
                             </td>
@@ -498,7 +566,8 @@ export function DashboardView({
           <div className="border border-dashed border-slate-700 rounded-xl p-6 text-center text-xs sm:text-sm text-slate-400">
             Selecciona un grupo en la parte superior para pasar lista.
           </div>
-        )}
+          )}
+        </AnimatedHeight>
       </div>
 
       {legacyPanelEnabled ? (
@@ -635,7 +704,7 @@ export function DashboardView({
                         <p className="text-xs text-slate-500 mt-1">{countStudents} Catequizandos matriculados</p>
                         {group.isVisibleForCatechists === false && (
                           <span className="inline-block mt-2 text-[10px] bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded font-bold">
-                            🔒 Oculto a Catequistas
+                            <MaterialIcon name="lock" /> Oculto a Catequistas
                           </span>
                         )}
                       </div>

@@ -3,6 +3,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
 import { GEMINI_API_KEY } from '../utils/constants';
 import { usePersistedState } from '../hooks/usePersistedState';
+import { MaterialIcon } from './Shared/MaterialIcon';
 import {
   fileToBase64,
   extractDocxText,
@@ -21,7 +22,6 @@ export const AssistantWidget = ({
   userRole = 'admin',
   userName = '',
   themeMode = 'dark',
-  inputBgClass = 'bg-slate-800 text-white border border-slate-700',
   visibleStudents = [],
   visibleGroups = [],
   selectedGroupId = '',
@@ -340,14 +340,14 @@ export const AssistantWidget = ({
   };
 
   // --- GENERACIÓN CON STREAMING Y FUNCTION CALLING ---
-  const generateAssistantReplyStream = async (promptText, fileObj, onChunkReceived) => {
+  const generateAssistantReplyStream = async (promptText, fileObj, historyMessages, onChunkReceived) => {
     const roleText = userRole === 'catequista' ? 'Catequista' : 'Administrador/Coordinador';
 
     const systemInstruction = `
       [ROL E IDENTIDAD DE MARIA]
       Tu nombre es "MarIA" (Módulo de Apoyo, Registro e Inteligencia en el Acompañamiento).
       Eres la asistente virtual pastoral y técnica de la plataforma de catequesis AsisCate de la Parroquia El Carmen (Alajuela, Costa Rica).
-      Respondes ÚNICAMENTE al mensaje o consulta que el usuario acaba de escribir. NUNCA saludes repetitivamente.
+      Respondes al último mensaje usando el contexto previo del chat cuando sea relevante. NUNCA saludes repetitivamente.
 
       [GENERACIÓN DE IMÁGENES Y DIBUJOS]
       - Si el usuario te solicita directamente crear o generar una imagen o dibujo para colorear, explica amablemente que como asistente de texto no puedes generar archivos de imagen directamente por el chat, pero brinda ideas pastoralmente ricas o términos de búsqueda específicos para ayudar al usuario.
@@ -377,13 +377,14 @@ export const AssistantWidget = ({
       throw new Error('No se ha configurado la clave API (VITE_GEMINI_API_KEY). Contacta al administrador.');
     }
 
-    let contentsPayload = promptText;
+    let currentUserText = promptText;
+    let currentUserParts = [];
 
     if (fileObj) {
       if (fileObj.isMultimodal) {
         const base64Data = await fileToBase64(fileObj.file);
-        contentsPayload = [
-          promptText || 'Por favor analiza este documento o imagen adjunta:',
+        currentUserParts = [
+          { text: promptText || 'Por favor analiza este documento o imagen adjunta:' },
           {
             inlineData: {
               mimeType: fileObj.file.type || 'application/pdf',
@@ -392,9 +393,43 @@ export const AssistantWidget = ({
           }
         ];
       } else if (fileObj.extractedText) {
-        contentsPayload = `[DOCUMENTO ADJUNTO POR EL USUARIO: "${fileObj.name}"]:\n${fileObj.extractedText}\n\n[CONSULTA DEL USUARIO]:\n${promptText || 'Analiza el documento adjunto y brinda tu resumen o retroalimentación pastoral.'}`;
+        currentUserText = `[DOCUMENTO ADJUNTO POR EL USUARIO: "${fileObj.name}"]:\n${fileObj.extractedText}\n\n[CONSULTA DEL USUARIO]:\n${promptText || 'Analiza el documento adjunto y brinda tu resumen o retroalimentación pastoral.'}`;
       }
     }
+
+    if (currentUserParts.length === 0) {
+      currentUserParts = [{ text: currentUserText }];
+    }
+
+    const contentsPayload = [
+      ...historyMessages
+        .filter(message => message.text && message.text !== '...')
+        .slice(-10)
+        .map(message => ({
+          role: message.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: message.text }]
+        })),
+      { role: 'user', parts: currentUserParts }
+    ];
+    const requiresLiveData = /\b(asistencias?|ausentes?|faltas?|faltaron|presentes?|justificad[oa]s?|estad[ií]sticas?|listas?|catequizandos?|catequistas?|grupos?|grupo|cu[aá]nt[oa]s?)\b/i.test(promptText);
+
+    const streamText = async (modelToTry, contents) => {
+      const streamResponse = await ai.models.generateContentStream({
+        model: modelToTry,
+        contents,
+        config: {
+          systemInstruction,
+          temperature: 0.7
+        }
+      });
+
+      let fullText = '';
+      for await (const chunk of streamResponse) {
+        fullText += chunk.text || '';
+        onChunkReceived(fullText);
+      }
+      return fullText;
+    };
 
     const totalModels = candidateList.length;
     let idx = currentModelIndex;
@@ -403,36 +438,29 @@ export const AssistantWidget = ({
       const modelToTry = candidateList[idx];
 
       try {
-        // Primera verificación con Function Calling
+        if (!requiresLiveData) {
+          const fullText = await streamText(modelToTry, contentsPayload);
+          if (idx !== currentModelIndex) setCurrentModelIndex(idx);
+          return fullText || 'No se pudo generar una respuesta.';
+        }
+
         const firstCheck = await ai.models.generateContent({
           model: modelToTry,
           contents: contentsPayload,
           config: {
-            systemInstruction: systemInstruction,
+            systemInstruction,
             temperature: 0.7,
             tools: [{ functionDeclarations: toolsDeclarations }]
           }
         });
 
-        // Comprobar si Gemini quiere llamar a alguna función
         const functionCalls = firstCheck.functionCalls;
         if (functionCalls && functionCalls.length > 0) {
           const call = functionCalls[0];
           const localResult = executeLocalFunctionCall(call.name, call.args);
-
-          const userParts = Array.isArray(contentsPayload) 
-            ? contentsPayload.map(p => typeof p === 'string' ? { text: p } : p)
-            : [{ text: String(contentsPayload) }];
-
           const toolResponsePayload = [
-            {
-              role: 'user',
-              parts: userParts
-            },
-            {
-              role: 'model',
-              parts: [{ functionCall: call }]
-            },
+            ...contentsPayload,
+            { role: 'model', parts: [{ functionCall: call }] },
             {
               role: 'user',
               parts: [
@@ -446,64 +474,35 @@ export const AssistantWidget = ({
             }
           ];
 
-          // Generación final en Streaming con el resultado de la función
-          const streamResponse = await ai.models.generateContentStream({
-            model: modelToTry,
-            contents: toolResponsePayload,
-            config: {
-              systemInstruction: systemInstruction,
-              temperature: 0.7
-            }
-          });
-
-          let fullText = '';
-          for await (const chunk of streamResponse) {
-            const textChunk = chunk.text || '';
-            fullText += textChunk;
-            onChunkReceived(fullText);
-          }
-
+          const fullText = await streamText(modelToTry, toolResponsePayload);
           if (idx !== currentModelIndex) setCurrentModelIndex(idx);
           return fullText || 'Consulta procesada correctamente.';
         }
 
-        // Si no requirió funciones, hacemos la respuesta directa en STREAMING
-        const streamResponse = await ai.models.generateContentStream({
-          model: modelToTry,
-          contents: contentsPayload,
-          config: {
-            systemInstruction: systemInstruction,
-            temperature: 0.7
-          }
-        });
-
-        let fullText = '';
-        for await (const chunk of streamResponse) {
-          const textChunk = chunk.text || '';
-          fullText += textChunk;
-          onChunkReceived(fullText);
-        }
-
+        const responseText = firstCheck.text || 'No se pudo generar una respuesta.';
+        onChunkReceived(responseText);
         if (idx !== currentModelIndex) setCurrentModelIndex(idx);
-        return fullText || 'No se pudo generar una respuesta.';
+        return responseText;
 
       } catch (error) {
         console.error(`[Gemini Stream] Error con modelo ${modelToTry}:`, error);
         const errorMsg = error?.message || '';
         const isUnavailable = 
           error?.status === 503 || 
-          error?.status === 429 || 
           errorMsg.includes('503') || 
-          errorMsg.includes('429') || 
-          errorMsg.includes('UNAVAILABLE') || 
-          errorMsg.includes('quota');
+          errorMsg.includes('UNAVAILABLE');
+        const isRateLimited = error?.status === 429 || errorMsg.includes('429') || errorMsg.toLowerCase().includes('quota');
 
         if (isUnavailable) {
           idx = (idx + 1) % totalModels;
           continue;
         }
 
-        return 'Ocurrió un error al procesar tu solicitud. Por favor intenta de nuevo.';
+        if (isRateLimited) {
+          return 'MarIA alcanzó temporalmente el límite de solicitudes de Gemini. Espera un momento y vuelve a intentarlo.';
+        }
+
+        return `No se pudo completar la solicitud a MarIA. Intenta de nuevo. Detalle: ${errorMsg || 'error de conexión o configuración'}`;
       }
     }
 
@@ -535,26 +534,38 @@ export const AssistantWidget = ({
       text: '...'
     };
 
+    const conversationHistory = assistantMessages
+      .filter(message => message.text && message.text !== '...')
+      .slice(-10);
+
     setAssistantMessages(prev => [...prev, userMessage, initialBotMessage]);
     setIsLoading(true);
 
-    const finalReply = await generateAssistantReplyStream(userText, fileToProcess, (accumulatedText) => {
+    try {
+      const finalReply = await generateAssistantReplyStream(userText, fileToProcess, conversationHistory, (accumulatedText) => {
+        setAssistantMessages(prev =>
+          prev.map(msg => msg.id === botMessageId ? { ...msg, text: accumulatedText } : msg)
+        );
+      });
+
       setAssistantMessages(prev =>
-        prev.map(msg => msg.id === botMessageId ? { ...msg, text: accumulatedText } : msg)
+        prev.map(msg => {
+          if (msg.id === botMessageId && (msg.text === '...' || !msg.text)) {
+            return { ...msg, text: finalReply || 'No se recibió respuesta del modelo.' };
+          }
+          return msg;
+        })
       );
-    });
-
-    // Si el callback de streaming no actualizó nada o hubo falla directa, asegurar mostrar la respuesta final o mensaje de error
-    setAssistantMessages(prev =>
-      prev.map(msg => {
-        if (msg.id === botMessageId && (msg.text === '...' || !msg.text)) {
-          return { ...msg, text: finalReply || 'No se recibió respuesta del modelo.' };
-        }
-        return msg;
-      })
-    );
-
-    setIsLoading(false);
+    } catch (error) {
+      console.error('[MarIA] No se pudo procesar el mensaje:', error);
+      setAssistantMessages(prev =>
+        prev.map(msg => msg.id === botMessageId
+          ? { ...msg, text: `No se pudo completar la solicitud a MarIA. Intenta de nuevo. Detalle: ${error?.message || 'error de conexión o configuración'}` }
+          : msg)
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // --- FAVORITOS ---
@@ -596,7 +607,7 @@ export const AssistantWidget = ({
                 : (isDark ? 'text-amber-400 hover:bg-slate-800' : 'text-amber-600 hover:bg-slate-200')
             }`}
           >
-            ⭐ ({favorites.length})
+            <MaterialIcon name="star" /> ({favorites.length})
           </button>
         </div>
       </div>
@@ -605,7 +616,7 @@ export const AssistantWidget = ({
       <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
         {activeTabMode === 'favorites' && favorites.length === 0 && (
           <p className={`text-xs italic text-center py-6 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
-            No tienes ninguna respuesta guardada en favoritos. Presiona el botón ⭐ en cualquier mensaje de MarIA para conservarlo aquí.
+            No tienes ninguna respuesta guardada en favoritos. Presiona el botón de favoritos en cualquier mensaje de MarIA para conservarlo aquí.
           </p>
         )}
 
@@ -631,7 +642,7 @@ export const AssistantWidget = ({
             >
               {message.fileName && (
                 <div className="text-[11px] font-bold text-sky-200 bg-sky-950/60 px-2 py-1 rounded mb-2 inline-flex items-center gap-1.5 max-w-full truncate">
-                  <span>📎 Documento/Imagen:</span> <span className="truncate">{message.fileName}</span>
+                  <span><MaterialIcon name="attach_file" /> Documento/Imagen:</span> <span className="truncate">{message.fileName}</span>
                 </div>
               )}
 
@@ -668,7 +679,7 @@ export const AssistantWidget = ({
                                 }}
                                 className="px-2.5 py-1 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-lg transition-colors flex items-center gap-1"
                               >
-                                📥 Descargar SVG
+                                <MaterialIcon name="download" /> Descargar SVG
                               </button>
                             </div>
                           </div>
@@ -698,7 +709,7 @@ export const AssistantWidget = ({
                     }`}
                     title={isSpeaking ? 'Detener lectura' : 'Escuchar respuesta'}
                   >
-                    <span>{isSpeaking ? '⏹️' : '🔊'}</span>
+                    <MaterialIcon name={isSpeaking ? 'stop' : 'volume_up'} />
                   </button>
 
                   <button
@@ -709,7 +720,7 @@ export const AssistantWidget = ({
                     }`}
                     title={isFav ? 'Quitar de favoritos' : 'Favoritos'}
                   >
-                    <span>{isFav ? '★' : '⭐'}</span>
+                    <MaterialIcon name={isFav ? 'star' : 'star_outline'} />
                   </button>
 
                   <button
@@ -722,7 +733,7 @@ export const AssistantWidget = ({
                     title="Copiar texto"
                     className="px-2.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-[10px] transition-colors ml-auto flex items-center gap-1"
                   >
-                    {copiedId === message.id ? '✓ Copiado' : '📋 Copiar'}
+                    {copiedId === message.id ? <><MaterialIcon name="check" /> Copiado</> : <><MaterialIcon name="content_copy" /> Copiar</>}
                   </button>
                 </div>
               )}
@@ -734,7 +745,7 @@ export const AssistantWidget = ({
           <div className={`max-w-[95%] rounded-xl px-3.5 py-2.5 text-xs italic animate-pulse border ${
             isDark ? 'bg-slate-800 text-sky-300 border-slate-700' : 'bg-white text-sky-900 border-slate-200 shadow-sm'
           }`}>
-            ✨ MarIA está procesando y respondiendo en tiempo real...
+            <MaterialIcon name="auto_awesome" /> MarIA está procesando y respondiendo en tiempo real...
           </div>
         )}
       </div>
@@ -743,7 +754,7 @@ export const AssistantWidget = ({
       {attachedFile && activeTabMode === 'chat' && (
         <div className="mt-3 flex items-center justify-between bg-sky-950/60 border border-sky-500/40 text-sky-200 text-xs px-3 py-1.5 rounded-lg">
           <div className="flex items-center gap-2 truncate">
-            <span className="text-sm">📎</span>
+            <MaterialIcon name="attach_file" className="text-sm" />
             <span className="font-bold truncate">{attachedFile.name}</span>
             <span className="text-[10px] text-sky-400 uppercase">({attachedFile.isMultimodal ? 'Nativo' : 'Texto/Word'})</span>
           </div>
@@ -760,14 +771,20 @@ export const AssistantWidget = ({
 
       {/* FORMULARIO DE ENVÍO CON ADJUNTAR Y MICRÓFONO DENTRO DE LA CAJA */}
       {activeTabMode === 'chat' && (
-        <form onSubmit={assistantSubmit} className="mt-3 flex gap-2 items-center">
+        <form
+          onSubmit={assistantSubmit}
+          className={`mt-3 flex w-full min-w-0 items-center gap-1 rounded-full border p-1.5 ${
+            isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-300 bg-white'
+          }`}
+        >
           <label
-            className={`cursor-pointer px-2.5 py-2 rounded-lg border text-xs font-bold transition-colors flex items-center gap-1 ${
-              attachedFile ? 'bg-sky-600 text-white border-sky-500' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            className={`flex shrink-0 cursor-pointer items-center justify-center rounded-full p-2 transition-colors ${
+              attachedFile ? 'bg-sky-600 text-white' : isDark ? 'text-slate-300 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100'
             }`}
             title="Adjuntar Imagen, PDF, Word (.docx) o Texto"
+            aria-label="Adjuntar archivo"
           >
-            <span>📎</span>
+            <MaterialIcon name="attach_file" />
             <input
               ref={fileInputRef}
               type="file"
@@ -778,32 +795,32 @@ export const AssistantWidget = ({
             />
           </label>
 
-          <div className={`flex-1 flex items-center rounded-lg px-2 border ${inputBgClass}`}>
-            <button
-              type="button"
-              onClick={toggleVoiceInput}
-              className={`p-1.5 rounded-md text-xs font-bold transition-colors flex items-center justify-center mr-1 ${
-                isListening ? 'bg-rose-600 text-white animate-pulse' : 'text-slate-400 hover:text-slate-200'
-              }`}
-              title={isListening ? 'Escuchando... Presiona para detener' : 'Dictar mensaje por voz'}
-            >
-              <span>🎤</span>
-            </button>
-            <input
-              value={assistantInput}
-              onChange={(event) => setAssistantInput(event.target.value)}
-              placeholder={isListening ? "Escuchando tu voz..." : (isModelReady ? "Pregunta a MarIA o consulta asistencias..." : "Cargando...")}
-              disabled={isLoading || !isModelReady}
-              className="w-full bg-transparent py-2 text-sm outline-none disabled:opacity-50"
-            />
-          </div>
-
+          <button
+            type="button"
+            onClick={toggleVoiceInput}
+            className={`flex shrink-0 items-center justify-center rounded-full p-2 text-xs font-bold transition-colors ${
+              isListening ? 'bg-rose-600 text-white animate-pulse' : isDark ? 'text-slate-300 hover:bg-slate-700' : 'text-slate-600 hover:bg-slate-100'
+            }`}
+            title={isListening ? 'Escuchando... Presiona para detener' : 'Dictar mensaje por voz'}
+            aria-label={isListening ? 'Detener dictado por voz' : 'Dictar mensaje por voz'}
+          >
+            <MaterialIcon name="mic" />
+          </button>
+          <input
+            value={assistantInput}
+            onChange={(event) => setAssistantInput(event.target.value)}
+            placeholder={isListening ? "Escuchando tu voz..." : (isModelReady ? "Pregunta a MarIA o consulta asistencias..." : "Cargando...")}
+            disabled={isLoading || !isModelReady}
+            className={`min-w-0 flex-1 bg-transparent px-1 py-2 text-sm outline-none disabled:opacity-50 ${isDark ? 'text-white placeholder:text-slate-400' : 'text-slate-900 placeholder:text-slate-500'}`}
+          />
           <button
             type="submit"
             disabled={isLoading || !isModelReady || (!assistantInput.trim() && !attachedFile)}
-            className="bg-sky-600 hover:bg-sky-700 disabled:bg-sky-800/50 disabled:cursor-not-allowed text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors whitespace-nowrap"
+            className="flex shrink-0 items-center justify-center rounded-full bg-sky-600 p-2 text-white transition-colors hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-sky-800/50"
+            title={isLoading ? 'Enviando...' : 'Enviar mensaje'}
+            aria-label={isLoading ? 'Enviando mensaje' : 'Enviar mensaje'}
           >
-            {isLoading ? '...' : 'Enviar'}
+            <MaterialIcon name={isLoading ? 'progress_activity' : 'send'} className={isLoading ? 'animate-spin' : ''} />
           </button>
         </form>
       )}

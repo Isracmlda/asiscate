@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { registerSW } from 'virtual:pwa-register'
 import './index.css'
+import '@fontsource/material-symbols-rounded/400.css'
 import App from './App.jsx'
 import { AppErrorBoundary } from './components/Shared/AppErrorBoundary.jsx'
 

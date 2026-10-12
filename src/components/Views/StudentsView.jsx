@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { MaterialIcon } from '../Shared/MaterialIcon';
 
 export function StudentsView({
   students = [],
@@ -124,7 +125,7 @@ export function StudentsView({
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-700/60 pb-4">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
-            📋 <span>Directorio General de Catequizandos</span>
+            <MaterialIcon name="badge" /> <span>Directorio General de Catequizandos</span>
           </h2>
           <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
             Explora, filtra y administra toda la colección de catequizandos por nombre, nivel y ciclo catequético.
@@ -155,13 +156,13 @@ export function StudentsView({
       {/* Barra de Filtros */}
       <div className={`${cardBgClass} p-4 rounded-2xl border border-slate-700/60 space-y-3`}>
         <div className="flex justify-between items-center border-b border-slate-700/60 pb-2">
-          <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">🔍 Panel de Búsqueda y Filtros</span>
+          <span className="text-xs font-bold text-slate-300 uppercase tracking-wider"><MaterialIcon name="search" /> Panel de Búsqueda y Filtros</span>
           {(searchTerm || selectedLevelFilter !== 'all' || selectedCycleFilter !== 'all' || selectedGroupFilter !== 'all') && (
             <button
               onClick={handleClearFilters}
               className="text-xs text-amber-400 hover:text-amber-300 font-bold transition flex items-center gap-1"
             >
-              🧹 Limpiar Filtros
+              <MaterialIcon name="filter_alt_off" /> Limpiar Filtros
             </button>
           )}
         </div>
@@ -246,7 +247,7 @@ export function StudentsView({
                   <td colSpan="7" className="px-6 py-12 text-center text-slate-400 italic">
                     {filteredStudents.length === 0 ? (
                       <div className="space-y-2">
-                        <div className="text-3xl">🔍</div>
+                        <div className="text-3xl"><MaterialIcon name="search_off" /></div>
                         <p className="font-bold text-sm text-slate-300">No se encontraron catequizandos con los filtros seleccionados.</p>
                         <p className="text-xs text-slate-400">Intenta modificar la búsqueda o limpiar los filtros.</p>
                       </div>
@@ -273,8 +274,8 @@ export function StudentsView({
                       <td className="px-4 py-3">
                         <div className="font-bold text-white text-sm">{student.fullName || student.name || 'Sin nombre'}</div>
                         <div className="text-slate-400 text-xs font-normal flex flex-wrap items-center gap-x-2 mt-0.5">
-                          {student.parentEmail && <span>📧 {student.parentEmail}</span>}
-                          {student.parentPhone && <span>📞 {student.parentPhone}</span>}
+                          {student.parentEmail && <span><MaterialIcon name="mail" /> {student.parentEmail}</span>}
+                          {student.parentPhone && <span><MaterialIcon name="phone" /> {student.parentPhone}</span>}
                         </div>
                         {student.family?.guardian?.name && (
                           <div className="text-[11px] text-slate-400 font-medium mt-0.5">
@@ -335,7 +336,7 @@ export function StudentsView({
                               className="px-2.5 py-1 bg-sky-600/20 hover:bg-sky-600/40 text-sky-300 rounded-lg font-bold text-xs border border-sky-500/30 transition"
                               title="Editar / Ver expediente"
                             >
-                              ✏️ Editar
+                              <MaterialIcon name="edit" /> Editar
                             </button>
                           )}
                           {typeof handleOpenStudentReadOnly === 'function' && typeof handleStartEditStudent !== 'function' && (
@@ -345,7 +346,7 @@ export function StudentsView({
                               className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg font-bold text-xs transition"
                               title="Ver expediente"
                             >
-                              👁️ Ver
+                              <MaterialIcon name="visibility" /> Ver
                             </button>
                           )}
                           <button
@@ -356,9 +357,9 @@ export function StudentsView({
                             title="Borrar registro de Firestore"
                           >
                             {deletingId === student.id ? (
-                              <span className="animate-spin">⏳</span>
+                              <MaterialIcon name="progress_activity" className="animate-spin" />
                             ) : (
-                              <>🗑️ Borrar</>
+                              <><MaterialIcon name="delete" /> Borrar</>
                             )}
                           </button>
                         </div>

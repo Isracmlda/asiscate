@@ -8,6 +8,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'faviconclaro.svg'],
       manifest: {
@@ -23,11 +26,10 @@ export default defineConfig({
           { src: '/faviconclaro.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
         ]
       },
-      workbox: {
+      injectManifest: {
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
-        sourcemap: false,
-        navigateFallback: '/index.html'
+        sourcemap: false
       }
     })
   ],

@@ -170,7 +170,7 @@ export function InventoryView({
             </select>
             <div className="grid grid-cols-2 gap-2">
               <div ref={reservationCalendarRef} className="relative">
-                <button type="button" onClick={() => setIsReservationCalendarOpen(previous => !previous)} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${inputBgClass}`}>{inventoryReservationForm.date ? new Date(`${inventoryReservationForm.date}T12:00:00`).toLocaleDateString('es-CR') : 'Selecciona una fecha'} <span className="float-right">📅</span></button>
+                <button type="button" onClick={() => setIsReservationCalendarOpen(previous => !previous)} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${inputBgClass}`}>{inventoryReservationForm.date ? new Date(`${inventoryReservationForm.date}T12:00:00`).toLocaleDateString('es-CR') : 'Selecciona una fecha'} <MaterialIcon className="float-right" name="calendar_month" /></button>
                 {isReservationCalendarOpen && (
                   <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-xl border border-slate-300 bg-white p-3 text-slate-800 shadow-2xl dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100">
                     <div className="mb-3 flex items-center justify-between"><button type="button" disabled={!canGoPreviousMonth} onClick={() => canGoPreviousMonth && setReservationCalendarMonth(previous => new Date(previous.getFullYear(), previous.getMonth() - 1, 1))} className="rounded px-2 py-1 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-slate-700">‹</button><strong className="text-sm capitalize">{reservationCalendarMonth.toLocaleDateString('es-CR', { month: 'long', year: 'numeric' })}</strong><button type="button" disabled={!canGoNextMonth} onClick={() => canGoNextMonth && setReservationCalendarMonth(previous => new Date(previous.getFullYear(), previous.getMonth() + 1, 1))} className="rounded px-2 py-1 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-slate-700">›</button></div>
@@ -291,3 +291,4 @@ export function InventoryView({
     </div>
   );
 }
+import { MaterialIcon } from '../Shared/MaterialIcon';

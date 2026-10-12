@@ -1,4 +1,5 @@
 import { AsisCateLogo } from './Shared/AsisCateLogo';
+import { MaterialIcon } from './Shared/MaterialIcon';
 
 export function AuthModal({
   themeMode,
@@ -28,7 +29,7 @@ export function AuthModal({
 
         {authError && (
           <div className="mb-4 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-500 text-xs font-semibold text-center flex items-center justify-center gap-2">
-            <span>⚠️</span>
+            <MaterialIcon name="warning" />
             <span>{authError}</span>
           </div>
         )}

@@ -1,3 +1,5 @@
+import { MaterialIcon } from '../Shared/MaterialIcon';
+
 export function ConfirmModal({
   isOpen,
   onClose,
@@ -27,7 +29,7 @@ export function ConfirmModal({
           <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 text-xl font-bold ${
             isDanger ? 'bg-rose-500/15 text-rose-500 border border-rose-500/30' : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
           }`}>
-            {isDanger ? '🗑️' : '⚠️'}
+            <MaterialIcon name={isDanger ? 'delete' : 'warning'} />
           </div>
           <div className="space-y-1 pr-2">
             <h3 className="text-base sm:text-lg font-bold leading-snug">
