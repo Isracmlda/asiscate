@@ -6,23 +6,25 @@ export function useVisiblePayments({
   paymentCurrentPage,
   paymentPageSize,
   groups,
+  allUsers,
   activeViewMode,
   effectiveDiaconiaId,
   currentUserKey,
   visibleGroupIds
 }) {
   const visiblePaymentRecords = useMemo(() => paymentRecords.filter(record => {
+    const recordDiaconiaId = record.diaconiaId
+      || groups.find(item => item.id === record.groupId)?.diaconiaId
+      || allUsers.find(user => user.id === record.createdBy)?.diaconiaId;
     if (activeViewMode === 'admin') {
       if (!effectiveDiaconiaId) return true;
-      const group = groups.find(item => item.id === record.groupId);
-      return group?.diaconiaId === effectiveDiaconiaId || record.diaconiaId === effectiveDiaconiaId;
+      return recordDiaconiaId === effectiveDiaconiaId;
     }
     if (activeViewMode === 'coordinador' || activeViewMode === 'coordinadorGeneral') {
-      const group = groups.find(item => item.id === record.groupId);
-      return record.createdBy === currentUserKey || (group && group.diaconiaId === effectiveDiaconiaId);
+      return record.createdBy === currentUserKey || recordDiaconiaId === effectiveDiaconiaId;
     }
     return Boolean(record.groupId && visibleGroupIds.includes(record.groupId));
-  }), [activeViewMode, currentUserKey, effectiveDiaconiaId, groups, paymentRecords, visibleGroupIds]);
+  }), [activeViewMode, allUsers, currentUserKey, effectiveDiaconiaId, groups, paymentRecords, visibleGroupIds]);
 
   const filteredPaymentRecords = useMemo(() => visiblePaymentRecords.filter(record => {
     const matchesGroup = paymentFilters.groupId === 'all' || record.groupId === paymentFilters.groupId;

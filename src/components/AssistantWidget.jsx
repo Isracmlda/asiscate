@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
 import { GEMINI_API_KEY } from '../utils/constants';
+import { MARIA_CATECHESIS_KNOWLEDGE } from '../utils/mariaCatechesisKnowledge';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { MaterialIcon } from './Shared/MaterialIcon';
 import {
@@ -242,36 +243,7 @@ export const AssistantWidget = ({
     }
   };
 
-  // --- DEFINICIÓN DE HERRAMIENTAS (FUNCTION CALLING CON SEGURIDAD POR ROL) ---
-  const toolsDeclarations = [
-    {
-      name: 'obtenerResumenAsistencia',
-      description: 'Obtiene las estadísticas de asistencia (presentes, ausentes, justificados) de los grupos visibles autorizados para el usuario actual.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          nombreGrupo: { type: Type.STRING, description: 'Nombre opcional del grupo para filtrar.' }
-        }
-      }
-    },
-    {
-      name: 'obtenerListaCatequizandos',
-      description: 'Consulta los catequizandos matriculados y sus datos generales dentro de los grupos autorizados para el usuario actual.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          nombreGrupo: { type: Type.STRING, description: 'Nombre opcional del grupo para filtrar.' }
-        }
-      }
-    },
-    {
-      name: 'obtenerInformacionGrupos',
-      description: 'Consulta la lista de grupos, niveles, horarios y salones autorizados para el usuario.',
-      parameters: { type: Type.OBJECT, properties: {} }
-    }
-  ];
-
-  // Ejecutores locales de Function Calling respetando los permisos
+  // Consultas locales sobre datos que ya están filtrados según los permisos del usuario
   const executeLocalFunctionCall = (functionName, args) => {
     const { nombreGrupo } = args || {};
 
@@ -359,13 +331,20 @@ export const AssistantWidget = ({
 
       [ACCESO A DATOS REALES Y SEGURIDAD POR ROL]
       Usuario actual: ${userName ? userName : 'Usuario'} | Rol activo: ${roleText} (${userRole})
-      - Tienes herramientas (*tools*) disponibles para consultar asistencias, estudiantes y grupos autorizados para este usuario.
-      - Utiliza tus herramientas cuando te pregunten por listas de alumnos, ausencias o estadísticas de grupos.
-      - Si el usuario es Catequista, la información devuelta por las herramientas ya está estrictamente filtrada para sus grupos asignados.
+      - Cuando el mensaje incluya un bloque de datos locales de AsisCate, úsalo para responder consultas de asistencia, estudiantes y grupos.
+      - Los datos incluidos ya están filtrados para el usuario actual; no inventes datos que no aparezcan en ese bloque.
+      - Si el usuario es Catequista, los datos locales ya están estrictamente filtrados para sus grupos asignados.
+
+      [CONSULTA DE LA WEB CATEQUÉTICA]
+      - Si la pregunta trata de catequesis, niveles, sacramentos, diaconías, misión, formación cristiana o avisos parroquiales, consulta las páginas oficiales proporcionadas en el mensaje mediante la herramienta URL Context antes de responder.
+      - Usa esa web como fuente principal y cita el enlace específico en la respuesta. La memoria incluida abajo solo sirve como referencia auxiliar si la página no se puede consultar; en ese caso, indícalo con claridad.
+      - No presentes noticias antiguas como actuales ni inventes horarios, requisitos o fechas. Para datos operativos de grupos y horarios, usa las herramientas autorizadas de AsisCate.
 
       [INSPIRACIÓN ESPIRITUAL]
       1. Virgen del Carmen: Humildad y protección fraternal.
       2. Agustinos Recoletos (OAR): Fraternidad y oración interior ("Un solo corazón y una sola alma hacia Dios").
+
+      ${MARIA_CATECHESIS_KNOWLEDGE}
 
       [REGLAS DE FORMATO]
       1. Usa emojis cálidos (🙏, 📖, ✨, 🕊️).
@@ -411,7 +390,71 @@ export const AssistantWidget = ({
         })),
       { role: 'user', parts: currentUserParts }
     ];
-    const requiresLiveData = /\b(asistencias?|ausentes?|faltas?|faltaron|presentes?|justificad[oa]s?|estad[ií]sticas?|listas?|catequizandos?|catequistas?|grupos?|grupo|cu[aá]nt[oa]s?)\b/i.test(promptText);
+    const requiresCatechesisKnowledge = /\b(catequesis|catequ(?:esis|ista|istas|izando|izandos)|catecismo|niveles?|sacramentos?|primera comunión|comunión|confirmación|diaconías?|encuentros? de catequesis|formación cristiana|misión parroquial|lectio divina|eucaristía|confesión|reconciliación)\b/i.test(promptText);
+    if (requiresCatechesisKnowledge) {
+      const sourceURLs = [];
+      const levelRoutes = [
+        [/\b(primer(?:o)?|nivel\s*(?:1|uno))\b/i, 'primero'],
+        [/\b(segund(?:o)?|nivel\s*(?:2|dos))\b/i, 'segundo'],
+        [/\b(tercer(?:o)?|nivel\s*(?:3|tres))\b/i, 'tercero'],
+        [/\b(cuart(?:o)?|nivel\s*(?:4|cuatro))\b/i, 'cuarto'],
+        [/\b(quint(?:o)?|nivel\s*(?:5|cinco))\b/i, 'quinto'],
+        [/\b(sext(?:o)?|nivel\s*(?:6|seis))\b/i, 'sexto'],
+        [/\b(septim(?:o|a)|nivel\s*(?:7|siete)|confirma|confirmación)\b/i, 'confirma']
+      ];
+      levelRoutes.forEach(([pattern, route]) => {
+        if (pattern.test(promptText)) sourceURLs.push(`https://cateelcarmen.web.app/${route}`);
+      });
+      if (/diacon[ií]a|comunidad|monserrat|montecillos/i.test(promptText)) {
+        sourceURLs.push('https://cateelcarmen.web.app/diaconias');
+      }
+      if (/noticia|aviso|fecha|horario|actividad|fiesta/i.test(promptText)) {
+        sourceURLs.push('https://cateelcarmen.web.app/noticias');
+      }
+      if (/misi[oó]n|visi[oó]n|qui[eé]nes somos|parroquia|formaci[oó]n/i.test(promptText)) {
+        sourceURLs.push('https://cateelcarmen.web.app/quienes-somos');
+      }
+      if (/comuni[oó]n|eucarist[ií]a|confesi[oó]n|reconciliaci[oó]n/i.test(promptText)) {
+        sourceURLs.push('https://cateelcarmen.web.app/tercero');
+      }
+      if (sourceURLs.length === 0) {
+        sourceURLs.push('https://cateelcarmen.web.app/', 'https://cateelcarmen.web.app/quienes-somos');
+      }
+      const uniqueSourceURLs = [...new Set(sourceURLs)];
+      contentsPayload[contentsPayload.length - 1].parts.unshift({
+        text: `[CONSULTA LA FUENTE OFICIAL CON URL CONTEXT ANTES DE RESPONDER. Prioriza estas páginas de Catequesis Nuestra Señora de El Carmen y cita el enlace pertinente. Si no puedes recuperar su contenido, dilo y usa la memoria auxiliar con cautela.\n${uniqueSourceURLs.join('\n')}]`
+      });
+    }
+    const requiresLiveData = /\b(asistencias?|ausentes?|faltas?|faltaron|presentes?|justificad[oa]s?|estad[ií]sticas?|listas?|grupos?|grupo|cu[aá]nt[oa]s?)\b/i.test(promptText)
+      || (/\b(catequizandos?|alumnos?|estudiantes?)\b/i.test(promptText)
+        && /\b(lista|nombres|qui[eé]nes|qui[eé]n|mostrar|muestra|listar|enumera|dame|cu[aá]nt[oa]s|ausentes?|presentes?)\b/i.test(promptText));
+
+    const urlContextTool = requiresCatechesisKnowledge ? [{ urlContext: {} }] : undefined;
+
+    let contentsForModel = contentsPayload;
+    if (requiresLiveData) {
+      const asksAboutAttendance = /\b(asistencias?|ausentes?|faltas?|faltaron|presentes?|justificad[oa]s?|estad[ií]sticas?|tasa|porcentaje)\b/i.test(promptText);
+      const asksStudentCount = /\bcu[aá]nt[oa]s\b/i.test(promptText)
+        && /\b(catequizandos?|alumnos?|estudiantes?)\b/i.test(promptText);
+      const asksStudentList = /\b(lista|nombres|qui[eé]nes|qui[eé]n|mostrar|muestra|listar|enumera|dame|informaci[oó]n|datos|perfil)\b/i.test(promptText)
+        && /\b(catequizandos?|alumnos?|estudiantes?)\b/i.test(promptText);
+      const groupName = visibleGroups.find(group =>
+        group.name && promptText.toLowerCase().includes(group.name.toLowerCase())
+      )?.name;
+      const functionName = asksAboutAttendance || asksStudentCount
+        ? 'obtenerResumenAsistencia'
+        : asksStudentList
+          ? 'obtenerListaCatequizandos'
+          : 'obtenerInformacionGrupos';
+      const localData = executeLocalFunctionCall(functionName, { nombreGrupo: groupName });
+      const dataContext = {
+        text: `[DATOS LOCALES AUTORIZADOS DE ASISCATE: ${JSON.stringify(localData)}]`
+      };
+      const lastContentIndex = contentsPayload.length - 1;
+      contentsForModel = contentsPayload.map((content, index) => index === lastContentIndex
+        ? { ...content, parts: [...content.parts, dataContext] }
+        : content);
+    }
 
     const streamText = async (modelToTry, contents) => {
       const streamResponse = await ai.models.generateContentStream({
@@ -419,7 +462,8 @@ export const AssistantWidget = ({
         contents,
         config: {
           systemInstruction,
-          temperature: 0.7
+          temperature: 0.7,
+          tools: urlContextTool
         }
       });
 
@@ -438,51 +482,9 @@ export const AssistantWidget = ({
       const modelToTry = candidateList[idx];
 
       try {
-        if (!requiresLiveData) {
-          const fullText = await streamText(modelToTry, contentsPayload);
-          if (idx !== currentModelIndex) setCurrentModelIndex(idx);
-          return fullText || 'No se pudo generar una respuesta.';
-        }
-
-        const firstCheck = await ai.models.generateContent({
-          model: modelToTry,
-          contents: contentsPayload,
-          config: {
-            systemInstruction,
-            temperature: 0.7,
-            tools: [{ functionDeclarations: toolsDeclarations }]
-          }
-        });
-
-        const functionCalls = firstCheck.functionCalls;
-        if (functionCalls && functionCalls.length > 0) {
-          const call = functionCalls[0];
-          const localResult = executeLocalFunctionCall(call.name, call.args);
-          const toolResponsePayload = [
-            ...contentsPayload,
-            { role: 'model', parts: [{ functionCall: call }] },
-            {
-              role: 'user',
-              parts: [
-                {
-                  functionResponse: {
-                    name: call.name,
-                    response: localResult
-                  }
-                }
-              ]
-            }
-          ];
-
-          const fullText = await streamText(modelToTry, toolResponsePayload);
-          if (idx !== currentModelIndex) setCurrentModelIndex(idx);
-          return fullText || 'Consulta procesada correctamente.';
-        }
-
-        const responseText = firstCheck.text || 'No se pudo generar una respuesta.';
-        onChunkReceived(responseText);
+        const fullText = await streamText(modelToTry, contentsForModel);
         if (idx !== currentModelIndex) setCurrentModelIndex(idx);
-        return responseText;
+        return fullText || (requiresLiveData ? 'Consulta procesada correctamente.' : 'No se pudo generar una respuesta.');
 
       } catch (error) {
         console.error(`[Gemini Stream] Error con modelo ${modelToTry}:`, error);

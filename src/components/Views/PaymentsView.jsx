@@ -23,6 +23,7 @@ export function PaymentsView({
   filteredPaymentRecords,
   paginatedPaymentRecords,
   handleViewPaymentQr,
+  handleSharePaymentProof,
   handleGeneratePaymentProofPdf,
   handlePrintPaymentReceipt,
   handleDeletePaymentRecord,
@@ -485,10 +486,11 @@ export function PaymentsView({
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-bold text-sm text-emerald-400">₡{Number(record.amount || 0).toLocaleString()}</span>
-                        <button onClick={() => handleViewPaymentQr(record)} className="px-2 py-1 rounded-lg bg-sky-600/10 text-sky-400 hover:bg-sky-600/20 text-xs font-bold transition">Imagen</button>
-                        <button onClick={() => handleGeneratePaymentProofPdf(record)} className="px-2 py-1 rounded-lg bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20 text-xs font-bold transition">PDF</button>
-                        <button onClick={() => handlePrintPaymentReceipt(record)} className="px-2 py-1 rounded-lg bg-amber-600/10 text-amber-400 hover:bg-amber-600/20 text-xs font-bold transition">Imprimir</button>
-                        <button onClick={() => handleDeletePaymentRecord(record.id)} className="px-2 py-1 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 text-xs font-bold transition">Eliminar</button>
+                        <button type="button" onClick={() => handleViewPaymentQr(record)} title="Ver imagen" aria-label="Ver imagen del comprobante" className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-sky-600/10 text-sky-400 hover:bg-sky-600/20 transition"><MaterialIcon name="image" /></button>
+                        <button type="button" onClick={() => handleSharePaymentProof(record)} title="Compartir comprobante" aria-label="Compartir comprobante" className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-violet-600/10 text-violet-400 hover:bg-violet-600/20 transition"><MaterialIcon name="ios_share" /></button>
+                        <button type="button" onClick={() => handleGeneratePaymentProofPdf(record)} title="Descargar PDF" aria-label="Descargar comprobante en PDF" className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20 transition"><MaterialIcon name="picture_as_pdf" /></button>
+                        <button type="button" onClick={() => handlePrintPaymentReceipt(record)} title="Imprimir" aria-label="Imprimir comprobante" className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-amber-600/10 text-amber-400 hover:bg-amber-600/20 transition"><MaterialIcon name="print" /></button>
+                        <button type="button" onClick={() => handleDeletePaymentRecord(record.id)} title="Eliminar" aria-label="Eliminar pago" className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition"><MaterialIcon name="delete" /></button>
                       </div>
                     </div>
                   );

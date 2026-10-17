@@ -87,8 +87,8 @@ const CATECHIST_USER_PREFIX = 'catequista:user:';
 const CATECHIST_PENDING_PREFIX = 'catequista:pending:';
 const EXCLUDED_CATECHIST_EMAIL = 'asiscate.elcarmen@gmail.com';
 
-const buildQrImageUrl = (payload) => (
-  `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=2&ecc=L&data=${encodeURIComponent(payload)}`
+const buildQrImageUrl = (payload, margin = 2) => (
+  `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=${margin}&ecc=L&data=${encodeURIComponent(payload)}`
 );
 
 const isCatechistGroup = (group) => group?.type === 'catequistas'
@@ -385,6 +385,7 @@ export default function App() {
   const [trackerGroupId, setTrackerGroupId] = useState('');
   const [qrModal, setQrModal] = useState(null);
   const [paymentProofModal, setPaymentProofModal] = useState(null);
+  const [paymentWhatsappTargetModal, setPaymentWhatsappTargetModal] = useState(null);
   const [qrCardLoading, setQrCardLoading] = useState(false);
   const [scannerModal, setScannerModal] = useState(null);
   const [deleteDateTarget, setDeleteDateTarget] = useState(null);
@@ -2113,6 +2114,16 @@ ${catechistName}`;
     setMessageModal({ student, channel, message });
   };
 
+  const handleCopyAttendanceContact = async (value, label) => {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      notify(`${label} copiado.`, 'success');
+    } catch {
+      notify(`No se pudo copiar ${label.toLowerCase()}.`, 'error');
+    }
+  };
+
   const handleSendAttendanceEmail = async () => {
     const recipient = messageModal?.student?.parentEmail?.trim();
     if (!recipient || !messageModal?.message) {
@@ -3481,11 +3492,13 @@ ${catechistName}`;
     const nextReceiptNum = maxReceiptNum > 0 ? maxReceiptNum + 1 : 1;
 
     const now = new Date();
+    const paymentGroup = groups.find(group => group.id === paymentForm.groupId);
     const newRecord = {
       id: `payment-${Date.now()}`,
       receiptNumber: nextReceiptNum,
       groupId: paymentForm.groupId || '',
-      groupName: visibleGroups.find(group => group.id === paymentForm.groupId)?.name || groups.find(group => group.id === paymentForm.groupId)?.name || '',
+      groupName: visibleGroups.find(group => group.id === paymentForm.groupId)?.name || paymentGroup?.name || '',
+      diaconiaId: paymentGroup?.diaconiaId || effectiveDiaconiaId || userData?.diaconiaId || '',
       studentId: paymentForm.studentId || '',
       studentName: resolvedStudentName || finalInvoiceName,
       invoiceName: finalInvoiceName,
@@ -3542,7 +3555,7 @@ ${catechistName}`;
 
   const buildPaymentProofQrUrl = (record) => {
     const payload = buildPaymentProofPayload(record);
-    return buildQrImageUrl(payload);
+    return buildQrImageUrl(payload, 4);
   };
 
   const buildPaymentQrDataUrl = async (record) => {
@@ -3586,59 +3599,53 @@ ${catechistName}`;
   const buildReceiptHtmlContent = (record, meta) => {
     const { receiptNumber, dateText, timeText, issuedTo, totalText, qrUrl, logoUrl } = meta;
     return `
-      <div style="width: 216px; max-width: 216px; margin: 0 auto; padding: 8px 6px; font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; color: #000; background: #fff; font-size: 10.5px; line-height: 1.3; box-sizing: border-box; text-align: left;">
-        <div style="display: flex; align-items: center; gap: 8px; padding-bottom: 6px; border-bottom: 1.5px dashed #000;">
-          ${logoUrl ? `<img src="${logoUrl}" style="width: 52px; height: 52px; flex-shrink: 0;" alt="AsisCate" />` : ''}
-          <div style="flex: 1; min-width: 0;">
-            <div style="font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.3px; color: #000; line-height: 1.2;">COMPROBANTE DE PAGO</div>
-            <div style="font-size: 8.5px; font-weight: 700; color: #000; margin: 2px 0;">Parroquia Ntra. Sra. de El Carmen</div>
-            <div style="font-size: 10px; font-weight: 800; color: #000; margin-top: 3px;">N° ${receiptNumber}</div>
+      <div style="width: 58mm; max-width: 58mm; margin: 0.5mm 0 0; padding: 0; font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; color: #000; background: #fff; font-size: 10.5px; line-height: 1.3; box-sizing: border-box; text-align: left;">
+        <div style="display: flex; align-items: flex-start; gap: 8px; padding-bottom: 3px; border-bottom: 1.5px dashed #000;">
+          ${logoUrl ? `<img src="${logoUrl}" style="width: 42px; height: 42px; flex-shrink: 0;" alt="AsisCate" />` : ''}
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0;">
+            <div style="font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0; white-space: nowrap; color: #000; line-height: 1.2;">COMPROBANTE DE PAGO</div>
+            <div style="margin: 0; padding: 0; line-height: 10px; overflow-wrap: anywhere;"><span style="font-size: 9.5px; font-weight: 700; color: #000;">Parroquia Ntra. Sra. de El Carmen</span><br /><span style="font-size: 8.5px; color: #000;"><strong>Emitida por:</strong> ${record.issuedBy || 'Usuario'}</span><br /><span style="display: inline-block; font-size: 10px; font-weight: 800; color: #000; line-height: 11px; margin: 0;">N° ${receiptNumber}</span></div>
           </div>
         </div>
 
-        <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #000; font-size: 9.5px; color: #000;">
+        <div style="display: flex; justify-content: space-between; gap: 6px; padding: 3px 0; border-bottom: 1.5px dashed #000; font-size: 9.5px; color: #000;">
           <span><strong>Fecha:</strong> ${dateText}</span>
           <span><strong>Hora:</strong> ${timeText}</span>
         </div>
 
-        <div style="padding: 5px 0; border-bottom: 1.5px dashed #000; color: #000;">
-          <div style="margin-bottom: 4px;">
-            <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">A nombre de:</span>
-            <span style="font-size: 11px; font-weight: 700; word-break: break-word; color: #000;">${issuedTo}</span>
+        <div style="padding: 4px 0; color: #000;">
+          <div style="margin-bottom: 4px; font-size: 11px; line-height: 1.2; color: #000;">
+            <span style="font-size: 8.5px; font-weight: 800; text-transform: uppercase;">A nombre de:</span>
+            <span style="font-size: 11px; font-weight: 700; overflow-wrap: anywhere;"> ${issuedTo}</span>
           </div>
-          ${record.groupName ? `
-          <div style="margin-bottom: 4px;">
-            <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Grupo:</span>
-            <span style="font-size: 10.5px; font-weight: 700; word-break: break-word; color: #000;">${record.groupName}</span>
-          </div>` : ''}
-          <div style="margin-bottom: 4px;">
-            <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Concepto:</span>
-            <span style="font-size: 10.5px; font-weight: 700; word-break: break-word; color: #000;">${record.concept || 'Pago general'}</span>
+          <div style="display: flex; align-items: stretch; gap: 8px; padding: 3px 0 4px;">
+            <div style="flex: 1; min-width: 0; padding-right: 7px; border-right: 1px solid #111;">
+              <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Grupo:</div>
+              <div style="margin-top: 2px; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; color: #000;">${record.groupName || 'Sin grupo'}</div>
+            </div>
+            <div style="flex: 1; min-width: 0; padding-left: 1px;">
+              <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Método de pago:</div>
+              <div style="margin-top: 2px; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; color: #000;">${record.paymentMethod || 'Efectivo'}</div>
+            </div>
           </div>
-          <div style="margin-bottom: 4px;">
-            <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Método de pago:</span>
-            <span style="font-size: 10.5px; font-weight: 700; word-break: break-word; color: #000;">${record.paymentMethod || 'Efectivo'}</span>
-          </div>
-          <div style="margin-bottom: 4px;">
-            <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Factura emitida por:</span>
-            <span style="font-size: 10.5px; font-weight: 700; word-break: break-word; color: #000;">${record.issuedBy || 'Usuario'}</span>
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; padding: 4px 0; border-top: 2px dashed #000; border-bottom: 2px dashed #000;">
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Concepto:</div>
+              <div style="margin-top: 2px; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; color: #000;">${record.concept || 'Pago general'}</div>
+            </div>
+            <div style="flex: 0 0 auto; max-width: 45%; text-align: right;">
+              <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Total:</div>
+              <div style="margin-top: 2px; font-size: 14px; font-weight: 900; overflow-wrap: anywhere; color: #000;">${totalText}</div>
+            </div>
           </div>
         </div>
 
-        <div style="padding: 6px 0; border-bottom: 1.5px dashed #000; display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; font-weight: 900; color: #000;">
-          <span>TOTAL PAGADO:</span>
-          <span style="font-size: 14px; font-weight: 900; color: #000;">${totalText}</span>
+        <div style="text-align: center; padding: 4px 0 2px;">
+          <img src="${qrUrl}" style="width: 72px; height: 72px; margin: 0 auto; display: block; border: 1px solid #000; padding: 0; background: #ffffff; image-rendering: crisp-edges;" alt="QR Verificación" />
         </div>
 
-        <div style="text-align: center; padding: 6px 0 4px;">
-          <img src="${qrUrl}" style="width: 105px; height: 105px; margin: 0 auto; display: block; border: 1.5px solid #000; padding: 4px; background: #ffffff; image-rendering: pixelated; image-rendering: crisp-edges;" alt="QR Verificación" />
-          <div style="font-size: 8px; font-weight: 700; color: #000; margin-top: 4px;">Escanear para verificar comprobante</div>
-        </div>
-
-        <div style="text-align: center; font-size: 8.5px; color: #000; margin-top: 4px; line-height: 1.35;">
+        <div style="text-align: center; font-size: 8.5px; color: #000; margin-top: 1px; line-height: 1.2;">
           <div style="font-weight: 800;">¡Muchas gracias por su aporte!</div>
-          <div style="font-weight: 600;">Documento válido como comprobante oficial.</div>
-          <div style="font-weight: 800; margin-top: 2px; color: #000;">AsisCate • Sistema Parroquial</div>
         </div>
       </div>
     `;
@@ -3650,7 +3657,7 @@ ${catechistName}`;
     container.style.position = 'fixed';
     container.style.left = '0';
     container.style.top = '0';
-    container.style.width = '216px';
+    container.style.width = '58mm';
     container.style.opacity = '0';
     container.style.pointerEvents = 'none';
     container.style.zIndex = '-9999';
@@ -3701,6 +3708,135 @@ ${catechistName}`;
     }
   };
 
+  const handleSharePaymentProof = async (record = paymentProofModal?.record) => {
+    if (!record) return;
+    let imageUrl = paymentProofModal?.record?.id === record.id ? paymentProofModal.imageUrl : '';
+    if (!imageUrl) {
+      try {
+        const receiptImage = await generateReceiptPngDataUrl(record);
+        imageUrl = receiptImage.dataUrl;
+      } catch (error) {
+        console.error('Error generando la imagen para compartir:', error);
+        alert('No se pudo preparar la imagen del comprobante para compartir.');
+        return;
+      }
+    }
+
+    const rawNumber = record.receiptNumber || record.id || 'pago';
+    const receiptNumber = String(rawNumber).replace(/\D/g, '').slice(-6) || 'pago';
+    const fileName = `Comprobante_${receiptNumber}.jpg`;
+    try {
+      const sourceImage = new Image();
+      sourceImage.src = imageUrl;
+      await sourceImage.decode();
+
+      const canvas = document.createElement('canvas');
+      canvas.width = sourceImage.naturalWidth;
+      canvas.height = sourceImage.naturalHeight;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('No se pudo preparar la imagen para compartir.');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(sourceImage, 0, 0);
+
+      const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.98);
+      const [, encodedData] = jpegDataUrl.split(',');
+      const binary = atob(encodedData);
+      const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+      const imageFile = new File([bytes], fileName, { type: 'image/jpeg' });
+
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [imageFile] }))) {
+        await navigator.share({
+          files: [imageFile],
+          title: `Comprobante ${record.studentName || record.invoiceName || receiptNumber}`,
+          text: 'Comprobante de pago de AsisCate'
+        });
+        return;
+      }
+
+      setPaymentProofModal({
+        type: 'payment-proof',
+        title: `Comprobante ${record.studentName || record.invoiceName || receiptNumber}`,
+        record,
+        imageUrl
+      });
+      alert('Este navegador no permite compartir directamente. Abrí la vista del comprobante para que puedas descargarlo y abrirlo desde Fun Print.');
+    } catch (error) {
+      if (error?.name === 'AbortError') return;
+      console.error('Error compartiendo imagen del comprobante:', error);
+      setPaymentProofModal({
+        type: 'payment-proof',
+        title: `Comprobante ${record.studentName || record.invoiceName || receiptNumber}`,
+        record,
+        imageUrl
+      });
+      alert('No se pudo abrir el menú para compartir. Desde la vista del comprobante puedes descargar la imagen e importarla en Fun Print.');
+    }
+  };
+
+  const getPaymentProofWhatsappContacts = (record) => {
+    const student = students.find(item => item.id === record?.studentId);
+    const family = student?.family || {};
+    const candidates = [
+      { owner: 'Madre', phone: family.mother?.phone1, type: 'principal' },
+      { owner: 'Madre', phone: family.mother?.phone2, type: 'secundario' },
+      { owner: 'Padre', phone: family.father?.phone1, type: 'principal' },
+      { owner: 'Padre', phone: family.father?.phone2, type: 'secundario' },
+      { owner: 'Encargado', phone: family.guardian?.phone1, type: 'principal' },
+      { owner: 'Encargado', phone: family.guardian?.phone2, type: 'secundario' },
+      { owner: 'Encargado/a (registro general)', phone: student?.parentPhone, type: '' },
+      { owner: 'Encargado/a (pago)', phone: record?.parentPhone, type: '' }
+    ];
+    const seenNumbers = new Set();
+
+    return candidates.reduce((contacts, candidate) => {
+      const phone = String(candidate.phone || '').trim();
+      const normalizedPhone = normalizePhoneForWhatsApp(phone);
+      if (!normalizedPhone || seenNumbers.has(normalizedPhone)) return contacts;
+      seenNumbers.add(normalizedPhone);
+      contacts.push({
+        ...candidate,
+        phone,
+        label: `${phone} — ${candidate.owner}${candidate.type ? ` (${candidate.type})` : ''}`
+      });
+      return contacts;
+    }, []);
+  };
+
+  const handleOpenPaymentProofWhatsApp = (record, imageUrl, contact) => {
+    const receiptNumber = String(record?.receiptNumber || record?.id || 'pago').replace(/\D/g, '').slice(-6) || 'pago';
+    const fileName = `Comprobante_${receiptNumber}.png`;
+    const message = `Hola, te comparto el comprobante de pago N° ${receiptNumber} de ${record?.studentName || record?.invoiceName || 'catequesis'}.`;
+    const whatsappLink = document.createElement('a');
+    whatsappLink.href = buildWhatsAppLink(contact.phone, message);
+    whatsappLink.target = '_blank';
+    whatsappLink.rel = 'noopener noreferrer';
+    whatsappLink.click();
+
+    const link = document.createElement('a');
+    link.href = imageUrl;
+    link.download = fileName;
+    link.click();
+
+    setPaymentWhatsappTargetModal(null);
+    notify(`Abriendo el chat de ${contact.owner}. Adjunta la imagen descargada para enviarla.`, 'info');
+  };
+
+  const handleSendPaymentProofWhatsApp = () => {
+    const record = paymentProofModal?.record;
+    if (!record || !paymentProofModal?.imageUrl) return;
+    const contacts = getPaymentProofWhatsappContacts(record);
+    if (contacts.length === 0) {
+      notify('No hay teléfonos registrados para este catequizando.', 'warning');
+      return;
+    }
+    if (contacts.length > 1) {
+      setPaymentWhatsappTargetModal({ record, imageUrl: paymentProofModal.imageUrl, contacts });
+      return;
+    }
+    handleOpenPaymentProofWhatsApp(record, paymentProofModal.imageUrl, contacts[0]);
+  };
+
   const handlePrintPaymentReceipt = async (record) => {
     try {
       const meta = await getReceiptMeta(record);
@@ -3717,19 +3853,19 @@ ${catechistName}`;
   <title>Comprobante de Pago N° ${meta.receiptNumber}</title>
   <style>
     @page {
-      size: 57mm auto;
+      size: 58mm auto;
       margin: 0;
     }
     * { box-sizing: border-box; }
     body {
-      width: 57mm;
-      max-width: 57mm;
-      margin: 0 auto;
+      width: 58mm;
+      max-width: 58mm;
+      margin: 0;
       padding: 0;
       background: #fff;
     }
     @media print {
-      body { width: 57mm; padding: 0; }
+      body { width: 58mm; padding: 0; margin: 0; }
     }
   </style>
 </head>
@@ -3762,7 +3898,7 @@ ${catechistName}`;
         }
       });
 
-      const pdfWidthMm = 57;
+      const pdfWidthMm = 58;
       const imgAspectRatio = (img.naturalHeight || 400) / (img.naturalWidth || 216);
       const pdfHeightMm = Math.round(pdfWidthMm * imgAspectRatio);
 
@@ -4583,6 +4719,7 @@ ${catechistName}`;
     paymentCurrentPage,
     paymentPageSize,
     groups,
+    allUsers,
     activeViewMode,
     effectiveDiaconiaId,
     currentUserKey,
@@ -5170,6 +5307,7 @@ ${catechistName}`;
             getAttendanceStatus={getAttendanceStatus}
             handleMarkAttendance={handleMarkAttendance}
             handleOpenAttendanceMessage={handleOpenAttendanceMessage}
+            handleCopyAttendanceContact={handleCopyAttendanceContact}
             handleCreateGroup={handleCreateGroup}
             newGroupName={newGroupName}
             setNewGroupName={setNewGroupName}
@@ -5344,6 +5482,7 @@ ${catechistName}`;
             setPaymentForm={setPaymentForm}
             handleAddPaymentRecord={handleAddPaymentRecord}
             handleViewPaymentQr={handleViewPaymentQr}
+            handleSharePaymentProof={handleSharePaymentProof}
             handleGeneratePaymentProofPdf={handleGeneratePaymentProofPdf}
             handlePrintPaymentReceipt={handlePrintPaymentReceipt}
             handleDeletePaymentRecord={handleDeletePaymentRecord}
@@ -5436,6 +5575,7 @@ ${catechistName}`;
             filteredPaymentRecords={filteredPaymentRecords}
             paginatedPaymentRecords={paginatedPaymentRecords}
             handleViewPaymentQr={handleViewPaymentQr}
+            handleSharePaymentProof={handleSharePaymentProof}
             handleGeneratePaymentProofPdf={handleGeneratePaymentProofPdf}
             handlePrintPaymentReceipt={handlePrintPaymentReceipt}
             handleDeletePaymentRecord={handleDeletePaymentRecord}
@@ -6098,6 +6238,16 @@ ${catechistName}`;
             <textarea readOnly value={messageModal.message} rows="9" className={`w-full rounded-lg px-3 py-2 text-sm resize-none ${inputBgClass}`} />
             <div className="flex flex-wrap justify-end gap-2">
               <button onClick={() => navigator.clipboard.writeText(messageModal.message)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold">Copiar mensaje</button>
+              <button
+                type="button"
+                onClick={() => handleCopyAttendanceContact(
+                  messageModal.channel === 'email' ? messageModal.student.parentEmail : messageModal.student.parentPhone,
+                  messageModal.channel === 'email' ? 'Correo' : 'Teléfono'
+                )}
+                className="bg-slate-600 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-xs font-bold"
+              >
+                <MaterialIcon name="content_copy" /> Copiar {messageModal.channel === 'email' ? 'correo' : 'teléfono'}
+              </button>
               {messageModal.channel === 'email' && (
                 <button
                   type="button"
@@ -6131,7 +6281,7 @@ ${catechistName}`;
               />
             </div>
 
-            <div className="flex gap-2 px-4 pb-4 pt-2 shrink-0">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 px-4 pb-4 pt-2 shrink-0">
               <button
                 type="button"
                 onClick={() => {
@@ -6143,6 +6293,13 @@ ${catechistName}`;
                 className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-center px-4 py-2 rounded-lg text-xs font-bold transition"
               >
                 Descargar imagen
+              </button>
+              <button
+                type="button"
+                onClick={handleSendPaymentProofWhatsApp}
+                className="bg-emerald-700 hover:bg-emerald-800 text-white px-3 py-2 rounded-lg text-xs font-bold transition"
+              >
+                <MaterialIcon name="phone" /> WhatsApp
               </button>
               <button
                 type="button"
@@ -6164,6 +6321,38 @@ ${catechistName}`;
                 Copiar imagen
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {paymentWhatsappTargetModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+          <div className={`${cardBgClass} w-full max-w-md space-y-4 rounded-2xl border border-slate-700 p-5 shadow-2xl`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold">¿A qué teléfono enviar el comprobante?</h3>
+                <p className="mt-1 text-xs text-slate-400">Se abrirá el chat elegido y se descargará la imagen para adjuntarla en WhatsApp.</p>
+              </div>
+              <button type="button" onClick={() => setPaymentWhatsappTargetModal(null)} aria-label="Cerrar" className="rounded-lg bg-slate-700 px-3 py-1.5 text-sm font-bold text-white hover:bg-slate-600">✕</button>
+            </div>
+            <div className="max-h-[55vh] space-y-2 overflow-y-auto">
+              {paymentWhatsappTargetModal.contacts.map((contact, index) => (
+                <button
+                  key={`${contact.phone}-${index}`}
+                  type="button"
+                  onClick={() => handleOpenPaymentProofWhatsApp(paymentWhatsappTargetModal.record, paymentWhatsappTargetModal.imageUrl, contact)}
+                  className="flex w-full items-center gap-3 rounded-xl border border-slate-700 bg-slate-800/70 p-3 text-left transition hover:border-emerald-500 hover:bg-emerald-900/20"
+                >
+                  <MaterialIcon name="phone" />
+                  <span className="min-w-0">
+                    <span className="block font-semibold">{contact.phone}</span>
+                    <span className="block text-xs text-slate-400">{contact.owner}{contact.type ? ` · ${contact.type}` : ''}</span>
+                  </span>
+                  <MaterialIcon name="open_in_new" />
+                </button>
+              ))}
+            </div>
+            <button type="button" onClick={() => setPaymentWhatsappTargetModal(null)} className="w-full rounded-lg bg-slate-700 px-4 py-2 text-xs font-bold text-white hover:bg-slate-600">Cancelar</button>
           </div>
         </div>
       )}

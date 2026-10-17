@@ -25,6 +25,6 @@ export const DEFAULT_ADMIN_EMAILS = ['cmisra2407@gmail.com', 'asiscate.elcarmen@
 
 export const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwLDw_VwtdUkl0OfQ6Etyxpc5abgTTdumBNKGJoaZzHecnFTMk8FShACFuwqA07qsWT/exec";
 
-export const VITE_GEMINI_API_KEY = "AQ.Ab8RN6L_WzusENEtvDExhvom--Po7Jghv_HQODOV4o1-rUa57A";
+export const VITE_GEMINI_API_KEY = "";
 
-export const GEMINI_API_KEY = "AQ.Ab8RN6L_WzusENEtvDExhvom--Po7Jghv_HQODOV4o1-rUa57A";
+export const GEMINI_API_KEY = "";

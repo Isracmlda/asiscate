@@ -792,7 +792,7 @@ export default function EnrollmentView({
 
           const payloadQr = record.id || '';
 
-          const rawQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=2&ecc=L&data=${encodeURIComponent(payloadQr)}`;
+          const rawQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=4&ecc=L&data=${encodeURIComponent(payloadQr)}`;
           let qrUrl = rawQrUrl;
           try {
             const qrRes = await fetch(rawQrUrl);
@@ -814,54 +814,53 @@ export default function EnrollmentView({
           const totalText = `₡${record.amount.toLocaleString('es-CR')}`;
 
           const receiptHtml = `
-            <div style="width: 216px; max-width: 216px; margin: 0 auto; padding: 8px 6px; font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; color: #000; background: #fff; font-size: 10.5px; line-height: 1.3; box-sizing: border-box; text-align: left;">
-              <div style="display: flex; align-items: center; gap: 8px; padding-bottom: 6px; border-bottom: 1.5px dashed #000;">
-                <img src="/favicon.svg" style="width: 52px; height: 52px; flex-shrink: 0;" alt="AsisCate" />
-                <div style="flex: 1; min-width: 0;">
-                  <div style="font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: 0.3px; color: #000; line-height: 1.2;">COMPROBANTE DE PAGO</div>
-                  <div style="font-size: 8.5px; font-weight: 700; color: #000; margin: 2px 0;">Parroquia Ntra. Sra. de ${parishName}</div>
-                  <div style="font-size: 10px; font-weight: 800; color: #000; margin-top: 3px;">N° ${formattedNum}</div>
+            <div style="width: 58mm; max-width: 58mm; margin: 0.5mm 0 0; padding: 0; font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; color: #000; background: #fff; font-size: 10.5px; line-height: 1.3; box-sizing: border-box; text-align: left;">
+              <div style="display: flex; align-items: flex-start; gap: 8px; padding-bottom: 3px; border-bottom: 1.5px dashed #000;">
+                <img src="/favicon.svg" style="width: 42px; height: 42px; flex-shrink: 0;" alt="AsisCate" />
+                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0;">
+                  <div style="font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: 0; white-space: nowrap; color: #000; line-height: 1.2;">COMPROBANTE DE PAGO</div>
+                  <div style="margin: 0; padding: 0; line-height: 10px; overflow-wrap: anywhere;"><span style="font-size: 9.5px; font-weight: 700; color: #000;">Parroquia Ntra. Sra. de ${parishName}</span><br /><span style="font-size: 8.5px; color: #000;"><strong>Emitida por:</strong> ${record.issuedBy || 'Usuario'}</span><br /><span style="display: inline-block; font-size: 10px; font-weight: 800; color: #000; line-height: 11px; margin: 0;">N° ${formattedNum}</span></div>
                 </div>
               </div>
 
-              <div style="display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #000; font-size: 9.5px; color: #000;">
+              <div style="display: flex; justify-content: space-between; gap: 6px; padding: 3px 0; border-bottom: 1.5px dashed #000; font-size: 9.5px; color: #000;">
                 <span><strong>Fecha:</strong> ${dateText}</span>
                 <span><strong>Hora:</strong> ${timeText}</span>
               </div>
 
-              <div style="padding: 5px 0; border-bottom: 1.5px dashed #000; color: #000;">
-                <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">A nombre de:</span>
-                  <span style="font-size: 11px; font-weight: 700; word-break: break-word;">${record.invoiceName}</span>
+              <div style="padding: 4px 0; color: #000;">
+                <div style="margin-bottom: 4px; font-size: 11px; line-height: 1.2; color: #000;">
+                  <span style="font-size: 8.5px; font-weight: 800; text-transform: uppercase;">A nombre de:</span>
+                  <span style="font-size: 11px; font-weight: 700; overflow-wrap: anywhere;"> ${record.invoiceName}</span>
                 </div>
-                <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Concepto:</span>
-                  <span style="font-size: 11px; word-break: break-word;">${record.concept}</span>
+                <div style="display: flex; align-items: stretch; gap: 8px; padding: 3px 0 4px;">
+                  <div style="flex: 1; min-width: 0; padding-right: 7px; border-right: 1px solid #111;">
+                    <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Grupo:</div>
+                    <div style="margin-top: 2px; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; color: #000;">${record.groupName || 'Sin grupo'}</div>
+                  </div>
+                  <div style="flex: 1; min-width: 0; padding-left: 1px;">
+                    <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Método de pago:</div>
+                    <div style="margin-top: 2px; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; color: #000;">${record.paymentMethod || 'Efectivo'}</div>
+                  </div>
                 </div>
-                <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Método de pago:</span>
-                  <span style="font-size: 11px; word-break: break-word;">${record.paymentMethod}</span>
-                </div>
-                <div style="margin-bottom: 5px;">
-                  <span style="display: block; font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Factura emitida por:</span>
-                  <span style="font-size: 11px; word-break: break-word;">${record.issuedBy}</span>
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; padding: 4px 0; border-top: 2px dashed #000; border-bottom: 2px dashed #000;">
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Concepto:</div>
+                    <div style="margin-top: 2px; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; color: #000;">${record.concept}</div>
+                  </div>
+                  <div style="flex: 0 0 auto; max-width: 45%; text-align: right;">
+                    <div style="font-size: 8.5px; font-weight: 800; text-transform: uppercase; color: #000;">Total:</div>
+                    <div style="margin-top: 2px; font-size: 14px; font-weight: 900; overflow-wrap: anywhere; color: #000;">${totalText}</div>
+                  </div>
                 </div>
               </div>
 
-              <div style="padding: 6px 0; border-bottom: 1.5px dashed #000; display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; font-weight: 900; color: #000;">
-                <span>TOTAL PAGADO:</span>
-                <span style="font-size: 14px; font-weight: 900; color: #000;">${totalText}</span>
+              <div style="text-align: center; padding: 4px 0 2px;">
+                <img src="${qrUrl}" style="width: 72px; height: 72px; margin: 0 auto; display: block; border: 1px solid #000; padding: 0; background: #ffffff; image-rendering: crisp-edges;" alt="QR Verificación" />
               </div>
 
-              <div style="text-align: center; padding: 8px 0 4px;">
-                <img src="${qrUrl}" style="width: 105px; height: 105px; margin: 0 auto; display: block; border: 1.5px solid #000; padding: 4px; background: #ffffff; image-rendering: pixelated; image-rendering: crisp-edges;" alt="QR Verificación" />
-                <div style="font-size: 8px; font-weight: 700; color: #000; margin-top: 3px;">Escanear para verificar comprobante</div>
-              </div>
-
-              <div style="text-align: center; font-size: 8.5px; color: #000; margin-top: 4px; line-height: 1.35;">
+              <div style="text-align: center; font-size: 8.5px; color: #000; margin-top: 1px; line-height: 1.2;">
                 <div style="font-weight: 800;">¡Muchas gracias por su aporte!</div>
-                <div style="font-weight: 600;">Documento válido como comprobante oficial.</div>
-                <div style="font-weight: 800; margin-top: 2px; color: #000;">AsisCate • Sistema Parroquial</div>
               </div>
             </div>
           `;
@@ -870,7 +869,7 @@ export default function EnrollmentView({
           container.style.position = 'fixed';
           container.style.left = '0';
           container.style.top = '0';
-          container.style.width = '216px';
+          container.style.width = '58mm';
           container.style.opacity = '0';
           container.style.pointerEvents = 'none';
           container.style.zIndex = '-9999';
@@ -912,7 +911,7 @@ export default function EnrollmentView({
             }
           });
 
-          const pdfWidthMm = 57;
+          const pdfWidthMm = 58;
           const imgAspectRatio = (img.naturalHeight || 400) / (img.naturalWidth || 216);
           const pdfHeightMm = Math.round(pdfWidthMm * imgAspectRatio);
 

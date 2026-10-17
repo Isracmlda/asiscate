@@ -105,6 +105,7 @@ export function DashboardView({
   getAttendanceStatus,
   handleMarkAttendance,
   handleOpenAttendanceMessage,
+  handleCopyAttendanceContact,
   handleCreateGroup,
   newGroupName,
   setNewGroupName,
@@ -421,7 +422,7 @@ export function DashboardView({
                     const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
                     const mobileDisplayPhone = formatDisplayPhone(displayPhone);
                     const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
-                    const canContactForAbsence = !isCatechistAttendanceGroup || status === 'absent';
+                    const canContactForAbsence = status !== null && (!isCatechistAttendanceGroup || status === 'absent');
                     return (
                       <div key={student.id} className="p-4 space-y-3">
                         <div className="flex min-w-0 items-start justify-between gap-2">
@@ -429,8 +430,10 @@ export function DashboardView({
                             <h4 className="truncate font-bold text-sm">{student.fullName || student.name}</h4>
                           </div>
                           <div className="flex shrink-0 gap-1">
-                            <button disabled={!displayEmail || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'} aria-label={displayEmail ? `Enviar correo a ${displayEmail}` : 'Correo no registrado'} className="attendance-email-button rounded-md p-2 text-[11px] font-semibold"><MaterialIcon name="mail" /></button>
-                            <button disabled={!displayPhone || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={canContactForAbsence ? mobileDisplayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'} aria-label={mobileDisplayPhone ? `Contactar al ${mobileDisplayPhone}` : 'Teléfono no registrado'} className="attendance-phone-button max-w-28 truncate rounded-md px-2 py-1 text-[11px] font-semibold"><MaterialIcon name="phone" /> {mobileDisplayPhone || 'Sin teléfono'}</button>
+                            <button disabled={!displayEmail || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'} aria-label={displayEmail ? `Enviar correo a ${displayEmail}` : 'Correo no registrado'} className="attendance-email-button rounded-md p-2 text-[11px] font-semibold"><MaterialIcon name="mail" /></button>
+                            <button type="button" disabled={!displayEmail} onClick={() => handleCopyAttendanceContact(displayEmail, 'Correo')} title={displayEmail ? 'Copiar correo' : 'Correo no registrado'} aria-label="Copiar correo" className="rounded-md border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
+                            <button disabled={!displayPhone || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? mobileDisplayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'} aria-label={mobileDisplayPhone ? `Contactar al ${mobileDisplayPhone}` : 'Teléfono no registrado'} className="attendance-phone-button max-w-28 truncate rounded-md px-2 py-1 text-[11px] font-semibold"><MaterialIcon name="phone" /> {mobileDisplayPhone || 'Sin teléfono'}</button>
+                            <button type="button" disabled={!displayPhone} onClick={() => handleCopyAttendanceContact(displayPhone, 'Teléfono')} title={displayPhone ? 'Copiar teléfono' : 'Teléfono no registrado'} aria-label="Copiar teléfono" className="rounded-md border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
                           </div>
                         </div>
 
@@ -493,7 +496,7 @@ export function DashboardView({
                         const displayEmail = student.email || student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
                         const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
                         const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
-                        const canContactForAbsence = !isCatechistAttendanceGroup || status === 'absent';
+                        const canContactForAbsence = status !== null && (!isCatechistAttendanceGroup || status === 'absent');
 
                         return (
                           <tr key={student.id} className="hover:bg-slate-700/20 transition-colors">
@@ -539,19 +542,21 @@ export function DashboardView({
                                 <button
                                   disabled={!displayEmail || !canContactForAbsence}
                                   onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')}
-                                  title={canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'}
+                                  title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'}
                                   className="attendance-email-button max-w-64 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
                                 >
                                   {displayEmail ? <><MaterialIcon name="mail" /> {displayEmail}</> : 'Correo no registrado'}
                                 </button>
+                                <button type="button" disabled={!displayEmail} onClick={() => handleCopyAttendanceContact(displayEmail, 'Correo')} title={displayEmail ? 'Copiar correo' : 'Correo no registrado'} aria-label="Copiar correo" className="rounded-lg border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
                                 <button
                                   disabled={!displayPhone || !canContactForAbsence}
                                   onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')}
-                                  title={canContactForAbsence ? displayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'}
+                                  title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? displayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'}
                                   className="attendance-phone-button max-w-52 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
                                 >
                                   {displayPhone ? <><MaterialIcon name="phone" /> {displayPhone}</> : 'Teléfono no registrado'}
                                 </button>
+                                <button type="button" disabled={!displayPhone} onClick={() => handleCopyAttendanceContact(displayPhone, 'Teléfono')} title={displayPhone ? 'Copiar teléfono' : 'Teléfono no registrado'} aria-label="Copiar teléfono" className="rounded-lg border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
                               </div>
                             </td>
                           </tr>

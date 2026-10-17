@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { MaterialIcon } from '../Shared/MaterialIcon';
 import { PaymentsView } from './PaymentsView';
+import { getStudentContactEmail } from '../../services/firestoreDataMappers';
 
 export function ReportsView({
   cardBgClass,
@@ -100,6 +101,7 @@ export function ReportsView({
   setPaymentForm,
   handleAddPaymentRecord,
   handleViewPaymentQr,
+  handleSharePaymentProof,
   handleGeneratePaymentProofPdf,
   handlePrintPaymentReceipt,
   handleDeletePaymentRecord,
@@ -163,7 +165,8 @@ export function ReportsView({
                   <MaterialIcon name="arrow_back" /> Grupos
                 </button>
               )}
-              <div className="inline-flex max-w-full flex-wrap gap-1 rounded-full bg-slate-900/70 p-1">
+              <div className="min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-full">
+                <div className="inline-flex w-max flex-nowrap gap-1 whitespace-nowrap rounded-full bg-slate-900/70 p-1">
                 {(selectedIsCatechistGroup
                   ? ['asistencia', 'lista', 'estadisticas']
                   : ['asistencia', 'lista', 'pagos', 'estadisticas', 'certificados']).map(tab => (
@@ -172,7 +175,7 @@ export function ReportsView({
                     type="button"
                     onClick={() => setReportSubTab(tab)}
                     aria-pressed={reportSubTab === tab}
-                    className={`rounded-full px-3 py-2 text-xs font-bold transition-all duration-200 ease-out ${
+                    className={`shrink-0 whitespace-nowrap rounded-full px-3 py-2 text-xs font-bold transition-all duration-200 ease-out ${
                       reportSubTab === tab
                         ? 'scale-[1.02] bg-red-800 text-white shadow-md shadow-red-950/30'
                         : 'text-slate-400 hover:bg-slate-700/70 hover:text-slate-100'
@@ -181,6 +184,7 @@ export function ReportsView({
                     {tab === 'asistencia' ? 'Asistencia' : tab === 'lista' ? 'Lista' : tab === 'pagos' ? 'Pagos' : tab === 'estadisticas' ? 'Estadísticas' : 'Certificados'}
                   </button>
                 ))}
+                </div>
               </div>
               {showGroupSettings && (
                 <button
@@ -678,7 +682,7 @@ export function ReportsView({
                   <div className="space-y-3">
                     {groupStudents.map(student => {
                       const displayName = student.fullName || student.name || 'Sin nombre';
-                      const displayEmail = student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
+                      const displayEmail = getStudentContactEmail(student);
                       const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
                       return (
                         <div key={student.id} className={`${cardBgClass} rounded-xl border p-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`}>
@@ -760,6 +764,7 @@ export function ReportsView({
               filteredPaymentRecords={filteredPaymentRecords}
               paginatedPaymentRecords={paginatedPaymentRecords}
               handleViewPaymentQr={handleViewPaymentQr}
+              handleSharePaymentProof={handleSharePaymentProof}
               handleGeneratePaymentProofPdf={handleGeneratePaymentProofPdf}
               handlePrintPaymentReceipt={handlePrintPaymentReceipt}
               handleDeletePaymentRecord={handleDeletePaymentRecord}
