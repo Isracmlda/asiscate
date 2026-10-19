@@ -1,27 +1,45 @@
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '../config/firebase';
+import { auth } from '../config/firebase';
 
-const createSessionCall = httpsCallable(functions, 'createStudentAttendanceQrSession');
-const setSessionOpenCall = httpsCallable(functions, 'setStudentAttendanceQrSessionOpen');
-const getSessionInfoCall = httpsCallable(functions, 'getStudentAttendanceQrSessionInfo');
-const checkInCall = httpsCallable(functions, 'checkInStudentWithAttendanceQr');
+const workerUrl = String(import.meta.env.VITE_STUDENT_ATTENDANCE_WORKER_URL || '').replace(/\/+$/, '');
 
-export async function createStudentAttendanceQrSession(data) {
-  const result = await createSessionCall(data);
-  return result.data;
+async function callAttendanceWorker(path, { method = 'GET', data, requiresLogin = false } = {}) {
+  if (!workerUrl) {
+    throw new Error('El servicio de asistencia QR todavía no está configurado.');
+  }
+
+  const headers = {};
+  if (data !== undefined) headers['Content-Type'] = 'application/json';
+  if (requiresLogin) {
+    const user = auth.currentUser;
+    if (!user) throw new Error('Inicia sesión para realizar esta acción.');
+    headers.Authorization = `Bearer ${await user.getIdToken()}`;
+  }
+
+  const response = await fetch(`${workerUrl}${path}`, {
+    method,
+    headers,
+    ...(data !== undefined ? { body: JSON.stringify(data) } : {})
+  });
+  let result = {};
+  try { result = await response.json(); } catch { /* La respuesta de error puede no incluir JSON. */ }
+  if (!response.ok) throw new Error(result.message || 'No se pudo completar la operación de asistencia.');
+  return result;
 }
 
-export async function setStudentAttendanceQrSessionOpen(sessionId, isOpen) {
-  const result = await setSessionOpenCall({ sessionId, isOpen });
-  return result.data;
+export function createStudentAttendanceQrSession(data) {
+  return callAttendanceWorker('/sessions', { method: 'POST', data, requiresLogin: true });
 }
 
-export async function getStudentAttendanceQrSessionInfo(sessionId) {
-  const result = await getSessionInfoCall({ sessionId });
-  return result.data;
+export function setStudentAttendanceQrSessionOpen(sessionId, isOpen) {
+  return callAttendanceWorker(`/sessions/${encodeURIComponent(sessionId)}/open`, {
+    method: 'PATCH', data: { isOpen }, requiresLogin: true
+  });
 }
 
-export async function checkInStudentWithAttendanceQr(data) {
-  const result = await checkInCall(data);
-  return result.data;
+export function getStudentAttendanceQrSessionInfo(sessionId) {
+  return callAttendanceWorker(`/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+export function checkInStudentWithAttendanceQr(data) {
+  return callAttendanceWorker('/check-ins', { method: 'POST', data });
 }

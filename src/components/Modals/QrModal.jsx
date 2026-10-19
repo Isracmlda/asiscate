@@ -13,6 +13,7 @@ export function QrModal({
 }) {
   const cardPreviewRef = useRef(null);
   const [cardScale, setCardScale] = useState(1);
+  const [loadedImageUrl, setLoadedImageUrl] = useState('');
 
   useEffect(() => {
     const preview = cardPreviewRef.current;
@@ -29,6 +30,7 @@ export function QrModal({
   if (!qrModal) return null;
   const isCatechistCard = qrModal.type === 'catechist';
   const cardLevel = (qrModal.level || '').replace(/\s*\(Primera Comunión\)$/i, '').trim();
+  const qrImageReady = loadedImageUrl === qrModal.imageUrl;
 
   return (
     <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[60] flex justify-center items-center p-4">
@@ -93,11 +95,12 @@ export function QrModal({
                     <div className="w-[42%] h-full flex flex-col items-center justify-center pl-4">
                       <div className="h-[140px] w-[140px] border border-black bg-white p-1">
                         <img
+                          key={qrModal.imageUrl}
                           src={qrModal.imageUrl}
                           alt="Código QR"
                           className="h-full w-full object-contain [image-rendering:pixelated] [image-rendering:crisp-edges]"
-                          onLoad={() => setQrCardLoading(false)}
-                          onError={() => setQrCardLoading(false)}
+                          onLoad={() => { setLoadedImageUrl(qrModal.imageUrl); setQrCardLoading(false); }}
+                          onError={() => { setLoadedImageUrl(''); setQrCardLoading(false); }}
                         />
                       </div>
                       <p className="text-[10px] font-medium text-[#8c7355] mt-2 italic">
@@ -110,8 +113,8 @@ export function QrModal({
             </div>
 
             <div className="flex gap-2">
-              <button type="button" onClick={handleDownloadQrCardImage} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold">Descargar carnet</button>
-              <button type="button" onClick={handleCopyQrCardImage} className="flex-1 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-xs font-bold">Copiar carnet</button>
+              <button type="button" disabled={!qrImageReady} onClick={handleDownloadQrCardImage} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold disabled:cursor-wait disabled:opacity-50">{qrImageReady ? 'Descargar carnet' : 'Cargando código…'}</button>
+              <button type="button" disabled={!qrImageReady} onClick={handleCopyQrCardImage} className="flex-1 bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-xs font-bold disabled:cursor-wait disabled:opacity-50">Copiar carnet</button>
             </div>
           </>
         )}

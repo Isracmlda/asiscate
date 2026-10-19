@@ -7,6 +7,16 @@ import {
   setStudentAttendanceQrSessionOpen
 } from '../../services/studentAttendanceQrService';
 
+const attendanceBrowserGateway = String(import.meta.env.VITE_STUDENT_ATTENDANCE_WORKER_URL || '').replace(/\/+$/, '');
+
+function buildAttendanceBrowserLink(parameters, fallbackOrigin) {
+  const url = new URL(attendanceBrowserGateway ? `${attendanceBrowserGateway}/open` : fallbackOrigin);
+  Object.entries(parameters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
+  });
+  return url.toString();
+}
+
 const getCurrentDeviceLocation = () => new Promise((resolve, reject) => {
   if (!navigator.geolocation) {
     reject(new Error('Este dispositivo no ofrece acceso a la ubicación.'));
@@ -158,16 +168,14 @@ export function DashboardView({
   const selectedDashboardGroup = visibleGroups.find(group => group.id === dashboardGroupId);
   const isCatechistAttendanceGroup = selectedAttendanceGroup?.type === 'catequistas';
   const studentQrStorageKey = selectedGroupId && attendanceDate
-    ? `asiscate-student-attendance-qr:${selectedGroupId}:${attendanceDate}`
+    ? `asiscate-student-attendance-qr:${selectedGroupId}:${attendanceDate}:${attendanceType}`
     : '';
   const studentAttendanceQrUrl = studentAttendanceQrSession?.sessionId
     && studentAttendanceQrSession.groupId === selectedGroupId
     && studentAttendanceQrSession.date === attendanceDate
     ? (() => {
-      const url = new URL(typeof window === 'undefined' ? `https://${firebaseConfig.projectId}.firebaseapp.com` : window.location.origin);
-      url.searchParams.set('studentAttendanceQr', '1');
-      url.searchParams.set('sessionId', studentAttendanceQrSession.sessionId);
-      return url.toString();
+      const fallbackOrigin = typeof window === 'undefined' ? `https://${firebaseConfig.projectId}.firebaseapp.com/` : window.location.origin;
+      return buildAttendanceBrowserLink({ studentAttendanceQr: '1', sessionId: studentAttendanceQrSession.sessionId }, fallbackOrigin);
     })()
     : '';
 
@@ -204,16 +212,13 @@ export function DashboardView({
     setStudentQrError('');
     try {
       const position = await getCurrentDeviceLocation();
-      if (position.coords.accuracy > 100) {
-        throw new Error('La ubicación del dispositivo no tiene suficiente precisión. Inténtalo cerca de una ventana o en un espacio abierto.');
-      }
       const session = await createStudentAttendanceQrSession({
         groupId: selectedGroupId,
         date: attendanceDate,
         label: attendanceLabel,
+        attendanceType,
         latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-        accuracy: position.coords.accuracy
+        longitude: position.coords.longitude
       });
       setStudentAttendanceQrSession(session);
       if (studentQrStorageKey) {
@@ -268,12 +273,12 @@ export function DashboardView({
     if (!selectedAttendanceGroup || typeof window === 'undefined') return '';
     const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
     const browserOrigin = isLocalhost ? window.location.origin : `https://${firebaseConfig.projectId}.firebaseapp.com`;
-    const url = new URL(browserOrigin);
-    url.searchParams.set('formationCheckin', '1');
-    url.searchParams.set('groupId', selectedAttendanceGroup.id);
-    url.searchParams.set('date', attendanceDate);
-    if (attendanceLabel) url.searchParams.set('label', attendanceLabel);
-    return url.toString();
+    return buildAttendanceBrowserLink({
+      formationCheckin: '1',
+      groupId: selectedAttendanceGroup.id,
+      date: attendanceDate,
+      label: attendanceLabel
+    }, browserOrigin);
   })();
   const getSelectedAttendanceRecord = student => (student.attendance || []).find(record => (
     record.date === attendanceDate && (record.type || 'encuentro') === attendanceType
@@ -607,9 +612,9 @@ export function DashboardView({
                     <MaterialIcon name="qr_code_2" /> QR para registrar asistencia
                   </button>
                 )}
-                {!isCatechistAttendanceGroup && attendanceType === 'encuentro' && (
+                {!isCatechistAttendanceGroup && ['encuentro', 'misa'].includes(attendanceType) && (
                   <button type="button" onClick={() => { setStudentQrCopied(false); setIsStudentAttendanceQrOpen(true); }} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-emerald-500">
-                    <MaterialIcon name="qr_code_2" /> QR para asistencia de catequizandos
+                    <MaterialIcon name="qr_code_2" /> QR para asistencia de {attendanceType === 'misa' ? 'misa' : 'catequizandos'}
                   </button>
                 )}
                 <button
@@ -936,7 +941,7 @@ export function DashboardView({
           <div role="dialog" aria-modal="true" aria-labelledby="student-attendance-qr-title" className={`${cardBgClass} w-full max-w-lg overflow-hidden rounded-2xl border shadow-2xl`}>
             <div className="flex items-center justify-between border-b border-slate-500/20 p-4 sm:p-5">
               <div>
-                <h3 id="student-attendance-qr-title" className="text-lg font-bold">Asistencia del encuentro</h3>
+                <h3 id="student-attendance-qr-title" className="text-lg font-bold">Asistencia de {attendanceType === 'misa' ? 'misa' : 'encuentro'}</h3>
                 <p className="mt-1 text-xs text-slate-400">{selectedAttendanceGroup?.name || 'Grupo'} · {attendanceDate}</p>
               </div>
               <button type="button" onClick={() => setIsStudentAttendanceQrOpen(false)} aria-label="Cerrar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-500/10"><MaterialIcon name="close" /></button>
@@ -954,10 +959,10 @@ export function DashboardView({
                   <div className={`rounded-2xl p-3 shadow-lg ${studentAttendanceQrSession.isOpen && !studentAttendanceQrSession.expired ? 'bg-white' : 'bg-white opacity-50'}`}>
                     <img src={`https://api.qrserver.com/v1/create-qr-code/?size=640x640&margin=12&ecc=H&data=${encodeURIComponent(studentAttendanceQrUrl)}`} alt="Código QR para registrar asistencia al encuentro" className="h-60 w-60 sm:h-72 sm:w-72" />
                   </div>
-                  <p className="max-w-sm text-sm text-slate-400">Escanea este QR y luego escanea el carnet del catequizando. La ubicación solo se comprueba para validar que esté dentro de 200 metros; no se guarda.</p>
+                  <p className="max-w-sm text-sm text-slate-400">Escanea este QR y luego escanea el carnet del catequizando. Debe estar lo suficientemente cerca del área para marcar asistencia; su ubicación no se guarda.</p>
                   <div className="grid w-full max-w-md grid-cols-1 gap-2 sm:grid-cols-3">
                     <button type="button" onClick={handleCopyStudentQrLink} className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-500/30 px-2 py-3 text-xs font-bold hover:bg-slate-500/10"><MaterialIcon name={studentQrCopied ? 'check' : 'content_copy'} />{studentQrCopied ? 'Enlace copiado' : 'Copiar enlace'}</button>
-                    <a href={`https://wa.me/?text=${encodeURIComponent(`Registra tu asistencia al encuentro: ${studentAttendanceQrUrl}`)}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-2 py-3 text-xs font-bold text-white hover:bg-emerald-500"><MaterialIcon name="chat" /> WhatsApp</a>
+                    <a href={`https://wa.me/?text=${encodeURIComponent(`Registra tu asistencia a ${attendanceType === 'misa' ? 'la misa' : 'el encuentro'}: ${studentAttendanceQrUrl}`)}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-2 py-3 text-xs font-bold text-white hover:bg-emerald-500"><MaterialIcon name="chat" /> WhatsApp</a>
                     {studentAttendanceQrSession.expired ? (
                       <button type="button" onClick={createStudentQrSession} disabled={studentQrBusy} className="flex items-center justify-center gap-1.5 rounded-xl bg-sky-600 px-2 py-3 text-xs font-bold text-white hover:bg-sky-500 disabled:opacity-60"><MaterialIcon name="autorenew" /> Nuevo QR</button>
                     ) : (
@@ -969,13 +974,13 @@ export function DashboardView({
                 <>
                   <div className="rounded-2xl border border-dashed border-emerald-500/30 bg-emerald-500/5 p-8">
                     <MaterialIcon name="my_location" className="text-5xl text-emerald-500" />
-                    <p className="mt-3 max-w-sm text-sm text-slate-400">Al abrir el registro se guardará la ubicación de este dispositivo como referencia del encuentro. El QR solo aceptará registros a 200 metros o menos.</p>
+                    <p className="mt-3 max-w-sm text-sm text-slate-400">Al abrir el registro se guardará la ubicación de este dispositivo como referencia. Los catequizandos deberán estar lo suficientemente cerca del área para marcar asistencia.</p>
                   </div>
                   <button type="button" onClick={createStudentQrSession} disabled={studentQrBusy} className="flex w-full max-w-sm items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-60"><MaterialIcon name={studentQrBusy ? 'hourglass_empty' : 'qr_code_2'} />{studentQrBusy ? 'Obteniendo ubicación y creando QR…' : 'Abrir registro y generar QR'}</button>
                 </>
               )}
               {studentQrError && <p role="alert" className="w-full max-w-md rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-xs font-semibold text-rose-400">{studentQrError}</p>}
-              <p className="text-[11px] text-slate-500">La sesión se cierra manualmente desde este modal y vence automáticamente después de 6 horas.</p>
+              <p className="text-[11px] text-slate-500">El registro permanece abierto hasta que lo cierres manualmente desde este modal.</p>
             </div>
           </div>
         </div>

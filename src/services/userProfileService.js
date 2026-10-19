@@ -1,10 +1,16 @@
-import { deleteDoc, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, doc, getDoc, getDocFromServer, setDoc, updateDoc } from 'firebase/firestore';
 
 const DEFAULT_ADMIN_EMAILS = ['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'];
 
 export async function resolveUserProfile(db, currentUser) {
   const userRef = doc(db, 'users', currentUser.uid);
-  const userSnapshot = await getDoc(userRef);
+  let userSnapshot;
+  try {
+    userSnapshot = await getDocFromServer(userRef);
+  } catch (error) {
+    if (!['unavailable', 'deadline-exceeded'].includes(error?.code)) throw error;
+    userSnapshot = await getDoc(userRef);
+  }
   const email = currentUser.email?.toLowerCase() || '';
   const isDefaultAdmin = DEFAULT_ADMIN_EMAILS.includes(email);
   const catechistRosterRef = email ? doc(db, 'catechistRoster', email) : null;
@@ -13,6 +19,14 @@ export async function resolveUserProfile(db, currentUser) {
 
   if (userSnapshot.exists()) {
     const data = userSnapshot.data();
+    const phoneCode = data.phoneCode || '+506';
+    const legacyPhoneDigits = String(data.phone || '').replace(/\D/g, '');
+    const dialCodeDigits = String(phoneCode).replace(/\D/g, '');
+    const migratedPhoneNumber = !data.phoneNumber && legacyPhoneDigits
+      ? (dialCodeDigits && legacyPhoneDigits.startsWith(dialCodeDigits)
+        ? legacyPhoneDigits.slice(dialCodeDigits.length)
+        : legacyPhoneDigits)
+      : '';
     const applyReminderDefault = data.attendanceRemindersDefaultApplied !== true;
     let role = data.role || 'catequista';
     if (isDefaultAdmin) role = 'admin';
@@ -22,6 +36,8 @@ export async function resolveUserProfile(db, currentUser) {
       name: data.name || currentUser.displayName || 'Usuario',
       email: currentUser.email || data.email,
       role,
+      phoneCode,
+      phoneNumber: data.phoneNumber || migratedPhoneNumber,
       theme: data.theme || 'light',
       navbarColor: data.navbarColor || '#7f1d1d',
       attendanceRemindersEnabled: applyReminderDefault || data.attendanceRemindersEnabled === true
@@ -30,6 +46,7 @@ export async function resolveUserProfile(db, currentUser) {
       name: profile.name,
       email: profile.email,
       role,
+      ...(migratedPhoneNumber ? { phoneNumber: migratedPhoneNumber } : {}),
       ...(applyReminderDefault ? {
         attendanceRemindersEnabled: true,
         attendanceRemindersDefaultApplied: true
@@ -77,6 +94,7 @@ export async function resolveUserProfile(db, currentUser) {
     phoneCode: '+506',
     phoneNumber: '',
     phone: '',
+    territorySetupDismissed: false,
     approved,
     active: true,
     ...(Array.isArray(preregisteredCatechist?.attendance) ? { attendance: preregisteredCatechist.attendance } : {}),

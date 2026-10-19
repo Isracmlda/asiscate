@@ -781,7 +781,7 @@ export function ReportsView({
                           {rosterMode === 'view' ? (
                             <button
                               type="button"
-                              onClick={() => handleGenerateStudentQr?.(student)}
+                              onClick={() => handleGenerateStudentQr?.(String(student.id), student)}
                               title={`Mostrar carnet QR de ${displayName}`}
                               aria-label={`Mostrar carnet QR de ${displayName}`}
                               className="shrink-0 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-600"

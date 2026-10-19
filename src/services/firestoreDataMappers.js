@@ -1,5 +1,5 @@
 export const mapSnapshotDocs = (snapshot) =>
-  snapshot.docs.map((docSnapshot) => ({ id: docSnapshot.id, ...docSnapshot.data() }));
+  snapshot.docs.map((docSnapshot) => ({ ...docSnapshot.data(), id: docSnapshot.id }));
 
 const cleanEmail = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -20,8 +20,8 @@ export const normalizeStudentRecord = (docSnapshot) => {
   const familyPhone = contacts.find((contact) => contact.phone1?.trim() || contact.phone?.trim());
 
   return {
-    id: docSnapshot.id,
     ...student,
+    id: docSnapshot.id,
     name: student.name || student.fullName || '',
     parentEmail: familyEmail || cleanEmail(student.parentEmail) || cleanEmail(student.email),
     parentPhone: student.parentPhone || familyPhone?.phone1?.trim() || familyPhone?.phone?.trim() || ''

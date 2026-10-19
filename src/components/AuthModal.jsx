@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { AsisCateLogo } from './Shared/AsisCateLogo';
 import { MaterialIcon } from './Shared/MaterialIcon';
 
 export function AuthModal({
   themeMode,
+  onToggleTheme,
   authError,
   authSubmitting,
   authMode,
@@ -18,9 +20,21 @@ export function AuthModal({
   handleMicrosoftLogin,
   handleEmailAuthSubmit
 }) {
+  const [emailSectionOpen, setEmailSectionOpen] = useState(() => new URLSearchParams(window.location.search).get('authMode') === 'register');
+  const isDark = themeMode === 'dark';
+
   return (
     <div className={`min-h-screen flex flex-col justify-center items-center p-4 sm:p-6 ${themeMode === 'dark' ? 'bg-black text-slate-100' : 'bg-gradient-to-br from-red-50 to-slate-100'}`}>
-      <div className={`p-6 sm:p-8 rounded-2xl shadow-xl max-w-md w-full border ${themeMode === 'dark' ? 'bg-black border-neutral-800' : 'bg-white border-red-100'}`}>
+      <div className={`relative p-6 sm:p-8 rounded-2xl shadow-xl max-w-md w-full border ${themeMode === 'dark' ? 'bg-black border-neutral-800' : 'bg-white border-red-100'}`}>
+        <button
+          type="button"
+          onClick={onToggleTheme}
+          title={isDark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
+          aria-label={isDark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
+          className={`absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full border transition-colors ${isDark ? 'border-neutral-700 text-amber-300 hover:bg-neutral-800' : 'border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+        >
+          <MaterialIcon name={isDark ? 'light_mode' : 'dark_mode'} />
+        </button>
         <div className="flex flex-col items-center text-center mb-6">
           <AsisCateLogo className="w-16 h-16 sm:w-20 sm:h-20 mb-3" />
           <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight mb-1">AsisCate</h1>
@@ -65,12 +79,21 @@ export function AuthModal({
           </button>
         </div>
 
-        <div className="relative flex py-2 items-center mb-5">
+        <div className="relative flex py-2 items-center mb-3">
           <div className="flex-grow border-t border-slate-300/40"></div>
-          <span className="flex-shrink mx-3 text-slate-400 text-xs font-medium">o con correo</span>
+          <button type="button" aria-expanded={emailSectionOpen} onClick={() => setEmailSectionOpen(open => !open)} className="flex-shrink mx-3 inline-flex items-center gap-1 text-slate-400 hover:text-red-500 text-xs font-medium transition-colors">
+            {emailSectionOpen ? 'Ocultar acceso con correo' : 'Continuar con correo'}
+            <MaterialIcon name="expand_more" className={`transition-transform duration-300 ${emailSectionOpen ? 'rotate-180' : ''}`} />
+          </button>
           <div className="flex-grow border-t border-slate-300/40"></div>
         </div>
 
+        <div
+          className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out ${emailSectionOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}
+          aria-hidden={!emailSectionOpen}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <fieldset disabled={!emailSectionOpen} className="m-0 min-w-0 border-0 p-0">
         {/* Selector Login / Registro */}
         <div className="flex rounded-xl p-1 bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 mb-4">
           <button
@@ -145,6 +168,9 @@ export function AuthModal({
               : authMode === 'login' ? 'Iniciar Sesión' : 'Crear Cuenta y Entrar'}
           </button>
         </form>
+            </fieldset>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -9,6 +9,8 @@ export function useRealtimeSubscriptions({
   setPaymentRecords,
   setIsEnrollmentEnabled,
   setStudents,
+  setAllUsers,
+  setCatechistRoster,
   setAttendanceRemindersEnabled,
   setAttendanceRemindersConfigReady,
   setHasPendingWrites
@@ -28,6 +30,20 @@ export function useRealtimeSubscriptions({
       updatePendingWrites('students', snapshot);
     }, (error) => {
       console.warn('Error escuchando catequizandos en tiempo real:', error);
+    });
+
+    const unsubscribeUsers = onSnapshot(collection(db, 'users'), snapshotOptions, (snapshot) => {
+      setAllUsers(snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
+      updatePendingWrites('users', snapshot);
+    }, (error) => {
+      console.warn('Error escuchando usuarios en tiempo real:', error);
+    });
+
+    const unsubscribeCatechistRoster = onSnapshot(collection(db, 'catechistRoster'), snapshotOptions, (snapshot) => {
+      setCatechistRoster(snapshot.docs.map(item => ({ id: item.id, ...item.data() })));
+      updatePendingWrites('catechistRoster', snapshot);
+    }, (error) => {
+      console.warn('Error escuchando la lista de catequistas en tiempo real:', error);
     });
 
     const unsubscribeCertificates = onSnapshot(collection(db, 'certificates'), snapshotOptions, (snapshot) => {
@@ -70,11 +86,13 @@ export function useRealtimeSubscriptions({
 
     return () => {
       unsubscribeStudents();
+      unsubscribeUsers();
+      unsubscribeCatechistRoster();
       unsubscribeCertificates();
       unsubscribePayments();
       unsubscribeEnrollmentConfig();
       unsubscribeAttendanceReminders();
       unsubscribeCurrentUser();
     };
-  }, [setAttendanceRemindersConfigReady, setAttendanceRemindersEnabled, setHasPendingWrites, setIssuedCertificates, setIsEnrollmentEnabled, setPaymentRecords, setStudents, user]);
+  }, [setAllUsers, setAttendanceRemindersConfigReady, setAttendanceRemindersEnabled, setCatechistRoster, setHasPendingWrites, setIssuedCertificates, setIsEnrollmentEnabled, setPaymentRecords, setStudents, user]);
 }

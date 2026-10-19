@@ -12,8 +12,6 @@ const REMINDER_CONFIG_PATH = 'config/attendanceReminders';
 const REMINDER_TIME_ZONE = 'America/Costa_Rica';
 const STUDENT_ATTENDANCE_QR_SESSIONS = 'studentAttendanceQrSessions';
 const STUDENT_ATTENDANCE_QR_RADIUS_METERS = 200;
-const STUDENT_ATTENDANCE_QR_MAX_ACCURACY_METERS = 100;
-const STUDENT_ATTENDANCE_QR_TTL_HOURS = 6;
 
 function initializeFunctionFirestore() {
   if (!admin.apps.length) admin.initializeApp();
@@ -91,16 +89,15 @@ async function assertCanManageAttendanceGroup(db, uid, groupId) {
 
 exports.createStudentAttendanceQrSession = onCall(async request => {
   if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Inicia sesión para abrir el registro.');
-  const { groupId, date, label = '', latitude, longitude, accuracy } = request.data || {};
+  const { groupId, date, label = '', latitude, longitude } = request.data || {};
+  const attendanceType = request.data?.attendanceType === 'misa' ? 'misa' : 'encuentro';
   if (!groupId || !isValidAttendanceDate(date)) {
     throw new HttpsError('invalid-argument', 'Selecciona un grupo y una fecha válida.');
   }
   const parsedLatitude = getFiniteCoordinate(latitude, -90, 90);
   const parsedLongitude = getFiniteCoordinate(longitude, -180, 180);
-  const parsedAccuracy = Number(accuracy);
-  if (parsedLatitude === null || parsedLongitude === null || !Number.isFinite(parsedAccuracy)
-    || parsedAccuracy <= 0 || parsedAccuracy > STUDENT_ATTENDANCE_QR_MAX_ACCURACY_METERS) {
-    throw new HttpsError('failed-precondition', 'La ubicación del dispositivo organizador no tiene suficiente precisión.');
+  if (parsedLatitude === null || parsedLongitude === null) {
+    throw new HttpsError('failed-precondition', 'No se pudo obtener la ubicación del encuentro.');
   }
 
   const db = initializeFunctionFirestore();
@@ -110,21 +107,18 @@ exports.createStudentAttendanceQrSession = onCall(async request => {
   }
 
   const sessionId = crypto.randomUUID();
-  const now = Date.now();
-  const expiresAt = admin.firestore.Timestamp.fromMillis(now + STUDENT_ATTENDANCE_QR_TTL_HOURS * 60 * 60 * 1000);
   await db.collection(STUDENT_ATTENDANCE_QR_SESSIONS).doc(sessionId).create({
     groupId: String(groupId),
     groupName: String(group.name || 'Grupo'),
     date,
     label: String(label || '').trim().slice(0, 200),
+    attendanceType,
     isOpen: true,
     centerLatitude: parsedLatitude,
     centerLongitude: parsedLongitude,
-    centerAccuracy: parsedAccuracy,
     openedBy: request.auth.uid,
     openedAt: admin.firestore.FieldValue.serverTimestamp(),
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    expiresAt
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
   });
 
   return {
@@ -133,8 +127,9 @@ exports.createStudentAttendanceQrSession = onCall(async request => {
     groupName: String(group.name || 'Grupo'),
     date,
     label: String(label || '').trim().slice(0, 200),
+    attendanceType,
     isOpen: true,
-    expiresAt: expiresAt.toMillis(),
+    expiresAt: null,
     openedByName: String(user.name || '')
   };
 });
@@ -153,9 +148,6 @@ exports.setStudentAttendanceQrSessionOpen = onCall(async request => {
   if (!sessionSnapshot.exists) throw new HttpsError('not-found', 'No se encontró esta sesión de asistencia.');
   const session = sessionSnapshot.data();
   await assertCanManageAttendanceGroup(db, request.auth.uid, session.groupId);
-  if (isOpen && session.expiresAt?.toMillis() <= Date.now()) {
-    throw new HttpsError('failed-precondition', 'Este QR venció. Genera uno nuevo para abrir el registro.');
-  }
 
   await sessionRef.update({
     isOpen,
@@ -172,16 +164,16 @@ exports.getStudentAttendanceQrSessionInfo = onCall(async request => {
   const snapshot = await db.collection(STUDENT_ATTENDANCE_QR_SESSIONS).doc(sessionId).get();
   if (!snapshot.exists) throw new HttpsError('not-found', 'El enlace de asistencia no existe o venció.');
   const session = snapshot.data();
-  const expired = session.expiresAt?.toMillis() <= Date.now();
   return {
     sessionId,
     groupId: String(session.groupId || ''),
     groupName: String(session.groupName || 'Grupo'),
     date: session.date,
     label: String(session.label || ''),
-    isOpen: session.isOpen === true && !expired,
-    expired,
-    expiresAt: session.expiresAt?.toMillis() || null
+    attendanceType: session.attendanceType === 'misa' ? 'misa' : 'encuentro',
+    isOpen: session.isOpen === true,
+    expired: false,
+    expiresAt: null
   };
 });
 
@@ -190,11 +182,9 @@ exports.checkInStudentWithAttendanceQr = onCall(async request => {
   const studentId = String(request.data?.studentId || '');
   const latitude = getFiniteCoordinate(request.data?.latitude, -90, 90);
   const longitude = getFiniteCoordinate(request.data?.longitude, -180, 180);
-  const accuracy = Number(request.data?.accuracy);
   if (!/^[0-9a-f-]{36}$/i.test(sessionId) || !studentId || studentId.length > 200
-    || latitude === null || longitude === null || !Number.isFinite(accuracy)
-    || accuracy <= 0 || accuracy > STUDENT_ATTENDANCE_QR_MAX_ACCURACY_METERS) {
-    throw new HttpsError('invalid-argument', 'No se pudo validar el QR o la precisión de la ubicación.');
+    || latitude === null || longitude === null) {
+    throw new HttpsError('invalid-argument', 'No se pudo validar el QR o la ubicación.');
   }
 
   const db = initializeFunctionFirestore();
@@ -211,10 +201,6 @@ exports.checkInStudentWithAttendanceQr = onCall(async request => {
       return;
     }
     const session = sessionSnapshot.data();
-    if (session.expiresAt?.toMillis() <= Date.now()) {
-      response = { status: 'expired', message: 'Este QR venció. Pide a la catequista que genere uno nuevo.' };
-      return;
-    }
     if (session.isOpen !== true) {
       response = { status: 'closed', message: 'El registro de este encuentro está cerrado.' };
       return;
@@ -227,12 +213,13 @@ exports.checkInStudentWithAttendanceQr = onCall(async request => {
     const student = studentSnapshot.data();
     const distanceMeters = getDistanceMeters(session.centerLatitude, session.centerLongitude, latitude, longitude);
     if (distanceMeters > STUDENT_ATTENDANCE_QR_RADIUS_METERS) {
-      response = { status: 'outside_radius', message: 'Estás fuera del área permitida de 200 metros.' };
+      response = { status: 'outside_radius', message: 'Debes estar lo suficientemente cerca del área del encuentro para marcar la asistencia.' };
       return;
     }
 
     const attendance = Array.isArray(student.attendance) ? [...student.attendance] : [];
-    const existingIndex = attendance.findIndex(record => record.date === session.date && (record.type || 'encuentro') === 'encuentro');
+    const attendanceType = session.attendanceType === 'misa' ? 'misa' : 'encuentro';
+    const existingIndex = attendance.findIndex(record => record.date === session.date && (record.type || 'encuentro') === attendanceType);
     if (existingIndex >= 0 && (attendance[existingIndex].status || (attendance[existingIndex].present ? 'present' : 'absent')) === 'present') {
       response = { status: 'already_registered', studentName: String(student.name || student.fullName || 'Catequizando') };
       return;
@@ -243,7 +230,7 @@ exports.checkInStudentWithAttendanceQr = onCall(async request => {
       status: 'present',
       present: true,
       label: String(session.label || ''),
-      type: 'encuentro',
+      type: attendanceType,
       checkInMethod: 'qr-geofence',
       checkedAt: new Date().toISOString()
     };

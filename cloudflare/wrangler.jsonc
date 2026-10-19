@@ -1,0 +1,9 @@
+{
+  "name": "asiscate-student-attendance",
+  "main": "./worker.js",
+  "compatibility_date": "2026-10-19",
+  "vars": {
+    "FIREBASE_PROJECT_ID": "asiscate-el-carmen",
+    "ALLOWED_ORIGINS": "https://asiscate-el-carmen.firebaseapp.com,https://asiscate-el-carmen.web.app,http://localhost:5173"
+  }
+}

@@ -103,7 +103,7 @@ const CATECHIST_PENDING_PREFIX = 'catequista:pending:';
 const EXCLUDED_CATECHIST_EMAIL = 'asiscate.elcarmen@gmail.com';
 
 const buildQrImageUrl = (payload, margin = 2) => (
-  `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=${margin}&ecc=L&data=${encodeURIComponent(payload)}`
+  `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=${margin}&ecc=L&data=${encodeURIComponent(payload)}&cacheKey=${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`
 );
 
 const isCatechistGroup = (group) => group?.type === 'catequistas'
@@ -277,7 +277,6 @@ export default function App() {
   const [userPhoneCode, setUserPhoneCode] = useState('+506');
   const [userPhoneNumber, setUserPhoneNumber] = useState('');
   const [savingTerritory, setSavingTerritory] = useState(false);
-  const [isTerritoryModalSkipped, setIsTerritoryModalSkipped] = useState(false);
 
   // Datos
   const [isEnrollmentEnabled, setIsEnrollmentEnabled] = useState(true);
@@ -524,7 +523,11 @@ export default function App() {
       setUserPhoneNumber(profile.phoneNumber || '');
       setModalParroquiaId(profile.parroquiaId || '');
       setModalDiaconiaId(profile.diaconiaId || '');
-      const resolvedTheme = profile.theme === 'dark' ? 'dark' : 'light';
+      let savedThemePreference = '';
+      try { savedThemePreference = localStorage.getItem('asiscate-theme-preference') || ''; } catch { /* Storage puede estar deshabilitado. */ }
+      const resolvedTheme = (savedThemePreference === 'dark' || savedThemePreference === 'light')
+        ? savedThemePreference
+        : (profile.theme === 'dark' ? 'dark' : 'light');
       setThemeMode(resolvedTheme);
       try { localStorage.setItem('asiscate-theme', resolvedTheme); } catch { /* Storage puede estar deshabilitado. */ }
       if (isAllowedNavbarColor(profile.navbarColor)) setNavbarColor(profile.navbarColor);
@@ -725,6 +728,8 @@ export default function App() {
     setPaymentRecords,
     setIsEnrollmentEnabled,
     setStudents,
+    setAllUsers,
+    setCatechistRoster,
     setAttendanceRemindersEnabled,
     setAttendanceRemindersConfigReady,
     setHasPendingWrites
@@ -738,7 +743,12 @@ export default function App() {
     });
   }, [isOnline, user?.uid, userData?.attendanceRemindersEnabled]);
 
-  const isTerritoryPending = Boolean(user && userData && (!userData.parroquiaId || !userData.diaconiaId || !userData.phoneNumber));
+  const hasSavedTerritoryProfile = Boolean(
+    String(userData?.parroquiaId || '').trim()
+    && String(userData?.diaconiaId || '').trim()
+    && String(userData?.phoneNumber || userData?.phone || '').trim()
+  );
+  const isTerritoryPending = Boolean(user && userData && !hasSavedTerritoryProfile);
   const isUserUnapproved = Boolean(user && userData && userData.approved === false);
   const isUserInactive = Boolean(user && userData && userData.active === false);
 
@@ -800,7 +810,8 @@ export default function App() {
         diaconiaId: modalDiaconiaId,
         phoneCode: userPhoneCode,
         phoneNumber: phoneResult.rawDigits,
-        phone: phoneResult.formatted
+        phone: phoneResult.formatted,
+        territorySetupDismissed: false
       });
 
       setUserData(prev => ({
@@ -887,7 +898,8 @@ export default function App() {
       const updates = {
         phoneCode: userPhoneCode,
         phoneNumber: phoneResult.rawDigits,
-        phone: phoneResult.formatted
+        phone: phoneResult.formatted,
+        territorySetupDismissed: false
       };
       if (userNameDraft.trim()) {
         updates.name = userNameDraft.trim();
@@ -905,7 +917,6 @@ export default function App() {
       setUserData(prev => ({ ...prev, ...updates }));
       await fetchAllData();
       setIsUserNameModalOpen(false);
-      setIsTerritoryModalSkipped(false);
     } catch (err) {
       console.error("Error guardando preferencias de usuario:", err);
       alert("No se pudieron guardar las preferencias.");
@@ -963,7 +974,10 @@ export default function App() {
   const handleToggleTheme = async () => {
     const nextTheme = themeMode === 'light' ? 'dark' : 'light';
     setThemeMode(nextTheme);
-    try { localStorage.setItem('asiscate-theme', nextTheme); } catch { /* Storage puede estar deshabilitado. */ }
+    try {
+      localStorage.setItem('asiscate-theme', nextTheme);
+      localStorage.setItem('asiscate-theme-preference', nextTheme);
+    } catch { /* Storage puede estar deshabilitado. */ }
 
     if (user) {
       try {
@@ -1144,6 +1158,18 @@ export default function App() {
     }
   };
 
+  const handleSkipTerritoryModal = async () => {
+    if (!user?.uid) return;
+    setUserData(previous => ({ ...previous, territorySetupDismissed: true }));
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { territorySetupDismissed: true });
+    } catch (error) {
+      console.error('No se pudo guardar la omisión de configuración:', error);
+      setUserData(previous => ({ ...previous, territorySetupDismissed: false }));
+      showAppModal('No se pudo guardar esta preferencia en tu perfil. Intenta de nuevo.', { title: 'No se guardó el cambio' });
+    }
+  };
+
   const handleCreateParroquia = async (e) => {
     e.preventDefault();
     if (!newParroquiaName.trim()) return;
@@ -1316,8 +1342,10 @@ export default function App() {
 
       const studentsToDuplicate = students.filter(student => student.groupId === group.id);
       for (const student of studentsToDuplicate) {
+        const studentData = { ...student };
+        delete studentData.id;
         await addDoc(collection(db, 'students'), {
-          ...student,
+          ...studentData,
           name: student.name,
           parentEmail: student.parentEmail || '',
           parentPhone: student.parentPhone || '',
@@ -1968,9 +1996,27 @@ export default function App() {
     }
   };
 
-  const handleGenerateStudentQr = (student) => {
+  const handleGenerateStudentQr = (studentIdValue, selectedStudent = null) => {
+    // The button passes the document ID from its own row at click time. Do not
+    // resolve the student by name/group: those values are not unique.
+    const studentId = String(
+      typeof studentIdValue === 'object' && studentIdValue !== null
+        ? studentIdValue.id || ''
+        : studentIdValue || ''
+    ).trim();
+    const student = selectedStudent || (typeof studentIdValue === 'object' ? studentIdValue : null);
+    if (!studentId || !student) {
+      showAppModal('No se pudo identificar el registro del catequizando para generar su carnet.', { title: 'Registro no encontrado' });
+      return;
+    }
+    if (String(student.id) !== studentId) {
+      showAppModal('El ID del carnet no coincide con el estudiante seleccionado. Vuelve a abrir la lista del grupo e inténtalo de nuevo.', { title: 'Registro desactualizado' });
+      return;
+    }
     const studentName = student.name || student.fullName || 'Catequizando';
-    const payload = String(student.id);
+    // Student carnet QR payloads are the exact Firestore document ID. The
+    // attendance scanner resolves raw IDs directly, avoiding ambiguous names.
+    const payload = studentId;
 
     const group = groups.find(item => item.id === student.groupId);
     const parroquia = parroquias.find(item => item.id === (group?.parroquiaId || student.parroquiaId))?.name
@@ -1984,7 +2030,8 @@ export default function App() {
       level: group?.level || student.level || 'Sin nivel asignado',
       parroquia,
       imageUrl: buildQrImageUrl(payload),
-      payload
+      payload,
+      studentId
     });
   };
 
@@ -2026,6 +2073,9 @@ export default function App() {
       const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(qrCardRef.current, {
         cacheBust: true,
+        // QRServer uses one endpoint for every student; include the full URL
+        // (especially its `data` query) in html-to-image's resource cache key.
+        includeQueryParams: true,
         pixelRatio: 3,
         skipFonts: false
       });
@@ -2059,6 +2109,9 @@ export default function App() {
       const { toPng } = await import('html-to-image');
       const dataUrl = await toPng(qrCardRef.current, {
         cacheBust: true,
+        // Without this, html-to-image drops query params from its cache key
+        // and can embed the first student's QR in every exported card.
+        includeQueryParams: true,
         pixelRatio: 3,
         skipFonts: false
       });
@@ -2220,7 +2273,9 @@ export default function App() {
                   setTimeout(() => setScannerModal(null), 2000);
                   return;
                 }
-                const student = students.find(s => s.id === scannedStudentId || (parsed?.name && s.name.toLowerCase() === parsed.name.toLowerCase()));
+                const student = parsed?.studentId
+                  ? students.find(s => String(s.id) === String(scannedStudentId))
+                  : students.find(s => parsed?.name && String(s.name || '').toLowerCase() === String(parsed.name).toLowerCase());
                 if (student) {
                   await handleMarkAttendance(student.id, 'present', attendanceDate, attendanceLabel, attendanceType);
                   setScannerModal({ open: true, type: 'attendance', status: 'ok', result: student.name || parsed.name || 'Catequizando' });
@@ -5184,6 +5239,7 @@ ${catechistName}`;
     return (
       <AuthModal
         themeMode={themeMode}
+        onToggleTheme={handleToggleTheme}
         authError={authError}
         authSubmitting={authSubmitting}
         authMode={authMode}
@@ -6537,7 +6593,7 @@ ${catechistName}`;
       </footer>
 
       {/* MODAL SELECCIÓN DE CONFIGURACIÓN INICIAL */}
-      {user && userData && (!userData.parroquiaId || !userData.diaconiaId || !userData.phoneNumber) && !isTerritoryModalSkipped && (
+      {user && userData && isTerritoryPending && userData.territorySetupDismissed !== true && (
         <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-50 flex justify-center items-center p-4">
           <div className={`${cardBgClass} rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 border`}>
             <div className="text-center space-y-2">
@@ -6637,7 +6693,7 @@ ${catechistName}`;
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => setIsTerritoryModalSkipped(true)}
+                    onClick={handleSkipTerritoryModal}
                     className="flex-1 bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold py-2 rounded-lg text-xs transition-colors"
                   >
                     Omitir por ahora
@@ -6789,6 +6845,7 @@ ${catechistName}`;
       )}
 
       <QrModal
+        key={qrModal?.imageUrl || 'qr-modal-closed'}
         qrModal={qrModal}
         setQrModal={setQrModal}
         qrCardLoading={qrCardLoading}

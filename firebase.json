@@ -4,6 +4,7 @@
     "codebase": "default"
   },
   "hosting": {
+    "site": "asiscate-el-carmen",
     "public": "dist",
     "ignore": [
       "firebase.json",
