@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MaterialIcon } from '../Shared/MaterialIcon';
 import { PaymentsView } from './PaymentsView';
 import { getStudentContactEmail } from '../../services/firestoreDataMappers';
@@ -121,15 +121,27 @@ export function ReportsView({
   onBackToGroups,
   canManageCatechistRoster = false,
   handleAddPreregisteredCatechist,
-  handleImportPreregisteredCatechists
+  handleImportPreregisteredCatechists,
+  handleDeleteCatechist,
+  handleMergeCatechists,
+  handleEditCatechist
 }) {
   const [isGroupSettingsOpen, setIsGroupSettingsOpen] = useState(false);
   const [isAddCatechistFormOpen, setIsAddCatechistFormOpen] = useState(false);
   const [newCatechistName, setNewCatechistName] = useState('');
   const [newCatechistEmail, setNewCatechistEmail] = useState('');
+  const [isSavingCatechist, setIsSavingCatechist] = useState(false);
+  const catechistSaveLock = useRef(false);
+  const [catechistAction, setCatechistAction] = useState(null);
+  const [isCatechistActionRunning, setIsCatechistActionRunning] = useState(false);
+  const [editCatechistName, setEditCatechistName] = useState('');
+  const [editCatechistEmail, setEditCatechistEmail] = useState('');
+  const [catechistActionError, setCatechistActionError] = useState('');
+  const [mergeTargetId, setMergeTargetId] = useState('');
   const canGenerateLevelCertificates = userRole !== 'catequista';
   const selectedGroup = visibleGroups.find(group => group.id === selectedGroupId);
   const selectedIsCatechistGroup = selectedGroup?.type === 'catequistas';
+  const canManageSelectedCatechistRoster = canManageCatechistRoster && Boolean(selectedGroup?.diaconiaId);
   const currentDate = new Date();
   const currentYear = currentDate.getFullYear();
   const currentCycle = currentDate.getMonth() <= 3
@@ -576,7 +588,7 @@ export function ReportsView({
               <div>
                 <h3 className="font-bold">Lista de catequistas</h3>
               </div>
-              {canManageCatechistRoster && (
+              {canManageSelectedCatechistRoster && (
                 <div className={`${cardBgClass} rounded-xl border p-4`}>
                   <button
                     type="button"
@@ -594,16 +606,21 @@ export function ReportsView({
                           className="space-y-2"
                           onSubmit={async event => {
                             event.preventDefault();
-                            const saved = await handleAddPreregisteredCatechist?.(newCatechistName, newCatechistEmail, selectedGroup.id);
-                            if (saved) {
-                              setNewCatechistName('');
-                              setNewCatechistEmail('');
-                            }
+                            if (catechistSaveLock.current) return;
+                            catechistSaveLock.current = true;
+                            setIsSavingCatechist(true);
+                            try {
+                              const saved = await handleAddPreregisteredCatechist?.(newCatechistName, newCatechistEmail, selectedGroup.id);
+                              if (saved) {
+                                setNewCatechistName('');
+                                setNewCatechistEmail('');
+                              }
+                            } finally { catechistSaveLock.current = false; setIsSavingCatechist(false); }
                           }}
                         >
                           <input required value={newCatechistName} onChange={event => setNewCatechistName(event.target.value)} placeholder="Nombre completo" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
                           <input type="email" value={newCatechistEmail} onChange={event => setNewCatechistEmail(event.target.value)} placeholder="Correo electrónico (opcional)" className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`} />
-                          <button type="submit" className="w-full rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white">Guardar catequista</button>
+                          <button type="submit" disabled={isSavingCatechist} className="w-full rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white disabled:cursor-wait disabled:opacity-60">{isSavingCatechist ? 'Guardando…' : 'Guardar catequista'}</button>
                         </form>
                         <div className="space-y-2 border-t border-slate-700 pt-3">
                           <h4 className="text-sm font-bold">Importar catequistas</h4>
@@ -634,24 +651,86 @@ export function ReportsView({
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-sm font-bold">{catechist.name}</p>
-                          {catechist.email && <a className="text-xs text-sky-400 hover:underline" href={`mailto:${catechist.email}`}>{catechist.email}</a>}
+                          {(catechist.contactEmail || catechist.email) && <a className="text-xs text-sky-400 hover:underline" href={`mailto:${catechist.contactEmail || catechist.email}`}>{catechist.contactEmail || catechist.email}</a>}
                           {catechist.phone && <p className="text-xs text-slate-400">{catechist.phone}</p>}
                           {catechist.memberType === 'pendingCatechist' && <span className="mt-1 inline-block rounded bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold text-amber-400">Pendiente de registro</span>}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleGenerateCatechistQr?.(catechist, selectedGroup)}
-                          title={`Mostrar carnet QR de ${catechist.name}`}
-                          aria-label={`Mostrar carnet QR de ${catechist.name}`}
-                          className="shrink-0 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-600"
-                        >
-                          <MaterialIcon name="qr_code_2" /> Carnet QR
-                        </button>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          {canManageSelectedCatechistRoster && catechist.memberType === 'pendingCatechist' && <button type="button" onClick={() => { setEditCatechistName(catechist.name || ''); setEditCatechistEmail(catechist.email || ''); setCatechistActionError(''); setCatechistAction({ type: 'edit', member: catechist, group: selectedGroup }); }} aria-label={`Editar a ${catechist.name}`} title="Editar" className="rounded-lg bg-slate-600 p-2 text-white hover:bg-slate-500"><MaterialIcon name="edit" /></button>}
+                          {canManageSelectedCatechistRoster && catechist.memberType === 'pendingCatechist' && visibleStudents.some(item => item.groupId === selectedGroupId && item.id !== catechist.id && item.name?.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase() === catechist.name?.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase()) && (
+                            <button type="button" onClick={() => { setMergeTargetId(''); setCatechistActionError(''); setCatechistAction({ type: 'merge', member: catechist, group: selectedGroup }); }} aria-label={`Fusionar a ${catechist.name}`} title="Fusionar duplicado" className="rounded-lg bg-sky-700 p-2 text-white hover:bg-sky-600"><MaterialIcon name="merge" /></button>
+                          )}
+                          {canManageSelectedCatechistRoster && catechist.memberType === 'pendingCatechist' && <button type="button" onClick={() => { setCatechistActionError(''); setCatechistAction({ type: 'delete', member: catechist, group: selectedGroup }); }} aria-label={`Eliminar a ${catechist.name}`} title="Eliminar" className="rounded-lg bg-rose-700 p-2 text-white hover:bg-rose-600"><MaterialIcon name="delete" /></button>}
+                          <button type="button" onClick={() => handleGenerateCatechistQr?.(catechist, selectedGroup)} title={`Mostrar carnet QR de ${catechist.name}`} aria-label={`Mostrar carnet QR de ${catechist.name}`} className="rounded-lg bg-amber-500 p-2 text-white hover:bg-amber-600"><MaterialIcon name="qr_code_2" /></button>
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {catechistAction && (
+            <div className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm" onMouseDown={event => event.target === event.currentTarget && !isCatechistActionRunning && setCatechistAction(null)}>
+              <div role="dialog" aria-modal="true" aria-labelledby="catechist-action-title" className={`${cardBgClass} w-full max-w-md overflow-hidden rounded-2xl border shadow-2xl`}>
+                <div className={`flex items-start gap-4 border-b p-5 ${catechistAction.type === 'delete' ? 'border-rose-500/20' : 'border-sky-500/20'}`}>
+                  <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl ${catechistAction.type === 'delete' ? 'bg-rose-500/10 text-rose-400' : 'bg-sky-500/10 text-sky-400'}`}>
+                    <MaterialIcon name={catechistAction.type === 'delete' ? 'person_remove' : catechistAction.type === 'edit' ? 'edit' : 'merge'} className="text-2xl" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h3 id="catechist-action-title" className="text-lg font-bold">{catechistAction.type === 'delete' ? 'Eliminar catequista' : catechistAction.type === 'edit' ? 'Editar catequista' : 'Fusionar catequista'}</h3>
+                    <p className="mt-1 text-sm text-slate-400">{catechistAction.member.name}</p>
+                  </div>
+                  <button type="button" disabled={isCatechistActionRunning} onClick={() => setCatechistAction(null)} aria-label="Cerrar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-500/10 hover:text-slate-200 disabled:opacity-50"><MaterialIcon name="close" /></button>
+                </div>
+                <div className="space-y-3 p-5 text-sm leading-6 text-slate-400">
+                  {catechistAction.type === 'edit' ? (
+                    <div className="space-y-3">
+                      <p>Actualiza el nombre y el correo de contacto.</p>
+                      <label className="block text-xs font-semibold text-slate-300">Nombre<input autoFocus value={editCatechistName} onChange={event => setEditCatechistName(event.target.value)} className={`mt-1 w-full rounded-xl px-3 py-2.5 text-sm ${inputBgClass}`} /></label>
+                      <label className="block text-xs font-semibold text-slate-300">Correo electrónico<input type="email" value={editCatechistEmail} onChange={event => setEditCatechistEmail(event.target.value)} placeholder="correo@ejemplo.com" className={`mt-1 w-full rounded-xl px-3 py-2.5 text-sm ${inputBgClass}`} /></label>
+                      {catechistAction.member.memberType === 'catechistUser' && <p className="text-xs">En una cuenta registrada, el correo se guarda como contacto y no cambia el correo usado para iniciar sesión.</p>}
+                      {catechistActionError && <p role="alert" className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{catechistActionError}</p>}
+                    </div>
+                  ) : catechistAction.type === 'merge' ? (
+                    <div className="space-y-3">
+                      <p>Selecciona cuál registro conservar. El historial de asistencia se combinará y luego se quitará este duplicado.</p>
+                      <label className="block text-xs font-semibold text-slate-300">Conservar este registro
+                        <select value={mergeTargetId} onChange={event => setMergeTargetId(event.target.value)} className={`mt-1 w-full rounded-xl px-3 py-2.5 text-sm ${inputBgClass}`}>
+                          <option value="">Selecciona catequista</option>
+                          {visibleStudents.filter(item => item.groupId === selectedGroupId && item.id !== catechistAction.member.id && item.name?.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase() === catechistAction.member.name?.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase()).map(item => <option key={item.id} value={item.id}>{item.name}{item.email ? ` · ${item.email}` : ''}{item.memberType === 'pendingCatechist' ? ' · Pendiente' : ' · Registrado'}</option>)}
+                        </select>
+                      </label>
+                      {catechistActionError && <p role="alert" className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{catechistActionError}</p>}
+                    </div>
+                  ) : catechistAction.type === 'delete'
+                    ? <p>¿Deseas quitar a <strong className="text-slate-100">{catechistAction.member.name}</strong> de la lista de catequistas? Esta acción no se puede deshacer desde aquí.</p>
+                    : <p>Se conservará la cuenta registrada de <strong className="text-slate-100">{catechistAction.member.name}</strong> y se quitará su entrada pendiente duplicada.</p>}
+                </div>
+                <div className="flex justify-end gap-3 border-t border-slate-500/15 p-5">
+                  <button type="button" disabled={isCatechistActionRunning} onClick={() => setCatechistAction(null)} className="rounded-xl border border-slate-500/30 px-4 py-2.5 text-sm font-semibold hover:bg-slate-500/10 disabled:opacity-50">Cancelar</button>
+                  <button type="button" disabled={isCatechistActionRunning} onClick={async () => {
+                    setIsCatechistActionRunning(true);
+                    try {
+                      try {
+                        if (catechistAction.type === 'edit') await handleEditCatechist?.(catechistAction.member, catechistAction.group, editCatechistName, editCatechistEmail);
+                        else {
+                          if (catechistAction.type === 'delete') await handleDeleteCatechist?.(catechistAction.member, catechistAction.group);
+                          else {
+                            const targetMember = visibleStudents.find(item => item.id === mergeTargetId);
+                            if (!targetMember) throw new Error('Selecciona el registro que deseas conservar.');
+                            await handleMergeCatechists?.(catechistAction.member, catechistAction.group, targetMember);
+                          }
+                        }
+                        setCatechistAction(null);
+                      } catch (error) { setCatechistActionError(error.message || 'No se pudo guardar el cambio.'); }
+                    } finally { setIsCatechistActionRunning(false); }
+                  }} className={`rounded-xl px-4 py-2.5 text-sm font-bold text-white disabled:cursor-wait disabled:opacity-60 ${catechistAction.type === 'delete' ? 'bg-rose-700 hover:bg-rose-600' : 'bg-sky-700 hover:bg-sky-600'}`}>
+                    {isCatechistActionRunning ? 'Procesando…' : catechistAction.type === 'delete' ? 'Sí, eliminar' : catechistAction.type === 'edit' ? 'Guardar cambios' : 'Fusionar registros'}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

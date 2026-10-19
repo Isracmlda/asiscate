@@ -1,16 +1,23 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MaterialIcon } from '../Shared/MaterialIcon';
+import { firebaseConfig } from '../../config/firebaseConfig';
+import {
+  createStudentAttendanceQrSession,
+  getStudentAttendanceQrSessionInfo,
+  setStudentAttendanceQrSessionOpen
+} from '../../services/studentAttendanceQrService';
 
-const stripCountryCode = phone => String(phone || '').replace(/^\s*(?:\+\d{1,3}|00\d{1,3})[\s().-]*/, '').trim();
-const formatDisplayPhone = phone => {
-  const nationalNumber = stripCountryCode(phone);
-  const digits = nationalNumber.replace(/\D/g, '');
-
-  if (digits.length === 8) return `${digits.slice(0, 4)} ${digits.slice(4)}`;
-  if (digits.length === 9) return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
-  if (digits.length === 10) return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
-  return nationalNumber;
-};
+const getCurrentDeviceLocation = () => new Promise((resolve, reject) => {
+  if (!navigator.geolocation) {
+    reject(new Error('Este dispositivo no ofrece acceso a la ubicación.'));
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(resolve, reject, {
+    enableHighAccuracy: true,
+    timeout: 15000,
+    maximumAge: 0
+  });
+});
 
 function AnimatedHeight({ children, open = true, className = '' }) {
   const containerRef = useRef(null);
@@ -132,12 +139,213 @@ export function DashboardView({
   setSelectedGroupForStudent
 }) {
   const [hoveredDonutSegment, setHoveredDonutSegment] = useState(null);
+  const [isFormationQrOpen, setIsFormationQrOpen] = useState(false);
+  const [attendanceLocationModal, setAttendanceLocationModal] = useState(null);
+  const [formationLinkCopied, setFormationLinkCopied] = useState(false);
+  const [formationPdfBusy, setFormationPdfBusy] = useState(false);
+  const [formationPdfError, setFormationPdfError] = useState('');
+  const [isStudentAttendanceQrOpen, setIsStudentAttendanceQrOpen] = useState(false);
+  const [studentAttendanceQrSession, setStudentAttendanceQrSession] = useState(null);
+  const [studentQrSessionLoading, setStudentQrSessionLoading] = useState(false);
+  const [studentQrBusy, setStudentQrBusy] = useState(false);
+  const [studentQrError, setStudentQrError] = useState('');
+  const [studentQrCopied, setStudentQrCopied] = useState(false);
+  const studentQrBusyRef = useRef(false);
   const sortedAttendanceStudents = visibleStudents
     .filter(student => student.groupId === selectedGroupId)
     .sort((a, b) => String(a.name || a.fullName || '').localeCompare(String(b.name || b.fullName || ''), 'es', { sensitivity: 'base' }));
   const selectedAttendanceGroup = visibleGroups.find(group => group.id === selectedGroupId);
   const selectedDashboardGroup = visibleGroups.find(group => group.id === dashboardGroupId);
   const isCatechistAttendanceGroup = selectedAttendanceGroup?.type === 'catequistas';
+  const studentQrStorageKey = selectedGroupId && attendanceDate
+    ? `asiscate-student-attendance-qr:${selectedGroupId}:${attendanceDate}`
+    : '';
+  const studentAttendanceQrUrl = studentAttendanceQrSession?.sessionId
+    && studentAttendanceQrSession.groupId === selectedGroupId
+    && studentAttendanceQrSession.date === attendanceDate
+    ? (() => {
+      const url = new URL(typeof window === 'undefined' ? `https://${firebaseConfig.projectId}.firebaseapp.com` : window.location.origin);
+      url.searchParams.set('studentAttendanceQr', '1');
+      url.searchParams.set('sessionId', studentAttendanceQrSession.sessionId);
+      return url.toString();
+    })()
+    : '';
+
+  useEffect(() => {
+    if (!isStudentAttendanceQrOpen || !studentQrStorageKey) return undefined;
+    let active = true;
+    setStudentQrSessionLoading(true);
+    setStudentQrError('');
+    const restoreSession = async () => {
+      try {
+        const savedSessionId = sessionStorage.getItem(studentQrStorageKey);
+        if (!savedSessionId) {
+          if (active) setStudentAttendanceQrSession(null);
+          return;
+        }
+        const session = await getStudentAttendanceQrSessionInfo(savedSessionId);
+        if (active) setStudentAttendanceQrSession(session);
+      } catch (error) {
+        console.warn('No se pudo recuperar el QR del encuentro:', error);
+        try { sessionStorage.removeItem(studentQrStorageKey); } catch { /* El almacenamiento puede estar deshabilitado. */ }
+        if (active) setStudentAttendanceQrSession(null);
+      } finally {
+        if (active) setStudentQrSessionLoading(false);
+      }
+    };
+    restoreSession();
+    return () => { active = false; };
+  }, [isStudentAttendanceQrOpen, studentQrStorageKey]);
+
+  const createStudentQrSession = async () => {
+    if (!selectedGroupId || !attendanceDate || studentQrBusyRef.current) return;
+    studentQrBusyRef.current = true;
+    setStudentQrBusy(true);
+    setStudentQrError('');
+    try {
+      const position = await getCurrentDeviceLocation();
+      if (position.coords.accuracy > 100) {
+        throw new Error('La ubicación del dispositivo no tiene suficiente precisión. Inténtalo cerca de una ventana o en un espacio abierto.');
+      }
+      const session = await createStudentAttendanceQrSession({
+        groupId: selectedGroupId,
+        date: attendanceDate,
+        label: attendanceLabel,
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy
+      });
+      setStudentAttendanceQrSession(session);
+      if (studentQrStorageKey) {
+        try { sessionStorage.setItem(studentQrStorageKey, session.sessionId); } catch { /* El QR funciona aunque no se pueda guardar localmente. */ }
+      }
+    } catch (error) {
+      console.error('No se pudo abrir el registro QR del encuentro:', error);
+      setStudentQrError(error?.code === 1
+        ? 'Permite la ubicación del navegador para establecer el punto de referencia del encuentro.'
+        : error?.code === 3
+          ? 'No se pudo obtener la ubicación a tiempo. Inténtalo nuevamente en un lugar abierto.'
+          : error?.message || 'No se pudo crear el QR del encuentro.');
+    } finally {
+      studentQrBusyRef.current = false;
+      setStudentQrBusy(false);
+    }
+  };
+
+  const toggleStudentQrSession = async () => {
+    if (!studentAttendanceQrSession?.sessionId || studentQrBusyRef.current) return;
+    if (studentAttendanceQrSession.expired && !studentAttendanceQrSession.isOpen) {
+      setStudentQrError('Este QR venció. Genera un QR nuevo para volver a abrir el registro.');
+      return;
+    }
+    studentQrBusyRef.current = true;
+    setStudentQrBusy(true);
+    setStudentQrError('');
+    try {
+      const nextIsOpen = !studentAttendanceQrSession.isOpen;
+      await setStudentAttendanceQrSessionOpen(studentAttendanceQrSession.sessionId, nextIsOpen);
+      setStudentAttendanceQrSession(previous => ({ ...previous, isOpen: nextIsOpen }));
+    } catch (error) {
+      console.error('No se pudo cambiar el estado de la asistencia QR:', error);
+      setStudentQrError(error?.message || 'No se pudo cambiar el estado del registro.');
+    } finally {
+      studentQrBusyRef.current = false;
+      setStudentQrBusy(false);
+    }
+  };
+
+  const handleCopyStudentQrLink = async () => {
+    if (!studentAttendanceQrUrl) return;
+    try {
+      await navigator.clipboard.writeText(studentAttendanceQrUrl);
+      setStudentQrCopied(true);
+      window.setTimeout(() => setStudentQrCopied(false), 2200);
+    } catch {
+      setStudentQrError('No se pudo copiar el enlace desde este navegador.');
+    }
+  };
+  const formationCheckinUrl = (() => {
+    if (!selectedAttendanceGroup || typeof window === 'undefined') return '';
+    const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+    const browserOrigin = isLocalhost ? window.location.origin : `https://${firebaseConfig.projectId}.firebaseapp.com`;
+    const url = new URL(browserOrigin);
+    url.searchParams.set('formationCheckin', '1');
+    url.searchParams.set('groupId', selectedAttendanceGroup.id);
+    url.searchParams.set('date', attendanceDate);
+    if (attendanceLabel) url.searchParams.set('label', attendanceLabel);
+    return url.toString();
+  })();
+  const getSelectedAttendanceRecord = student => (student.attendance || []).find(record => (
+    record.date === attendanceDate && (record.type || 'encuentro') === attendanceType
+  ));
+  const handleCopyFormationLink = async () => {
+    try {
+      await navigator.clipboard.writeText(formationCheckinUrl);
+      setFormationLinkCopied(true);
+      window.setTimeout(() => setFormationLinkCopied(false), 2200);
+    } catch {
+      setFormationLinkCopied(false);
+    }
+  };
+  const handleDownloadFormationQrPdf = async () => {
+    if (!formationCheckinUrl || formationPdfBusy) return;
+    setFormationPdfBusy(true);
+    setFormationPdfError('');
+    try {
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=900x900&margin=16&ecc=H&data=${encodeURIComponent(formationCheckinUrl)}`;
+      const [jsPdfModule, qrResponse] = await Promise.all([import('jspdf'), fetch(qrUrl)]);
+      if (!qrResponse.ok) throw new Error('No se pudo descargar el código QR.');
+      const qrBlob = await qrResponse.blob();
+      const qrDataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('No se pudo preparar la imagen del código QR.'));
+        reader.readAsDataURL(qrBlob);
+      });
+      const JsPdf = jsPdfModule.jsPDF || jsPdfModule.default?.jsPDF || jsPdfModule.default;
+      const pdf = new JsPdf({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      pdf.setFillColor(127, 29, 29);
+      pdf.rect(0, 0, pageWidth, 46, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(13);
+      pdf.text('AsisCate', 18, 17);
+      pdf.setFontSize(21);
+      pdf.text('Registro de asistencia', 18, 30);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(11);
+      pdf.text('Formación de catequistas', 18, 38);
+
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(11);
+      pdf.setTextColor(100, 116, 139);
+      const formattedAttendanceDate = /^\d{4}-\d{2}-\d{2}$/.test(attendanceDate)
+        ? attendanceDate.split('-').reverse().join('/')
+        : attendanceDate;
+      pdf.text(`Fecha: ${formattedAttendanceDate}`, pageWidth / 2, 61, { align: 'center' });
+
+      const qrSize = 112;
+      const qrX = (pageWidth - qrSize) / 2;
+      const qrY = 74;
+      pdf.setDrawColor(226, 232, 240);
+      pdf.setLineWidth(0.8);
+      pdf.roundedRect(qrX - 5, qrY - 5, qrSize + 10, qrSize + 10, 4, 4, 'S');
+      pdf.addImage(qrDataUrl, 'PNG', qrX, qrY, qrSize, qrSize, undefined, 'FAST');
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(14);
+      pdf.setTextColor(31, 41, 55);
+      pdf.text('Escanea para registrar tu asistencia', pageWidth / 2, 216, { align: 'center' });
+
+      pdf.save(`QR-formacion-${attendanceDate || 'asistencia'}.pdf`);
+    } catch (error) {
+      console.error('Error generando PDF del QR de formación:', error);
+      setFormationPdfError('No se pudo generar el PDF. Inténtalo de nuevo.');
+    } finally {
+      setFormationPdfBusy(false);
+    }
+  };
   const donutSegments = [
     { key: 'present', label: 'Presentes', value: dashboardAttendanceStats.present, color: '#10b981' },
     { key: 'justified', label: 'Justificados', value: dashboardAttendanceStats.justified, color: '#f59e0b' },
@@ -386,7 +594,7 @@ export function DashboardView({
             </div>
 
             {selectedGroupId && (
-              <div className="sm:col-span-4 grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              <div className="sm:col-span-4 grid grid-cols-1 gap-2 pt-1 sm:grid-cols-3">
                 <button
                   type="button"
                   onClick={handleScanQr}
@@ -394,6 +602,16 @@ export function DashboardView({
                 >
                   Escanear QR
                 </button>
+                {isCatechistAttendanceGroup && attendanceType === 'formacion' && (
+                  <button type="button" onClick={() => setIsFormationQrOpen(true)} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-emerald-500">
+                    <MaterialIcon name="qr_code_2" /> QR para registrar asistencia
+                  </button>
+                )}
+                {!isCatechistAttendanceGroup && attendanceType === 'encuentro' && (
+                  <button type="button" onClick={() => { setStudentQrCopied(false); setIsStudentAttendanceQrOpen(true); }} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-emerald-500">
+                    <MaterialIcon name="qr_code_2" /> QR para asistencia de catequizandos
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setDeleteDateTarget({ groupId: selectedGroupId, dateStr: attendanceDate, type: attendanceType })}
@@ -418,11 +636,10 @@ export function DashboardView({
               ) : (
                 sortedAttendanceStudents.map(student => {
                     const status = getAttendanceStatus(student, attendanceDate);
+                    const attendanceRecord = getSelectedAttendanceRecord(student);
                     const displayEmail = student.email || student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
                     const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
-                    const mobileDisplayPhone = formatDisplayPhone(displayPhone);
                     const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
-                    const canContactForAbsence = status !== null && (!isCatechistAttendanceGroup || status === 'absent');
                     return (
                       <div key={student.id} className="p-4 space-y-3">
                         <div className="flex min-w-0 items-start justify-between gap-2">
@@ -430,17 +647,15 @@ export function DashboardView({
                             <h4 className="truncate font-bold text-sm">{student.fullName || student.name}</h4>
                           </div>
                           <div className="flex shrink-0 gap-1">
-                            <button disabled={!displayEmail || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')} title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'} aria-label={displayEmail ? `Enviar correo a ${displayEmail}` : 'Correo no registrado'} className="attendance-email-button rounded-md p-2 text-[11px] font-semibold"><MaterialIcon name="mail" /></button>
-                            <button type="button" disabled={!displayEmail} onClick={() => handleCopyAttendanceContact(displayEmail, 'Correo')} title={displayEmail ? 'Copiar correo' : 'Correo no registrado'} aria-label="Copiar correo" className="rounded-md border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
-                            <button disabled={!displayPhone || !canContactForAbsence} onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')} title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? mobileDisplayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'} aria-label={mobileDisplayPhone ? `Contactar al ${mobileDisplayPhone}` : 'Teléfono no registrado'} className="attendance-phone-button max-w-28 truncate rounded-md px-2 py-1 text-[11px] font-semibold"><MaterialIcon name="phone" /> {mobileDisplayPhone || 'Sin teléfono'}</button>
-                            <button type="button" disabled={!displayPhone} onClick={() => handleCopyAttendanceContact(displayPhone, 'Teléfono')} title={displayPhone ? 'Copiar teléfono' : 'Teléfono no registrado'} aria-label="Copiar teléfono" className="rounded-md border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
+                            <button type="button" disabled={!displayEmail} onClick={() => status === null ? handleCopyAttendanceContact(displayEmail, 'Correo') : handleOpenAttendanceMessage(contactStudent, 'email')} title={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} aria-label={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} className={`${status === null ? 'rounded-md border border-slate-500 bg-slate-600/70 p-2 text-slate-200 hover:bg-slate-600' : 'attendance-email-button rounded-md p-2'} disabled:cursor-not-allowed disabled:opacity-40`}><MaterialIcon name="mail" /></button>
+                            <button type="button" disabled={!displayPhone} onClick={() => status === null ? handleCopyAttendanceContact(displayPhone, 'Teléfono') : handleOpenAttendanceMessage(contactStudent, 'phone')} title={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} aria-label={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} className={`${status === null ? 'rounded-md border border-slate-500 bg-slate-600/70 p-2 text-slate-200 hover:bg-slate-600' : 'attendance-phone-button rounded-md p-2'} disabled:cursor-not-allowed disabled:opacity-40`}><MaterialIcon name="phone" /></button>
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-3 gap-1.5 pt-1">
+                        <div className="grid grid-cols-[repeat(3,minmax(0,1fr))_auto] gap-1.5 pt-1">
                           <button
                             onClick={() => handleMarkAttendance(student.id, 'present')}
-                            className={`py-2 text-xs font-bold rounded-lg transition-all border ${
+                            className={`whitespace-nowrap px-1 py-2 text-[10px] font-bold rounded-lg transition-all border sm:text-xs ${
                               status === 'present'
                                 ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
                                 : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100')
@@ -450,7 +665,7 @@ export function DashboardView({
                           </button>
                           <button
                             onClick={() => handleMarkAttendance(student.id, 'justified')}
-                            className={`py-2 text-xs font-bold rounded-lg transition-all border ${
+                            className={`whitespace-nowrap px-1 py-2 text-[10px] font-bold rounded-lg transition-all border sm:text-xs ${
                               status === 'justified'
                                 ? 'bg-amber-500 border-amber-400 text-white shadow-sm'
                                 : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100')
@@ -460,7 +675,7 @@ export function DashboardView({
                           </button>
                           <button
                             onClick={() => handleMarkAttendance(student.id, 'absent')}
-                            className={`py-2 text-xs font-bold rounded-lg transition-all border ${
+                            className={`whitespace-nowrap px-1 py-2 text-[10px] font-bold rounded-lg transition-all border sm:text-xs ${
                               status === 'absent'
                                 ? 'bg-rose-600 border-rose-500 text-white shadow-sm'
                                 : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-rose-400 hover:bg-rose-500/10 hover:text-rose-300' : 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100')
@@ -468,6 +683,7 @@ export function DashboardView({
                           >
                             Ausente
                           </button>
+                          {attendanceRecord?.location && <button type="button" onClick={() => setAttendanceLocationModal({ member: student, record: attendanceRecord })} title="Ver ubicación en Google Maps" aria-label={`Ver ubicación de ${student.name || student.fullName}`} className="rounded-lg border border-sky-500/30 px-2 text-sky-400 hover:bg-sky-500/10"><MaterialIcon name="location_on" /></button>}
                         </div>
                       </div>
                     );
@@ -493,10 +709,10 @@ export function DashboardView({
                   ) : (
                     sortedAttendanceStudents.map(student => {
                         const status = getAttendanceStatus(student, attendanceDate);
+                        const attendanceRecord = getSelectedAttendanceRecord(student);
                         const displayEmail = student.email || student.parentEmail || student.family?.guardian?.email || student.family?.mother?.email || student.family?.father?.email || '';
                         const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
                         const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
-                        const canContactForAbsence = status !== null && (!isCatechistAttendanceGroup || status === 'absent');
 
                         return (
                           <tr key={student.id} className="hover:bg-slate-700/20 transition-colors">
@@ -535,28 +751,13 @@ export function DashboardView({
                                 >
                                   Ausente
                                 </button>
+                                {attendanceRecord?.location && <button type="button" onClick={() => setAttendanceLocationModal({ member: student, record: attendanceRecord })} title="Ver ubicación en Google Maps" aria-label={`Ver ubicación de ${student.name || student.fullName}`} className="rounded-md px-2 py-1.5 text-sky-400 hover:bg-sky-500/10"><MaterialIcon name="location_on" /></button>}
                               </div>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-right">
                               <div className="flex justify-end gap-2">
-                                <button
-                                  disabled={!displayEmail || !canContactForAbsence}
-                                  onClick={() => handleOpenAttendanceMessage(contactStudent, 'email')}
-                                  title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? displayEmail || 'Correo no registrado' : 'Disponible cuando se marca ausente'}
-                                  className="attendance-email-button max-w-64 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
-                                >
-                                  {displayEmail ? <><MaterialIcon name="mail" /> {displayEmail}</> : 'Correo no registrado'}
-                                </button>
-                                <button type="button" disabled={!displayEmail} onClick={() => handleCopyAttendanceContact(displayEmail, 'Correo')} title={displayEmail ? 'Copiar correo' : 'Correo no registrado'} aria-label="Copiar correo" className="rounded-lg border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
-                                <button
-                                  disabled={!displayPhone || !canContactForAbsence}
-                                  onClick={() => handleOpenAttendanceMessage(contactStudent, 'phone')}
-                                  title={status === null ? 'Disponible cuando se marque la asistencia' : canContactForAbsence ? displayPhone || 'Teléfono no registrado' : 'Disponible cuando se marca ausente'}
-                                  className="attendance-phone-button max-w-52 truncate text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
-                                >
-                                  {displayPhone ? <><MaterialIcon name="phone" /> {displayPhone}</> : 'Teléfono no registrado'}
-                                </button>
-                                <button type="button" disabled={!displayPhone} onClick={() => handleCopyAttendanceContact(displayPhone, 'Teléfono')} title={displayPhone ? 'Copiar teléfono' : 'Teléfono no registrado'} aria-label="Copiar teléfono" className="rounded-lg border border-slate-500 px-2 text-xs text-slate-300 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"><MaterialIcon name="content_copy" /></button>
+                                <button type="button" disabled={!displayEmail} onClick={() => status === null ? handleCopyAttendanceContact(displayEmail, 'Correo') : handleOpenAttendanceMessage(contactStudent, 'email')} title={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} aria-label={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} className={`${status === null ? 'rounded-lg border border-slate-500 bg-slate-600/70 p-2 text-slate-200 hover:bg-slate-600' : 'attendance-email-button rounded-lg p-2'} disabled:cursor-not-allowed disabled:opacity-40`}><MaterialIcon name="mail" /></button>
+                                <button type="button" disabled={!displayPhone} onClick={() => status === null ? handleCopyAttendanceContact(displayPhone, 'Teléfono') : handleOpenAttendanceMessage(contactStudent, 'phone')} title={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} aria-label={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} className={`${status === null ? 'rounded-lg border border-slate-500 bg-slate-600/70 p-2 text-slate-200 hover:bg-slate-600' : 'attendance-phone-button rounded-lg p-2'} disabled:cursor-not-allowed disabled:opacity-40`}><MaterialIcon name="phone" /></button>
                               </div>
                             </td>
                           </tr>
@@ -729,6 +930,95 @@ export function DashboardView({
           </div>
         </>
       ) : null}
+
+      {isStudentAttendanceQrOpen && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm" onMouseDown={event => event.target === event.currentTarget && setIsStudentAttendanceQrOpen(false)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="student-attendance-qr-title" className={`${cardBgClass} w-full max-w-lg overflow-hidden rounded-2xl border shadow-2xl`}>
+            <div className="flex items-center justify-between border-b border-slate-500/20 p-4 sm:p-5">
+              <div>
+                <h3 id="student-attendance-qr-title" className="text-lg font-bold">Asistencia del encuentro</h3>
+                <p className="mt-1 text-xs text-slate-400">{selectedAttendanceGroup?.name || 'Grupo'} · {attendanceDate}</p>
+              </div>
+              <button type="button" onClick={() => setIsStudentAttendanceQrOpen(false)} aria-label="Cerrar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-500/10"><MaterialIcon name="close" /></button>
+            </div>
+
+            <div className="flex flex-col items-center gap-4 p-5 text-center">
+              {studentQrSessionLoading ? (
+                <div className="flex flex-col items-center gap-3 py-10 text-sm text-slate-400"><div className="h-9 w-9 animate-spin rounded-full border-4 border-emerald-500/25 border-t-emerald-500" />Recuperando sesión de asistencia…</div>
+              ) : studentAttendanceQrUrl ? (
+                <>
+                  <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold ${studentAttendanceQrSession.isOpen ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                    <span className={`h-2 w-2 rounded-full ${studentAttendanceQrSession.isOpen ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                    {studentAttendanceQrSession.expired ? 'QR vencido' : studentAttendanceQrSession.isOpen ? 'Registro abierto' : 'Registro cerrado'}
+                  </div>
+                  <div className={`rounded-2xl p-3 shadow-lg ${studentAttendanceQrSession.isOpen && !studentAttendanceQrSession.expired ? 'bg-white' : 'bg-white opacity-50'}`}>
+                    <img src={`https://api.qrserver.com/v1/create-qr-code/?size=640x640&margin=12&ecc=H&data=${encodeURIComponent(studentAttendanceQrUrl)}`} alt="Código QR para registrar asistencia al encuentro" className="h-60 w-60 sm:h-72 sm:w-72" />
+                  </div>
+                  <p className="max-w-sm text-sm text-slate-400">Escanea este QR y luego escanea el carnet del catequizando. La ubicación solo se comprueba para validar que esté dentro de 200 metros; no se guarda.</p>
+                  <div className="grid w-full max-w-md grid-cols-1 gap-2 sm:grid-cols-3">
+                    <button type="button" onClick={handleCopyStudentQrLink} className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-500/30 px-2 py-3 text-xs font-bold hover:bg-slate-500/10"><MaterialIcon name={studentQrCopied ? 'check' : 'content_copy'} />{studentQrCopied ? 'Enlace copiado' : 'Copiar enlace'}</button>
+                    <a href={`https://wa.me/?text=${encodeURIComponent(`Registra tu asistencia al encuentro: ${studentAttendanceQrUrl}`)}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-2 py-3 text-xs font-bold text-white hover:bg-emerald-500"><MaterialIcon name="chat" /> WhatsApp</a>
+                    {studentAttendanceQrSession.expired ? (
+                      <button type="button" onClick={createStudentQrSession} disabled={studentQrBusy} className="flex items-center justify-center gap-1.5 rounded-xl bg-sky-600 px-2 py-3 text-xs font-bold text-white hover:bg-sky-500 disabled:opacity-60"><MaterialIcon name="autorenew" /> Nuevo QR</button>
+                    ) : (
+                      <button type="button" onClick={toggleStudentQrSession} disabled={studentQrBusy} className={`flex items-center justify-center gap-1.5 rounded-xl px-2 py-3 text-xs font-bold text-white disabled:opacity-60 ${studentAttendanceQrSession.isOpen ? 'bg-rose-600 hover:bg-rose-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}><MaterialIcon name={studentQrBusy ? 'hourglass_empty' : studentAttendanceQrSession.isOpen ? 'lock' : 'lock_open'} />{studentQrBusy ? 'Guardando…' : studentAttendanceQrSession.isOpen ? 'Cerrar registro' : 'Abrir registro'}</button>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="rounded-2xl border border-dashed border-emerald-500/30 bg-emerald-500/5 p-8">
+                    <MaterialIcon name="my_location" className="text-5xl text-emerald-500" />
+                    <p className="mt-3 max-w-sm text-sm text-slate-400">Al abrir el registro se guardará la ubicación de este dispositivo como referencia del encuentro. El QR solo aceptará registros a 200 metros o menos.</p>
+                  </div>
+                  <button type="button" onClick={createStudentQrSession} disabled={studentQrBusy} className="flex w-full max-w-sm items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-60"><MaterialIcon name={studentQrBusy ? 'hourglass_empty' : 'qr_code_2'} />{studentQrBusy ? 'Obteniendo ubicación y creando QR…' : 'Abrir registro y generar QR'}</button>
+                </>
+              )}
+              {studentQrError && <p role="alert" className="w-full max-w-md rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-xs font-semibold text-rose-400">{studentQrError}</p>}
+              <p className="text-[11px] text-slate-500">La sesión se cierra manualmente desde este modal y vence automáticamente después de 6 horas.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isFormationQrOpen && formationCheckinUrl && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm" onMouseDown={event => event.target === event.currentTarget && setIsFormationQrOpen(false)}>
+          <div role="dialog" aria-modal="true" aria-labelledby="formation-qr-title" className={`${cardBgClass} w-full max-w-lg overflow-hidden rounded-2xl border shadow-2xl`}>
+            <div className="flex items-center justify-between border-b border-slate-500/20 p-4 sm:p-5">
+              <div><h3 id="formation-qr-title" className="text-lg font-bold">Registro de asistencia</h3><p className="mt-1 text-xs text-slate-400">{selectedAttendanceGroup?.diaconiaName || selectedAttendanceGroup?.name} · {attendanceDate}</p></div>
+              <button type="button" onClick={() => setIsFormationQrOpen(false)} aria-label="Cerrar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-500/10"><MaterialIcon name="close" /></button>
+            </div>
+            <div className="flex flex-col items-center gap-4 p-5 text-center">
+              <p className="max-w-sm text-sm text-slate-400">Cada catequista escanea el código, inicia sesión con su cuenta y confirma el permiso de ubicación para registrar su asistencia.</p>
+              <div className="rounded-2xl bg-white p-3 shadow-lg"><img src={`https://api.qrserver.com/v1/create-qr-code/?size=640x640&margin=12&ecc=H&data=${encodeURIComponent(formationCheckinUrl)}`} alt="Código QR para registrar asistencia de formación" className="h-64 w-64 sm:h-80 sm:w-80" /></div>
+              <div className="grid w-full max-w-md grid-cols-1 gap-2 sm:grid-cols-3">
+                <button type="button" onClick={handleCopyFormationLink} className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-500/30 px-2 py-3 text-xs font-bold hover:bg-slate-500/10"><MaterialIcon name={formationLinkCopied ? 'check' : 'content_copy'} /> {formationLinkCopied ? 'Enlace copiado' : 'Copiar enlace'}</button>
+                <a href={`https://wa.me/?text=${encodeURIComponent(`Registra tu asistencia a la formación: ${formationCheckinUrl}`)}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 px-2 py-3 text-xs font-bold text-white hover:bg-emerald-500"><MaterialIcon name="chat" /> Enviar por WhatsApp</a>
+                <button type="button" onClick={handleDownloadFormationQrPdf} disabled={formationPdfBusy} className="flex items-center justify-center gap-1.5 rounded-xl bg-red-800 px-2 py-3 text-xs font-bold text-white hover:bg-red-700 disabled:cursor-wait disabled:opacity-60"><MaterialIcon name={formationPdfBusy ? 'hourglass_empty' : 'picture_as_pdf'} /> {formationPdfBusy ? 'Generando…' : 'PDF para imprimir'}</button>
+              </div>
+              {formationPdfError && <p role="alert" className="text-xs font-semibold text-rose-400">{formationPdfError}</p>}
+              <p className="text-xs text-slate-500">El registro solo funciona para la cuenta del catequista y la diaconía correspondiente.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {attendanceLocationModal?.record?.location && (() => {
+        const { latitude, longitude, accuracy } = attendanceLocationModal.record.location;
+        const mapUrl = `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
+        return (
+          <div className="fixed inset-0 z-[145] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm" onMouseDown={event => event.target === event.currentTarget && setAttendanceLocationModal(null)}>
+            <div role="dialog" aria-modal="true" aria-labelledby="attendance-location-title" className={`${cardBgClass} w-full max-w-3xl overflow-hidden rounded-2xl border shadow-2xl`}>
+              <div className="flex items-center justify-between border-b border-slate-500/20 p-4">
+                <div><h3 id="attendance-location-title" className="font-bold">Ubicación del registro</h3><p className="mt-1 text-xs text-slate-400">{attendanceLocationModal.member.name || attendanceLocationModal.member.fullName} · Precisión aproximada {Math.round(accuracy || 0)} m</p></div>
+                <button type="button" onClick={() => setAttendanceLocationModal(null)} aria-label="Cerrar" className="rounded-lg p-2 text-slate-400 hover:bg-slate-500/10"><MaterialIcon name="close" /></button>
+              </div>
+              <iframe title={`Mapa de asistencia de ${attendanceLocationModal.member.name || attendanceLocationModal.member.fullName}`} src={`https://maps.google.com/maps?q=${latitude},${longitude}&z=16&output=embed`} className="h-[min(65vh,30rem)] w-full border-0" loading="lazy" />
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-500/20 p-4 text-xs text-slate-400"><span>{latitude.toFixed(6)}, {longitude.toFixed(6)}</span><a href={mapUrl} target="_blank" rel="noreferrer" className="font-semibold text-sky-400 hover:underline">Abrir en Google Maps <MaterialIcon name="open_in_new" /></a></div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

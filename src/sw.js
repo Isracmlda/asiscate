@@ -6,7 +6,11 @@ import { getMessaging, onBackgroundMessage } from 'firebase/messaging/sw';
 import { firebaseConfig } from './config/firebaseConfig';
 
 precacheAndRoute(self.__WB_MANIFEST);
-registerRoute(new NavigationRoute(createHandlerBoundToURL('/index.html')));
+// Firebase Auth uses /__/auth/* for its OAuth callback helper. Do not let the
+// PWA navigation fallback replace that endpoint with the SPA's index.html.
+registerRoute(new NavigationRoute(createHandlerBoundToURL('/index.html'), {
+  denylist: [/^\/__/]
+}));
 self.skipWaiting();
 clientsClaim();
 

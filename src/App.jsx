@@ -3,6 +3,7 @@ import { auth, db, googleProvider, microsoftProvider } from './config/firebase';
 import { AuthModal } from './components/AuthModal';
 import { QrModal } from './components/Modals/QrModal';
 import { ScannerModal } from './components/Modals/ScannerModal';
+import { StudentAttendanceQrPage } from './components/StudentAttendanceQrPage';
 import { ConfirmModal } from './components/Modals/ConfirmModal';
 import { AsisCateLogo } from './components/Shared/AsisCateLogo';
 import { CountryCodeSelect } from './components/Shared/CountryCodeSelect';
@@ -38,7 +39,9 @@ import { disableAttendanceReminders, enableAttendanceReminders, isInstalledApp a
 import { loadXlsx } from './services/spreadsheetService';
 import { hasDuplicateGroup, hasDuplicateReservation, isRecentDuplicatePayment, sameNormalized } from './utils/recordValidation';
 import { 
-  signInWithPopup, 
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
@@ -55,6 +58,17 @@ import {
   deleteDoc,
   writeBatch
 } from 'firebase/firestore';
+
+const FORMATION_CHECKIN_AUTH_KEY = 'asiscate-formation-checkin-auth';
+
+const markFormationCheckinLoginAttempt = (isCheckinFlow) => {
+  if (!isCheckinFlow) return;
+  try {
+    sessionStorage.setItem(FORMATION_CHECKIN_AUTH_KEY, '1');
+  } catch (error) {
+    console.warn('No se pudo guardar el intento de autenticación para el QR:', error);
+  }
+};
 
 const loadFaviconAsPng = async () => {
   const response = await fetch('/favicon.svg');
@@ -83,6 +97,7 @@ const DEFAULT_GROUP_SCHEDULE_OPTIONS = {
 };
 
 const CATECHIST_GROUP_PREFIX = 'catequistas:';
+const CATECHIST_PARISH_GROUP_PREFIX = 'catequistas:parroquia:';
 const CATECHIST_USER_PREFIX = 'catequista:user:';
 const CATECHIST_PENDING_PREFIX = 'catequista:pending:';
 const EXCLUDED_CATECHIST_EMAIL = 'asiscate.elcarmen@gmail.com';
@@ -101,13 +116,15 @@ const getCatechistAttendanceMembers = (diaconiaId, allUsers, catechistRoster, gr
     userItem.diaconiaId === diaconiaId
     && String(userItem.email || '').trim().toLowerCase() !== EXCLUDED_CATECHIST_EMAIL
   ));
-  const registeredEmails = new Set(existingUsers.map(userItem => String(userItem.email || '').trim().toLowerCase()));
-  const registeredMembers = existingUsers.map(userItem => ({
+  const allDiaconiaUsers = allUsers.filter(userItem => userItem.diaconiaId === diaconiaId);
+  const knownEmails = new Set(allDiaconiaUsers.map(userItem => String(userItem.email || '').trim().toLowerCase()).filter(Boolean));
+  const registeredMembers = existingUsers.filter(userItem => userItem.active !== false).map(userItem => ({
     id: `${CATECHIST_USER_PREFIX}${userItem.id}`,
     memberType: 'catechistUser',
     memberDocId: userItem.id,
     name: userItem.name || userItem.email || 'Catequista',
     email: userItem.email || '',
+    contactEmail: userItem.contactEmail || '',
     phone: userItem.phone || '',
     attendance: Array.isArray(userItem.attendance) ? userItem.attendance : [],
     groupId
@@ -116,7 +133,7 @@ const getCatechistAttendanceMembers = (diaconiaId, allUsers, catechistRoster, gr
     .filter(entry => (
       (entry.groupId || getCatechistGroupId(entry.diaconiaId)) === groupId
       && String(entry.email || '').trim().toLowerCase() !== EXCLUDED_CATECHIST_EMAIL
-      && !registeredEmails.has(String(entry.email || '').trim().toLowerCase())
+      && !knownEmails.has(String(entry.email || '').trim().toLowerCase())
     ))
     .map(entry => ({
       id: `${CATECHIST_PENDING_PREFIX}${entry.id}`,
@@ -136,6 +153,11 @@ const getCatechistAttendanceMembers = (diaconiaId, allUsers, catechistRoster, gr
 const getGroupAttendanceMembers = (groupId, students, allUsers, catechistRoster, groups = []) => {
   if (String(groupId || '').startsWith(CATECHIST_GROUP_PREFIX)) {
     const group = groups.find(item => item.id === groupId);
+    if (Array.isArray(group?.diaconiaIds)) {
+      return group.diaconiaIds.flatMap(diaconiaId => getCatechistAttendanceMembers(
+        diaconiaId, allUsers, catechistRoster, getCatechistGroupId(diaconiaId)
+      )).map(member => ({ ...member, groupId }));
+    }
     return getCatechistAttendanceMembers(
       group?.diaconiaId || String(groupId).slice(CATECHIST_GROUP_PREFIX.length),
       allUsers,
@@ -192,11 +214,24 @@ const isAllowedNavbarColor = (hex) => {
   return brightness < 245;
 };
 
+const AppLoadingScreen = ({ themeMode }) => (
+  <div className={`min-h-screen flex flex-col justify-center items-center p-4 ${themeMode === 'dark' ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'}`}>
+    <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-red-800 border-solid" />
+    <p className="mt-4 font-medium text-sm text-center">Cargando AsisCate...</p>
+  </div>
+);
+
 export default function App() {
   const [userData, setUserData] = useState(null);
   const [userRole, setUserRole] = useState(null);
   const [activeViewMode, setActiveViewMode] = useState('catequista'); 
-  const [themeMode, setThemeMode] = useState('light'); // 'light' | 'dark'
+  const [themeMode, setThemeMode] = useState(() => {
+    try {
+      return localStorage.getItem('asiscate-theme') === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  }); // 'light' | 'dark'
   const [navbarColor, setNavbarColor] = useState('#7f1d1d');
   const [isOnline, setIsOnline] = useState(() => navigator.onLine !== false);
   const [hasPendingWrites, setHasPendingWrites] = useState(false);
@@ -392,6 +427,7 @@ export default function App() {
   const videoRef = useRef(null);
   const qrCardRef = useRef(null);
   const attendanceDateInitializedRef = useRef(false);
+  const handledFormationCheckinRef = useRef('');
   const attendanceLabelSaveTimeoutRef = useRef(null);
 
   const [editingGroupId, setEditingGroupId] = useState(null);
@@ -414,12 +450,16 @@ export default function App() {
   const [isDeletingStudent, setIsDeletingStudent] = useState(false);
 
   // Autenticación extendida (Correo/Contraseña, Microsoft, Google)
-  const [authMode, setAuthMode] = useState('login'); // 'login' | 'register'
-  const [emailAuthInput, setEmailAuthInput] = useState('');
+  const [authMode, setAuthMode] = useState(() => new URLSearchParams(window.location.search).get('authMode') === 'register' ? 'register' : 'login'); // 'login' | 'register'
+  const [emailAuthInput, setEmailAuthInput] = useState(() => new URLSearchParams(window.location.search).get('email') || '');
   const [passwordAuthInput, setPasswordAuthInput] = useState('');
   const [nameAuthInput, setNameAuthInput] = useState('');
   const [authError, setAuthError] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [formationCheckinResult, setFormationCheckinResult] = useState(null);
+  const [formationCheckinDataReady, setFormationCheckinDataReady] = useState(false);
+  const isFormationCheckinFlowRef = useRef(new URLSearchParams(window.location.search).get('formationCheckin') === '1');
+  const isStudentAttendanceQrFlowRef = useRef(new URLSearchParams(window.location.search).get('studentAttendanceQr') === '1');
 
   useEffect(() => {
     const handleConnectionChange = () => setIsOnline(navigator.onLine !== false);
@@ -460,6 +500,13 @@ export default function App() {
     document.title = 'AsisCate';
   }, []);
 
+  useEffect(() => {
+    try { localStorage.setItem('asiscate-theme', themeMode); } catch { /* Storage puede estar deshabilitado. */ }
+    document.documentElement.style.colorScheme = themeMode;
+    document.documentElement.style.backgroundColor = themeMode === 'dark' ? '#000000' : '#f8fafc';
+    document.body.style.backgroundColor = themeMode === 'dark' ? '#000000' : '#f8fafc';
+  }, [themeMode]);
+
   useInventoryCleanup({
     activeTab,
     userRole,
@@ -477,7 +524,9 @@ export default function App() {
       setUserPhoneNumber(profile.phoneNumber || '');
       setModalParroquiaId(profile.parroquiaId || '');
       setModalDiaconiaId(profile.diaconiaId || '');
-      setThemeMode(profile.theme || 'light');
+      const resolvedTheme = profile.theme === 'dark' ? 'dark' : 'light';
+      setThemeMode(resolvedTheme);
+      try { localStorage.setItem('asiscate-theme', resolvedTheme); } catch { /* Storage puede estar deshabilitado. */ }
       if (isAllowedNavbarColor(profile.navbarColor)) setNavbarColor(profile.navbarColor);
       return role;
     } catch (error) {
@@ -574,6 +623,7 @@ export default function App() {
       if (catechistRosterSnap) {
         setCatechistRoster(mapSnapshotDocs(catechistRosterSnap));
       }
+      setFormationCheckinDataReady(true);
 
       if (user) {
         const currentUserFreshData = nextUsers.find(u => u.id === user.uid);
@@ -627,6 +677,24 @@ export default function App() {
   const { user, loading, setLoading } = useAuthSession({
     resolveUser: fetchAndResolveUser,
     loadData: fetchAllData,
+    beforeResolve: async (currentUser) => {
+      if (!isFormationCheckinFlowRef.current) return true;
+      let isFreshLogin = false;
+      try {
+        isFreshLogin = sessionStorage.getItem(FORMATION_CHECKIN_AUTH_KEY) === '1';
+      } catch (error) {
+        console.warn('No se pudo revisar la sesión del QR:', error);
+      }
+      if (isFreshLogin) return true;
+
+      // Cada apertura del enlace QR debe autenticar a la persona que va a marcar.
+      try {
+        await signOut(auth);
+      } catch (error) {
+        console.error('No se pudo cerrar la sesión anterior antes del acceso QR:', error);
+      }
+      return false;
+    },
     onResolved: (resolvedRole) => {
       setUserRole(resolvedRole);
       const initialView = resolvedRole === 'admin'
@@ -637,6 +705,7 @@ export default function App() {
       setActiveViewMode(initialView);
     },
     onSignedOut: () => {
+      if (isFormationCheckinFlowRef.current) setFormationCheckinDataReady(false);
       setUserData(null);
       setUserRole(null);
       setAttendanceRemindersEnabled(false);
@@ -646,6 +715,7 @@ export default function App() {
       setGroups([]);
       setStudents([]);
       setAllUsers([]);
+      setCatechistRoster([]);
     }
   });
 
@@ -893,6 +963,7 @@ export default function App() {
   const handleToggleTheme = async () => {
     const nextTheme = themeMode === 'light' ? 'dark' : 'light';
     setThemeMode(nextTheme);
+    try { localStorage.setItem('asiscate-theme', nextTheme); } catch { /* Storage puede estar deshabilitado. */ }
 
     if (user) {
       try {
@@ -927,17 +998,77 @@ export default function App() {
         return 'Se canceló la solicitud de inicio de sesión.';
       case 'auth/account-exists-with-different-credential':
         return 'Ya existe una cuenta con este correo usando otro método de inicio de sesión.';
+      case 'auth/unauthorized-domain':
+        return 'Este dominio no está autorizado para iniciar sesión con Firebase. Agrega el dominio actual en la configuración de Authentication.';
+      case 'auth/network-request-failed':
+        return 'No se pudo completar el inicio de sesión por un problema de conexión. Revisa tu conexión e inténtalo de nuevo.';
       default:
         return error?.message || 'Ocurrió un error al autenticar. Por favor intenta nuevamente.';
     }
   };
 
+  const prepareFormationAuthRedirect = async () => {
+    if (new URLSearchParams(window.location.search).get('formationCheckin') !== '1' || !('serviceWorker' in navigator)) return;
+
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) return;
+      const previousController = navigator.serviceWorker.controller;
+      const previousActiveWorker = registration.active;
+      await Promise.race([
+        registration.update(),
+        new Promise(resolve => window.setTimeout(resolve, 3000))
+      ]);
+
+      const installingWorker = registration.installing || registration.waiting;
+      if (installingWorker) {
+        await new Promise(resolve => {
+          const timeoutId = window.setTimeout(resolve, 5000);
+          const finishWhenSettled = () => {
+            if (installingWorker.state === 'activated' || installingWorker.state === 'redundant') {
+              window.clearTimeout(timeoutId);
+              installingWorker.removeEventListener('statechange', finishWhenSettled);
+              resolve();
+            }
+          };
+          installingWorker.addEventListener('statechange', finishWhenSettled);
+          finishWhenSettled();
+        });
+      }
+
+      if (previousController && navigator.serviceWorker.controller === previousController
+        && registration.active && registration.active !== previousActiveWorker) {
+        await Promise.race([
+          new Promise(resolve => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true })),
+          new Promise(resolve => window.setTimeout(resolve, 1500))
+        ]);
+      }
+    } catch (error) {
+      console.warn('No se pudo actualizar el service worker antes del acceso QR:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (!isFormationCheckinFlowRef.current) return;
+    getRedirectResult(auth).catch(error => {
+      console.error('Error al completar el inicio de sesión redirigido:', error);
+      setAuthError(getReadableAuthError(error, 'google'));
+      setLoading(false);
+    });
+  }, []);
+
   const handleGoogleLogin = async () => {
     try {
+      markFormationCheckinLoginAttempt(isFormationCheckinFlowRef.current);
       setAuthError('');
       setAuthSubmitting(true);
       setLoading(true);
-      await signInWithPopup(auth, googleProvider);
+      if (isFormationCheckinFlowRef.current) {
+        await prepareFormationAuthRedirect();
+        await signInWithRedirect(auth, googleProvider);
+      } else {
+        await signInWithPopup(auth, googleProvider);
+      }
     } catch (error) {
       console.error("Error al iniciar sesión con Google:", error);
       setAuthError(getReadableAuthError(error, 'google'));
@@ -949,10 +1080,16 @@ export default function App() {
 
   const handleMicrosoftLogin = async () => {
     try {
+      markFormationCheckinLoginAttempt(isFormationCheckinFlowRef.current);
       setAuthError('');
       setAuthSubmitting(true);
       setLoading(true);
-      await signInWithPopup(auth, microsoftProvider);
+      if (isFormationCheckinFlowRef.current) {
+        await prepareFormationAuthRedirect();
+        await signInWithRedirect(auth, microsoftProvider);
+      } else {
+        await signInWithPopup(auth, microsoftProvider);
+      }
     } catch (error) {
       console.error("Error al iniciar sesión con Microsoft:", error);
       setAuthError(getReadableAuthError(error, 'microsoft'));
@@ -979,6 +1116,7 @@ export default function App() {
     }
 
     try {
+      markFormationCheckinLoginAttempt(isFormationCheckinFlowRef.current);
       setAuthSubmitting(true);
       setLoading(true);
       if (authMode === 'login') {
@@ -1514,7 +1652,7 @@ export default function App() {
     }
   };
 
-  const handleMarkAttendance = useCallback(async (studentId, status, targetDate = attendanceDate, label = attendanceLabel, targetType = attendanceType) => {
+  const handleMarkAttendance = useCallback(async (studentId, status, targetDate = attendanceDate, label = attendanceLabel, targetType = attendanceType, metadata = {}, toggleExisting = true) => {
     try {
       const student = students.find(item => item.id === studentId);
       const userMember = String(studentId).startsWith(CATECHIST_USER_PREFIX)
@@ -1530,7 +1668,7 @@ export default function App() {
           : pendingMember
             ? { ...pendingMember, memberType: 'pendingCatechist', memberDocId: pendingMember.id }
             : null;
-      if (!attendanceOwner) return;
+      if (!attendanceOwner) return false;
       const attendanceDocRef = getAttendanceDocumentRef(attendanceOwner);
 
       const saveAttendance = async (updatedAttendance) => {
@@ -1588,10 +1726,10 @@ export default function App() {
       const existingRecord = existingIndex >= 0 ? updatedAttendance[existingIndex] : null;
 
       const existingStatus = existingRecord?.status || (existingRecord?.present ? 'present' : 'absent');
-      if (existingRecord && existingStatus === status) {
+      if (existingRecord && existingStatus === status && toggleExisting) {
         updatedAttendance = updatedAttendance.filter((_, index) => index !== existingIndex);
         await saveAttendance(updatedAttendance);
-        return;
+        return true;
       }
 
       const newRecord = {
@@ -1599,7 +1737,9 @@ export default function App() {
         status: status,
         present: status === 'present',
         label: label ? label.trim() : (existingIndex >= 0 ? updatedAttendance[existingIndex].label || '' : ''),
-        type: targetType
+        type: targetType,
+        ...(metadata && typeof metadata === 'object' ? metadata : {}),
+        ...(existingRecord?.location && !metadata?.location ? { location: existingRecord.location } : {})
       };
 
       if (existingIndex >= 0) {
@@ -1609,11 +1749,111 @@ export default function App() {
       }
 
       await saveAttendance(updatedAttendance);
+      return true;
     } catch (error) {
       console.error("Error registrando asistencia:", error);
       notify("No se pudo actualizar la asistencia. Inténtalo de nuevo.", 'error');
+      return false;
     }
   }, [allUsers, attendanceDate, attendanceLabel, attendanceType, catechistRoster, fetchAllData, isOnline, notify, setAllUsers, setCatechistRoster, setUserData, students, user?.uid]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('formationCheckin') !== '1' || !user || loading || !formationCheckinDataReady) return;
+    const groupId = params.get('groupId') || '';
+    const date = params.get('date') || '';
+    const label = params.get('label') || '';
+    const checkinKey = `${user.uid}:${groupId}:${date}`;
+    if (handledFormationCheckinRef.current === checkinKey) return;
+    handledFormationCheckinRef.current = checkinKey;
+
+    const finish = () => {
+      try {
+        sessionStorage.removeItem(FORMATION_CHECKIN_AUTH_KEY);
+      } catch (error) {
+        console.warn('No se pudo limpiar el intento de autenticación del QR:', error);
+      }
+      params.delete('formationCheckin');
+      params.delete('groupId');
+      params.delete('date');
+      params.delete('label');
+      const nextSearch = params.toString();
+      window.history.replaceState({}, '', `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`);
+    };
+
+    const runCheckin = async () => {
+      const normalizedEmail = String(user.email || userData?.email || '').trim().toLowerCase();
+      const userRecord = allUsers.find(item => item.id === user.uid)
+        || allUsers.find(item => String(item.email || '').trim().toLowerCase() === normalizedEmail)
+        || (userData?.id === user.uid ? userData : null);
+      const rosterRecord = catechistRoster.find(item => (
+        item.linkedUserId === user.uid
+        || (normalizedEmail && [item.email, item.contactEmail].some(value => String(value || '').trim().toLowerCase() === normalizedEmail))
+      ));
+      const isParishGroup = groupId.startsWith(CATECHIST_PARISH_GROUP_PREFIX);
+      const groupDiaconiaId = groupId.startsWith(CATECHIST_GROUP_PREFIX) && !isParishGroup ? groupId.slice(CATECHIST_GROUP_PREFIX.length) : '';
+      const groupParishId = isParishGroup ? groupId.slice(CATECHIST_PARISH_GROUP_PREFIX.length) : '';
+      const attendeeDiaconiaId = userRecord?.diaconiaId || rosterRecord?.diaconiaId || userData?.diaconiaId || '';
+      const attendeeParishId = userRecord?.parroquiaId || rosterRecord?.parroquiaId || userData?.parroquiaId
+        || diaconias.find(item => item.id === attendeeDiaconiaId)?.parroquiaId || '';
+      const isCatechistAccount = userRecord?.role === 'catequista' || Boolean(rosterRecord) || Boolean(attendeeDiaconiaId);
+      const inGroupScope = isParishGroup
+        ? Boolean(groupParishId) && attendeeParishId === groupParishId
+        : Boolean(groupDiaconiaId) && attendeeDiaconiaId === groupDiaconiaId;
+      if (!inGroupScope || !date || !userRecord || !isCatechistAccount || userRecord.active === false) {
+        const message = !isCatechistAccount
+          ? 'Este correo todavía no está registrado como catequista en la app.'
+          : 'Esta cuenta no pertenece a la diaconía o parroquia de esta formación.';
+        setFormationCheckinResult({
+          status: 'error',
+          message,
+          canRegister: !isCatechistAccount,
+          email: normalizedEmail
+        });
+        finish();
+        return;
+      }
+
+      setFormationCheckinResult({ status: 'processing' });
+
+      let locationData;
+      if (navigator.geolocation) {
+        try {
+          const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true, timeout: 10000, maximumAge: 0
+          }));
+          locationData = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy,
+            capturedAt: new Date().toISOString()
+          };
+        } catch (error) {
+          console.info('No se obtuvo ubicación para la asistencia QR:', error?.message || error);
+        }
+      }
+
+      const attendanceUserId = userRecord.id || user.uid;
+      const saved = await handleMarkAttendance(`${CATECHIST_USER_PREFIX}${attendanceUserId}`, 'present', date, label, 'formacion', {
+        checkInMethod: 'qr',
+        ...(locationData ? { location: locationData } : {})
+      }, false);
+      if (!saved) {
+        setFormationCheckinResult({ status: 'error', message: 'No se pudo guardar la asistencia. Revisa tu conexión e inténtalo de nuevo.' });
+        finish();
+        return;
+      }
+      setFormationCheckinResult({ status: 'success', withLocation: Boolean(locationData) });
+      finish();
+    };
+
+    setFormationCheckinResult({ status: 'processing' });
+    runCheckin().catch(error => {
+      console.error('Error registrando asistencia desde el enlace QR:', error);
+      setFormationCheckinResult({ status: 'error', message: 'No se pudo registrar la asistencia. Revisa tu conexión e inténtalo de nuevo.' });
+      finish();
+    });
+  }, [allUsers, catechistRoster, diaconias, formationCheckinDataReady, handleMarkAttendance, loading, user, userData?.diaconiaId, userData?.email, userData?.id, userData?.parroquiaId]);
 
   const handleSaveAttendanceLabelForDate = async (groupId, dateStr, nextLabel = attendanceLabel, targetType = attendanceType) => {
     if (!groupId || !dateStr) return;
@@ -2086,7 +2326,6 @@ export default function App() {
   const handleOpenAttendanceMessage = (student, channel) => {
     const status = getAttendanceStatus(student, attendanceDate, attendanceType);
     const isCatechistAttendanceGroup = isCatechistGroup(attendanceGroups.find(group => group.id === selectedGroupId));
-    if (isCatechistAttendanceGroup && status !== 'absent') return;
     const unjustifiedAbsences = (student.attendance || []).filter(record => {
       const recordStatus = record.status || (record.present ? 'present' : 'absent');
       return recordStatus === 'absent';
@@ -2097,11 +2336,18 @@ export default function App() {
       ? 'Formación de catequistas'
       : attendanceType === 'misa' ? 'Misa' : 'Encuentro';
     const message = isCatechistAttendanceGroup
-      ? `Hola ${student.name || 'catequista'}:
+      ? status === 'absent'
+        ? `Hola ${student.name || 'catequista'}:
 
 Vimos que apareces como ausente el día *${attendanceDate}* en *${attendanceTypeLabel}*. Por favor, indícanos el motivo por el que faltaste para justificar tu ausencia.
 
 Gracias,
+${catechistName}`
+        : `Hola ${student.name || 'catequista'}:
+
+Te compartimos el registro de asistencia del día *${attendanceDate}* en *${attendanceTypeLabel}*: *${statusText}*.
+
+Saludos,
 ${catechistName}`
       : `¡Hola! 👋✨
 
@@ -4413,6 +4659,8 @@ ${catechistName}`;
 
     const uniqueEntries = new Map();
     const entriesWithoutEmail = [];
+    const normalizeCatechistName = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    const pendingMatchesByKey = new Map();
     entries.forEach(entry => {
       const name = String(entry.name || '').trim();
       const email = String(entry.email || '').trim().toLowerCase();
@@ -4437,14 +4685,33 @@ ${catechistName}`;
         entriesWithoutEmail.push({ name, email: '' });
       }
     });
-    const entriesToSave = [...uniqueEntries.values(), ...entriesWithoutEmail];
-    if (!entriesToSave.length) throw new Error('No hay catequistas nuevos para agregar; las cuentas ya aparecen en esta diaconía.');
+    const entriesToSave = [...uniqueEntries.values(), ...entriesWithoutEmail].filter(entry => {
+      const duplicateAccount = allUsers.some(userItem => userItem.diaconiaId === diaconiaId
+        && ((entry.email && String(userItem.email || '').trim().toLowerCase() === entry.email)
+          || normalizeCatechistName(userItem.name) === normalizeCatechistName(entry.name)));
+      if (duplicateAccount) return false;
+      const pendingMatch = catechistRoster.find(item => (item.groupId || getCatechistGroupId(item.diaconiaId)) === groupId
+        && ((entry.email && String(item.email || '').trim().toLowerCase() === entry.email)
+          || normalizeCatechistName(item.name) === normalizeCatechistName(entry.name)));
+      if (pendingMatch) {
+        pendingMatchesByKey.set(`${entry.email}|${normalizeCatechistName(entry.name)}`, pendingMatch);
+      }
+      return true;
+    });
+    const pendingToMerge = catechistRoster.filter(item => (item.groupId || getCatechistGroupId(item.diaconiaId)) === groupId
+      && allUsers.some(userItem => userItem.diaconiaId === diaconiaId
+        && ((item.email && String(userItem.email || '').trim().toLowerCase() === String(item.email).trim().toLowerCase())
+          || normalizeCatechistName(userItem.name) === normalizeCatechistName(item.name))));
+    if (!entriesToSave.length && !pendingToMerge.length) throw new Error('No hay catequistas nuevos para agregar; las cuentas ya aparecen en esta diaconía.');
     if (entriesToSave.length > 450) throw new Error('Importa un máximo de 450 catequistas por archivo.');
 
     const batch = writeBatch(db);
     const now = new Date().toISOString();
     entriesToSave.forEach(({ name, email }) => {
-      const rosterRef = email
+      const pendingMatch = pendingMatchesByKey.get(`${email}|${normalizeCatechistName(name)}`);
+      const rosterRef = pendingMatch
+        ? doc(db, 'catechistRoster', pendingMatch.id)
+        : email
         ? doc(db, 'catechistRoster', email)
         : doc(collection(db, 'catechistRoster'));
       batch.set(rosterRef, {
@@ -4464,12 +4731,105 @@ ${catechistName}`;
         }, { merge: true });
       }
     });
+    // If a preregistered entry matches a newly registered account by name/email, remove that pending copy.
+    pendingToMerge.forEach(item => batch.delete(doc(db, 'catechistRoster', item.id)));
     await batch.commit();
     await fetchAllData();
     return {
       total: entriesToSave.length,
       preauthorized: entriesToSave.filter(entry => entry.email).length
     };
+  };
+
+  const handleDeleteCatechist = async (member, group) => {
+    if (!member?.memberDocId || !group?.diaconiaId || !['admin', 'coordinador', 'coordinadorGeneral'].includes(userRole)
+      || (activeViewMode !== 'admin' && group.diaconiaId !== effectiveDiaconiaId)) return;
+    try {
+      if (member.memberType === 'pendingCatechist') {
+        await deleteDoc(doc(db, 'catechistRoster', member.memberDocId));
+      }
+      await fetchAllData();
+    } catch (error) {
+      console.error('Error eliminando catequista:', error);
+      alert('No se pudo eliminar al catequista de la lista.');
+    }
+  };
+
+  const handleEditCatechist = async (member, group, name, email) => {
+    if (!member?.memberDocId || !group?.diaconiaId || !['admin', 'coordinador', 'coordinadorGeneral'].includes(userRole)
+      || (activeViewMode !== 'admin' && group.diaconiaId !== effectiveDiaconiaId)) return false;
+    const cleanName = String(name || '').trim();
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    if (!cleanName) throw new Error('El nombre es obligatorio.');
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) throw new Error('Ingresa un correo válido.');
+    if (cleanEmail && cleanEmail !== String(member.email || '').trim().toLowerCase()) {
+      const conflict = [...allUsers, ...catechistRoster].some(item => item.id !== member.memberDocId
+        && String(item.email || '').trim().toLowerCase() === cleanEmail);
+      if (conflict) throw new Error('Ese correo ya está asignado a otro registro.');
+    }
+    try {
+      if (member.memberType === 'pendingCatechist') {
+        const batch = writeBatch(db);
+        batch.update(doc(db, 'catechistRoster', member.memberDocId), { name: cleanName, email: cleanEmail });
+        if (cleanEmail) batch.set(doc(db, 'allowedEmails', cleanEmail), {
+          email: cleanEmail, createdAt: new Date().toISOString(), addedBy: user?.email || ''
+        }, { merge: true });
+        await batch.commit();
+      } else if (member.memberType === 'catechistUser') {
+        // Keep the sign-in email intact; save a separate contact email on the profile.
+        await updateDoc(doc(db, 'users', member.memberDocId), { name: cleanName, contactEmail: cleanEmail });
+      }
+      await fetchAllData();
+      return true;
+    } catch (error) {
+      console.error('Error editando catequista:', error);
+      throw new Error(error.message || 'No se pudo actualizar el catequista.');
+    }
+  };
+
+  const handleMergeCatechists = async (pendingMember, group, targetMember) => {
+    if (!pendingMember?.memberDocId || !targetMember?.memberDocId || targetMember.id === pendingMember.id) return;
+    if (pendingMember.memberType !== 'pendingCatechist'
+      || !['admin', 'coordinador', 'coordinadorGeneral'].includes(userRole)
+      || (activeViewMode !== 'admin' && group?.diaconiaId !== effectiveDiaconiaId)) {
+      throw new Error('No tienes permisos para fusionar estos registros.');
+    }
+    const normalizeName = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    if (normalizeName(pendingMember.name) !== normalizeName(targetMember.name)) throw new Error('Solo puedes fusionar catequistas con el mismo nombre.');
+    try {
+      const source = catechistRoster.find(item => item.id === pendingMember.memberDocId);
+      if (!source) throw new Error('No se encontró la entrada pendiente que quieres fusionar.');
+      const sourceAttendance = Array.isArray(source.attendance) ? source.attendance : [];
+      if (targetMember.memberType === 'pendingCatechist') {
+        const target = catechistRoster.find(item => item.id === targetMember.memberDocId);
+        if (!target) throw new Error('No se encontró el registro que se conservará.');
+        const attendance = [...(target.attendance || [])];
+        sourceAttendance.forEach(record => {
+          const key = JSON.stringify(record);
+          if (!attendance.some(existing => JSON.stringify(existing) === key)) attendance.push(record);
+        });
+        await updateDoc(doc(db, 'catechistRoster', target.id), {
+          name: target.name || source.name,
+          email: target.email || source.email || '',
+          phone: target.phone || source.phone || '',
+          attendance
+        });
+      } else if (targetMember.memberType === 'catechistUser') {
+        const target = allUsers.find(item => item.id === targetMember.memberDocId);
+        if (!target) throw new Error('No se encontró la cuenta registrada que se conservará.');
+        const attendance = [...(target.attendance || [])];
+        sourceAttendance.forEach(record => {
+          const key = JSON.stringify(record);
+          if (!attendance.some(existing => JSON.stringify(existing) === key)) attendance.push(record);
+        });
+        await updateDoc(doc(db, 'users', target.id), { attendance });
+      }
+      await deleteDoc(doc(db, 'catechistRoster', pendingMember.memberDocId));
+      await fetchAllData();
+    } catch (error) {
+      console.error('Error fusionando catequistas:', error);
+      throw new Error(error.message || 'No se pudo fusionar el catequista.');
+    }
   };
 
   const handleAddPreregisteredCatechist = async (name, email, diaconiaId) => {
@@ -4626,6 +4986,10 @@ ${catechistName}`;
 
     try {
       await deleteDoc(doc(db, 'users', targetUser.id));
+      if (targetEmail) {
+        const matchingRosterEntries = catechistRoster.filter(entry => String(entry.email || '').trim().toLowerCase() === targetEmail);
+        await Promise.all(matchingRosterEntries.map(entry => deleteDoc(doc(db, 'catechistRoster', entry.id))));
+      }
       fetchAllData();
     } catch (error) {
       console.error("Error eliminando usuario:", error);
@@ -4653,10 +5017,15 @@ ${catechistName}`;
     : `${new Date().getFullYear()}-${new Date().getFullYear() + 1}`;
   const catechistDiaconias = activeViewMode === 'coordinador'
     ? diaconias.filter(diaconia => diaconia.id === effectiveDiaconiaId)
-    : ['admin', 'coordinadorGeneral'].includes(activeViewMode)
+    : activeViewMode === 'coordinadorGeneral'
+      ? (() => {
+        const parishId = userData?.parroquiaId || diaconias.find(item => item.id === effectiveDiaconiaId)?.parroquiaId;
+        return parishId ? diaconias.filter(diaconia => diaconia.parroquiaId === parishId) : [];
+      })()
+      : activeViewMode === 'admin'
       ? (effectiveDiaconiaId
         ? diaconias.filter(diaconia => diaconia.id === effectiveDiaconiaId)
-        : activeViewMode === 'admin' ? diaconias : [])
+        : diaconias)
       : [];
   const catechistGroups = catechistDiaconias.map(diaconia => ({
     id: getCatechistGroupId(diaconia.id),
@@ -4674,11 +5043,33 @@ ${catechistName}`;
     scheduleTime: '',
     room: ''
   }));
-  const attendanceGroups = [...visibleGroups, ...catechistGroups];
+  const parishCatechistGroups = activeViewMode === 'coordinadorGeneral'
+    ? (() => {
+      const parishId = userData?.parroquiaId || diaconias.find(item => item.id === effectiveDiaconiaId)?.parroquiaId;
+      const parishDiaconias = parishId ? diaconias.filter(item => item.parroquiaId === parishId) : [];
+      if (!parishId || parishDiaconias.length === 0) return [];
+      return [{
+        id: `${CATECHIST_PARISH_GROUP_PREFIX}${parishId}`,
+        name: 'Formación de catequistas de la parroquia',
+        level: 'Catequistas',
+        year: currentCatechistCycle,
+        parroquiaId: parishId,
+        diaconiaIds: parishDiaconias.map(item => item.id),
+        diaconiaName: parroquias.find(item => item.id === parishId)?.name || 'Toda la parroquia',
+        type: 'catequistas',
+        catechistIds: [], catechistNames: [], isVisibleForCatechists: false,
+        scheduleDay: '', scheduleTime: '', room: ''
+      }];
+    })()
+    : [];
+  const attendanceGroups = [...visibleGroups, ...parishCatechistGroups, ...catechistGroups];
   const catechistGroupMembers = catechistGroups.flatMap(group => (
     getCatechistAttendanceMembers(group.diaconiaId, allUsers, catechistRoster, group.id)
   ));
-  const attendanceStudents = [...visibleStudents, ...catechistGroupMembers];
+  const parishCatechistMembers = parishCatechistGroups.flatMap(group => (
+    getGroupAttendanceMembers(group.id, students, allUsers, catechistRoster, attendanceGroups)
+  ));
+  const attendanceStudents = [...visibleStudents, ...catechistGroupMembers, ...parishCatechistMembers];
 
   useEffect(() => {
     const firstVisibleGroupId = visibleGroups[0]?.id || '';
@@ -4743,13 +5134,50 @@ ${catechistName}`;
     showPreferencesMenu
   } = useRoleAccess({ allUsers, activeViewMode, userRole, userData, effectiveDiaconiaId, isEnrollmentEnabled });
 
-  if (loading) {
+  if (isStudentAttendanceQrFlowRef.current) {
+    const params = new URLSearchParams(window.location.search);
+    return <StudentAttendanceQrPage sessionId={params.get('sessionId') || ''} themeMode={themeMode} />;
+  }
+
+  if (isFormationCheckinFlowRef.current && user) {
+    const checkinStatus = formationCheckinResult?.status || 'processing';
+    const checkinSucceeded = checkinStatus === 'success';
+    const checkinFailed = checkinStatus === 'error';
+    const registrationUrl = new URL('/', window.location.origin);
+    registrationUrl.searchParams.set('authMode', 'register');
+    if (formationCheckinResult?.email) registrationUrl.searchParams.set('email', formationCheckinResult.email);
     return (
-      <div className={`min-h-screen flex flex-col justify-center items-center p-4 ${themeMode === 'dark' ? 'bg-black text-white' : 'bg-slate-50 text-slate-800'}`}>
-        <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-red-800 border-solid"></div>
-        <p className="mt-4 font-medium text-sm text-center">Cargando AsisCate...</p>
+      <div className={`min-h-screen flex items-center justify-center p-5 ${themeMode === 'dark' ? 'bg-black text-white' : 'bg-gradient-to-br from-red-50 to-slate-100 text-slate-800'}`}>
+        <div className={`w-full max-w-md rounded-3xl border p-8 text-center shadow-xl ${themeMode === 'dark' ? 'border-neutral-800 bg-neutral-950' : 'border-red-100 bg-white'}`}>
+          <AsisCateLogo className="mx-auto mb-5 h-16 w-16" />
+          <div className={`mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full ${checkinSucceeded ? 'bg-emerald-500/15 text-emerald-500' : checkinFailed ? 'bg-rose-500/15 text-rose-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
+            {checkinStatus === 'processing'
+              ? <div className="h-8 w-8 animate-spin rounded-full border-4 border-emerald-500/25 border-t-emerald-500" />
+              : <MaterialIcon name={checkinSucceeded ? 'check_circle' : checkinFailed ? 'error' : 'check_circle'} className="text-4xl" />}
+          </div>
+          <h1 className="text-2xl font-extrabold">{checkinSucceeded ? '¡Asistencia registrada!' : checkinFailed ? 'No se pudo registrar' : 'Registrando asistencia'}</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            {checkinSucceeded
+              ? `La asistencia a la formación se registró con éxito${formationCheckinResult.withLocation ? ' junto con tu ubicación' : ''}. Ya puedes cerrar esta página.`
+              : checkinFailed
+                ? formationCheckinResult.message
+                : 'Estamos confirmando tu cuenta y guardando la asistencia. No cierres esta página todavía.'}
+          </p>
+          {checkinFailed && formationCheckinResult.canRegister && (
+            <div className="mt-6">
+              <a href={registrationUrl.toString()} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-500">
+                <MaterialIcon name="person_add" /> Registrarme en la app
+              </a>
+              {formationCheckinResult.email && <p className="mt-2 break-all text-xs text-slate-500">Se usará el correo {formationCheckinResult.email}</p>}
+            </div>
+          )}
+        </div>
       </div>
     );
+  }
+
+  if (loading) {
+    return <AppLoadingScreen themeMode={themeMode} />;
   }
 
   if (!user) {
@@ -4783,7 +5211,7 @@ ${catechistName}`;
   const navbarUserName = (userData?.name || user?.displayName || 'Usuario').trim().split(/\s+/)[0] || 'Usuario';
 
   return (
-    <Suspense fallback={<div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm font-semibold text-slate-700 dark:bg-slate-950 dark:text-slate-200">Cargando AsisCate…</div>}>
+    <Suspense fallback={<AppLoadingScreen themeMode={themeMode} />}>
       <div className={`min-h-screen flex flex-col ${mainBgClass}`}>
       {/* HEADER DE NAVEGACIÓN */}
       {(!isOnline || hasPendingWrites || queuedAttendanceWrites > 0) && (
@@ -5503,6 +5931,9 @@ ${catechistName}`;
             canManageCatechistRoster={['admin', 'coordinador', 'coordinadorGeneral'].includes(activeViewMode)}
             handleAddPreregisteredCatechist={handleAddPreregisteredCatechist}
             handleImportPreregisteredCatechists={handleImportPreregisteredCatechists}
+            handleDeleteCatechist={handleDeleteCatechist}
+            handleMergeCatechists={handleMergeCatechists}
+            handleEditCatechist={handleEditCatechist}
           />
         )}
         {activeTab === 'inventario' && (
