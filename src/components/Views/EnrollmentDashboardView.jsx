@@ -78,6 +78,12 @@ export default function EnrollmentDashboardView({
     'Septimo Nivel',
     'Confirma'
   ];
+  const getCanonicalLevel = value => {
+    const rawLevel = String(value || '').trim();
+    const normalizedLevel = rawLevel.toLocaleLowerCase('es');
+    return levelsList.find(level => normalizedLevel === level.toLocaleLowerCase('es')
+      || normalizedLevel.startsWith(`${level.toLocaleLowerCase('es')} (`)) || rawLevel || 'Primer Nivel';
+  };
 
   const updateMassGroupCount = (value) => {
     const nextCount = Math.max(1, Math.min(20, Number(value) || 1));
@@ -199,21 +205,20 @@ export default function EnrollmentDashboardView({
   // 5. Asistente para creación / asignación masiva de grupos
 
   // 2. Filtrar estudiantes por ciclo seleccionado
-  const cycleStudentsRaw = students.filter(s => {
-    if (!s.cycle) return true;
-    return s.cycle === selectedCycle;
+  const cycleStudentsRaw = students.flatMap(student => {
+    const group = groups.find(item => item.id === student.groupId);
+    const groupMatchesSelectedCycle = String(group?.year || '').trim() === selectedCycle;
+    const studentCycle = groupMatchesSelectedCycle || !student.cycle ? selectedCycle : student.cycle;
+    if (studentCycle !== selectedCycle) return [];
+    return [{
+      ...student,
+      level: getCanonicalLevel(group?.level || student.level),
+      cycle: studentCycle
+    }];
   });
-  const cycleStudents = Array.from(cycleStudentsRaw.reduce((map, student) => {
-    const normalizedName = String(student.fullName || student.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
-    const key = `${normalizedName}|${student.level || 'Primer Nivel'}|${student.cycle || selectedCycle}`;
-    const current = map.get(key);
-    const score = Object.values(student).filter(value => value !== null && value !== undefined && String(value).trim() !== '').length;
-    const currentScore = current ? Object.values(current).filter(value => value !== null && value !== undefined && String(value).trim() !== '').length : -1;
-    const currentCreatedAt = current?.createdAt ? new Date(current.createdAt).getTime() : 0;
-    const studentCreatedAt = student?.createdAt ? new Date(student.createdAt).getTime() : 0;
-    if (!current || score > currentScore || (score === currentScore && studentCreatedAt >= currentCreatedAt)) map.set(key, student);
-    return map;
-  }, new Map()).values());
+  // Mantener todas las fichas registradas (también las creadas desde Grupos).
+  // Cada documento conserva su ID para abrir y editar su expediente individual.
+  const cycleStudents = Array.from(new Map(cycleStudentsRaw.map((student, index) => [student.id || `student-${index}`, student])).values());
 
   // Conteo de catequizandos por Nivel
   const studentsByLevel = levelsList.reduce((acc, level) => {
@@ -686,8 +691,7 @@ export default function EnrollmentDashboardView({
       {/* Encabezado y Control General de Apertura de Matrículas */}
       <div className="flex min-w-0 flex-col gap-4 overflow-hidden rounded-2xl border border-slate-300 bg-slate-100 p-3 dark:border-slate-700/60 dark:bg-slate-800/40 sm:p-5 md:flex-row md:items-center md:justify-between">
       <div className="min-w-0">
-        <h2 className="break-words text-xl font-black text-slate-800 dark:text-white sm:text-2xl">Dashboard Administrativo de Matrícula</h2>
-        <p className="text-xs text-slate-400 sm:text-sm">Control general de matrículas, recaudación y asignación de grupos.</p>
+        <h2 className="whitespace-nowrap text-[clamp(0.9rem,4.4vw,1.5rem)] font-black text-slate-800 dark:text-white">Dashboard Administrativo de Matrícula</h2>
         </div>
 
         {/* Switch Control Habilitar / Deshabilitar Módulo de Matrículas (Persistido) & Permisos de Usuarios */}
@@ -718,7 +722,13 @@ export default function EnrollmentDashboardView({
           </div>
 
           {/* Menú Desplegable de Permisos Específicos por Usuario */}
-          {isUsersPermissionOpen && (
+          <div
+            aria-hidden={!isUsersPermissionOpen}
+            inert={!isUsersPermissionOpen}
+            className="grid overflow-hidden transition-[grid-template-rows,opacity] duration-300 ease-in-out motion-reduce:transition-none"
+            style={{ gridTemplateRows: isUsersPermissionOpen ? '1fr' : '0fr', opacity: isUsersPermissionOpen ? 1 : 0 }}
+          >
+            <div className="min-h-0 overflow-hidden">
             <div className="z-20 w-full max-w-md space-y-2 rounded-xl border border-slate-700 bg-slate-900 p-3 shadow-xl">
               <div className="flex justify-between items-center border-b border-slate-800 pb-1.5">
                 <span className="text-xs font-bold text-amber-400">Permiso Individual de Matrícula</span>
@@ -744,7 +754,8 @@ export default function EnrollmentDashboardView({
                 })}
               </div>
             </div>
-          )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -888,15 +899,14 @@ export default function EnrollmentDashboardView({
       </div>
 
       {/* Desglose Gráfico de Matriculados por Nivel */}
-      <div className={`${cardBgClass} p-6 rounded-2xl border border-slate-300 dark:border-slate-700/60 space-y-4`}>
-        <div className="flex justify-between items-center border-b border-slate-700/60 pb-2">
+        <div className={`${cardBgClass} space-y-3 rounded-2xl border border-slate-300 p-3 dark:border-slate-700/60 sm:space-y-4 sm:p-6`}>
+        <div className="flex flex-col gap-1 border-b border-slate-700/60 pb-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <h3 className="text-base font-bold text-slate-800 dark:text-white">
             Matriculados por Nivel ({selectedCycle})
           </h3>
-          <span className="text-xs text-slate-400">Toca cualquier nivel para explorar sus expedientes</span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:mt-4 sm:grid-cols-2 sm:gap-3 lg:grid-cols-3">
           {levelsList.map(lvl => {
             const count = studentsByLevel[lvl];
             const pct = Math.round((count / maxStudentsInLevel) * 100);
@@ -905,14 +915,14 @@ export default function EnrollmentDashboardView({
               <div
                 key={lvl}
                 onClick={() => setSelectedLevelModal(lvl)}
-                className="bg-slate-100 dark:bg-slate-900/80 p-4 rounded-xl border border-slate-300 dark:border-slate-800 hover:border-amber-500/50 transition cursor-pointer group space-y-2"
+                className="group cursor-pointer space-y-1.5 rounded-xl border border-slate-300 bg-slate-100 p-3 transition hover:border-amber-500/50 dark:border-slate-800 dark:bg-slate-900/80 sm:space-y-2 sm:p-4"
               >
-                <div className="flex justify-between items-center">
+                <div className="flex min-w-0 items-center justify-between gap-2">
                   <span className="text-xs font-bold text-slate-300 group-hover:text-amber-400 transition truncate max-w-[170px]">
                     {lvl}
                   </span>
-                  <span className="text-lg font-black text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-lg border border-amber-500/20">
-                    {count}
+                  <span className="shrink-0 rounded-lg border border-amber-500/20 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-400 sm:text-xs">
+                    {count} {count === 1 ? 'expediente' : 'expedientes'} →
                   </span>
                 </div>
 
@@ -924,9 +934,6 @@ export default function EnrollmentDashboardView({
                   />
                 </div>
 
-                <div className="text-[10px] text-slate-400 text-right font-medium">
-                  Ver {count} {count === 1 ? 'expediente' : 'expedientes'} →
-                </div>
               </div>
             );
           })}

@@ -3,6 +3,19 @@ import { MaterialIcon } from '../Shared/MaterialIcon';
 import { PaymentsView } from './PaymentsView';
 import { getStudentContactEmail } from '../../services/firestoreDataMappers';
 
+function CollapsibleContent({ open, children }) {
+  return (
+    <div
+      aria-hidden={!open}
+      inert={!open}
+      className="grid overflow-hidden transition-[grid-template-rows,opacity] duration-300 ease-in-out motion-reduce:transition-none"
+      style={{ gridTemplateRows: open ? '1fr' : '0fr', opacity: open ? 1 : 0 }}
+    >
+      <div className="min-h-0 overflow-hidden">{children}</div>
+    </div>
+  );
+}
+
 export function ReportsView({
   cardBgClass,
   selectedGroupId,
@@ -16,7 +29,6 @@ export function ReportsView({
   onOpenImportStudents,
   allUsers,
   activeViewMode,
-  handleDeleteOrphanedAttendance,
   reportSubTab,
   setReportSubTab,
   reportFilters,
@@ -95,7 +107,6 @@ export function ReportsView({
   handleGenerateCatechistQr,
   handleExportGroupRosterToPdf,
   handleExportGroupRosterToExcel,
-  buildWhatsAppLink,
   visiblePaymentRecords,
   paymentForm,
   setPaymentForm,
@@ -127,6 +138,7 @@ export function ReportsView({
   handleEditCatechist
 }) {
   const [isGroupSettingsOpen, setIsGroupSettingsOpen] = useState(false);
+  const [copiedRosterContact, setCopiedRosterContact] = useState('');
   const [isAddCatechistFormOpen, setIsAddCatechistFormOpen] = useState(false);
   const [newCatechistName, setNewCatechistName] = useState('');
   const [newCatechistEmail, setNewCatechistEmail] = useState('');
@@ -158,6 +170,16 @@ export function ReportsView({
         .map(name => String(name || '').trim().split(/\s+/)[0])
         .filter(Boolean)
     : [];
+  const handleCopyRosterContact = async (value, contactType, studentId) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      const copiedKey = `${studentId}:${contactType}`;
+      setCopiedRosterContact(copiedKey);
+      window.setTimeout(() => setCopiedRosterContact(current => current === copiedKey ? '' : current), 1800);
+    } catch (error) {
+      console.warn(`No se pudo copiar el ${contactType === 'email' ? 'correo' : 'teléfono'}:`, error);
+    }
+  };
   useEffect(() => {
     if (!canGenerateLevelCertificates && certificateGenerationType === 'nivel') setCertificateGenerationType('asistencia');
   }, [canGenerateLevelCertificates, certificateGenerationType, setCertificateGenerationType]);
@@ -170,15 +192,14 @@ export function ReportsView({
     <div className="space-y-6">
       {selectedGroupId && (
         <div className={`${cardBgClass} p-3 rounded-xl border shadow-sm`}>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-3">
-              {typeof onBackToGroups === 'function' && (
-                <button type="button" onClick={onBackToGroups} className="inline-flex items-center gap-1 rounded-full border border-red-700/60 bg-red-900/20 px-3 py-2 text-xs font-bold text-red-300 transition-colors hover:border-red-500 hover:bg-red-900/40 hover:text-white">
-                  <MaterialIcon name="arrow_back" /> Grupos
-                </button>
-              )}
-              <div className="min-w-0 max-w-full overflow-x-auto overscroll-x-contain rounded-full">
-                <div className="inline-flex w-max flex-nowrap gap-1 whitespace-nowrap rounded-full bg-slate-900/70 p-1">
+          <div className="mb-4 flex min-w-0 flex-wrap items-center gap-3">
+            {typeof onBackToGroups === 'function' && (
+              <button type="button" onClick={onBackToGroups} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-red-700/60 bg-red-900/20 px-3 py-2 text-xs font-bold text-red-300 transition-colors hover:border-red-500 hover:bg-red-900/40 hover:text-white">
+                <MaterialIcon name="arrow_back" /> Grupos
+              </button>
+            )}
+            <div className="min-w-0 flex-1 overflow-x-auto overscroll-x-contain rounded-full">
+              <div className="inline-flex w-max flex-nowrap gap-1 whitespace-nowrap rounded-full bg-slate-900/70 p-1">
                 {(selectedIsCatechistGroup
                   ? ['asistencia', 'lista', 'estadisticas']
                   : ['asistencia', 'lista', 'pagos', 'estadisticas', 'certificados']).map(tab => (
@@ -196,33 +217,27 @@ export function ReportsView({
                     {tab === 'asistencia' ? 'Asistencia' : tab === 'lista' ? 'Lista' : tab === 'pagos' ? 'Pagos' : tab === 'estadisticas' ? 'Estadísticas' : 'Certificados'}
                   </button>
                 ))}
-                </div>
               </div>
-              {showGroupSettings && (
-                <button
-                  type="button"
-                  onClick={() => setIsGroupSettingsOpen(true)}
-                  aria-label="Configuración del grupo"
-                  aria-expanded={isGroupSettingsOpen}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-600 bg-slate-800 text-slate-200 transition hover:border-emerald-500 hover:bg-slate-700"
-                >
-                  <MaterialIcon name="settings" />
-                </button>
-              )}
             </div>
-            <div className={`min-w-0 text-right ${selectedIsCatechistGroup ? 'flex flex-wrap items-baseline justify-end gap-x-2' : ''}`}>
-              <p className={`text-sm font-bold ${selectedIsCatechistGroup ? '' : 'truncate'}`}>{selectedGroup?.name || 'Grupo'}</p>
+            {showGroupSettings && (
+              <button
+                type="button"
+                onClick={() => setIsGroupSettingsOpen(true)}
+                aria-label="Configuración del grupo"
+                aria-expanded={isGroupSettingsOpen}
+                className="ml-auto inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-600 bg-slate-800 text-slate-200 transition hover:border-emerald-500 hover:bg-slate-700"
+              >
+                <MaterialIcon name="settings" />
+              </button>
+            )}
+            <div className="order-4 flex min-w-0 w-full flex-wrap items-baseline gap-x-2 text-left sm:order-none sm:ml-auto sm:w-auto sm:justify-end sm:text-right">
+              <p className="shrink-0 text-sm font-bold">{selectedGroup?.name || 'Grupo'}</p>
               {selectedIsCatechistGroup ? (
-                <p className="text-xs text-slate-400">Diaconía: {selectedGroup.diaconiaName || 'Diaconía'}</p>
+                <p className="min-w-0 truncate text-xs text-slate-400" title={`Diaconía: ${selectedGroup.diaconiaName || 'Diaconía'}`}>Diaconía: {selectedGroup.diaconiaName || 'Diaconía'}</p>
               ) : (
-                <p className="text-xs text-slate-400">
+                <p className="min-w-0 truncate text-xs text-slate-400" title={`Catequistas: ${catechistNames.length > 0 ? catechistNames.join(', ') : 'Sin asignar'}`}>
                   Catequistas: {catechistNames.length > 0 ? catechistNames.join(', ') : 'Sin asignar'}
                 </p>
-              )}
-              {activeViewMode === 'admin' && !selectedIsCatechistGroup && (
-                <button type="button" onClick={handleDeleteOrphanedAttendance} className="mt-1 text-[10px] font-semibold text-amber-400 hover:text-amber-300">
-                  Borrar asistencias sin grupo
-                </button>
               )}
             </div>
           </div>
@@ -295,16 +310,8 @@ export function ReportsView({
           <div key={reportSubTab} className="report-tab-content">
           {reportSubTab === 'asistencia' && (
             <div className="space-y-4">
-              <div className="flex flex-col lg:flex-row gap-3 justify-between items-start lg:items-center">
-                <div className="grid w-full grid-cols-2 gap-2 lg:max-w-2xl sm:grid-cols-4">
-                  <input
-                    type="text"
-                    value={reportFilters.search}
-                    onChange={(event) => setReportFilters(prev => ({ ...prev, search: event.target.value }))}
-                    placeholder={selectedIsCatechistGroup ? 'Buscar catequista' : 'Buscar catequizando'}
-                    className={`col-span-2 rounded-lg px-3 py-2 text-xs sm:col-span-1 ${inputBgClass}`}
-                  />
-                  <label className="min-w-0 text-[10px] font-semibold text-slate-400">
+              <div className="grid w-full grid-cols-2 items-end gap-2 sm:grid-cols-3 lg:grid-cols-12">
+                  <label className="col-span-1 min-w-0 text-[10px] font-semibold text-slate-400 lg:col-span-2">
                     Desde
                     <input
                       type="date"
@@ -313,7 +320,7 @@ export function ReportsView({
                       className={`attendance-date-filter mt-1 w-full min-w-0 rounded-lg px-2 py-2 text-xs ${inputBgClass}`}
                     />
                   </label>
-                  <label className="min-w-0 text-[10px] font-semibold text-slate-400">
+                  <label className="col-span-1 min-w-0 text-[10px] font-semibold text-slate-400 lg:col-span-2">
                     Hasta
                     <input
                       type="date"
@@ -325,21 +332,24 @@ export function ReportsView({
                   <select
                     value={reportAttendanceType}
                     onChange={(event) => setReportAttendanceType(event.target.value)}
-                    className={`col-span-2 min-w-0 rounded-lg px-3 py-2 text-xs sm:col-span-1 ${inputBgClass}`}
+                    className={`col-span-2 min-w-0 rounded-lg px-3 py-2 text-xs sm:col-span-1 lg:col-span-2 ${inputBgClass}`}
                   >
                     <option value="all">{selectedIsCatechistGroup ? 'Todos los tipos' : 'Misa + Encuentros'}</option>
                     <option value="encuentro">Encuentros</option>
                     <option value="misa">Misa</option>
                     {selectedIsCatechistGroup && <option value="formacion">Formación</option>}
                   </select>
-                  <p className="col-span-full text-[10px] text-slate-500">
-                    Las fechas filtran las asistencias dentro del rango seleccionado.
-                  </p>
-                </div>
-                <div className="flex w-full flex-row justify-end gap-2 lg:w-auto">
-                  <button onClick={() => handleExportAttendanceToExcel(selectedGroupId)} className="flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 sm:flex-none sm:text-sm"><MaterialIcon name="download" /> Excel</button>
-                  <button onClick={() => handleExportAttendanceToPdf(selectedGroupId)} className="flex-1 rounded-lg bg-red-800 px-4 py-2.5 text-xs font-bold text-white hover:bg-red-900 sm:flex-none sm:text-sm"><MaterialIcon name="picture_as_pdf" /> PDF</button>
-                </div>
+                  <div className="col-span-2 flex w-full flex-row justify-end gap-2 sm:col-span-3 lg:col-span-3 lg:order-2">
+                    <button onClick={() => handleExportAttendanceToExcel(selectedGroupId)} className="flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 sm:flex-none sm:text-sm"><MaterialIcon name="download" /> Excel</button>
+                    <button onClick={() => handleExportAttendanceToPdf(selectedGroupId)} className="flex-1 rounded-lg bg-red-800 px-4 py-2.5 text-xs font-bold text-white hover:bg-red-900 sm:flex-none sm:text-sm"><MaterialIcon name="picture_as_pdf" /> PDF</button>
+                  </div>
+                  <input
+                    type="text"
+                    value={reportFilters.search}
+                    onChange={(event) => setReportFilters(prev => ({ ...prev, search: event.target.value }))}
+                    placeholder={selectedIsCatechistGroup ? 'Buscar catequista' : 'Buscar catequizando'}
+                    className={`col-span-2 w-full min-w-0 rounded-lg px-3 py-2 text-xs sm:col-span-3 lg:col-span-3 lg:order-1 ${inputBgClass}`}
+                  />
               </div>
 
               {(() => {
@@ -358,20 +368,19 @@ export function ReportsView({
                     <div className="p-4 border-b border-slate-700 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
                       <div>
                         <h3 className="font-bold text-sm sm:text-base">Vista Previa Interactiva de Asistencias</h3>
-                        <span className="text-xs text-slate-400">Desde aquí puedes gestionar las asistencias</span>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex w-full flex-nowrap justify-end gap-1.5 sm:w-auto sm:gap-2">
                         <button
                           type="button"
                           onClick={() => setReportStudentIds(groupStudents.map(student => student.id))}
-                          className="px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-bold hover:bg-emerald-500/20"
+                          className="min-w-0 flex-1 whitespace-nowrap rounded-lg bg-emerald-500/10 px-2 py-1.5 text-[10px] font-bold text-emerald-400 hover:bg-emerald-500/20 sm:flex-none sm:px-3 sm:text-xs"
                         >
                           Seleccionar todos
                         </button>
                         <button
                           type="button"
                           onClick={() => setReportStudentIds([])}
-                          className="px-3 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 text-xs font-bold hover:bg-rose-500/20"
+                          className="min-w-0 flex-1 whitespace-nowrap rounded-lg bg-rose-500/10 px-2 py-1.5 text-[10px] font-bold text-rose-400 hover:bg-rose-500/20 sm:flex-none sm:px-3 sm:text-xs"
                         >
                           Deseleccionar todos
                         </button>
@@ -764,14 +773,14 @@ export function ReportsView({
                       const displayEmail = getStudentContactEmail(student);
                       const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
                       return (
-                        <div key={student.id} className={`${cardBgClass} rounded-xl border p-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`}>
-                          <div className="min-w-0">
+                        <div key={student.id} className={`${cardBgClass} flex flex-row items-center justify-between gap-2 rounded-xl border p-3`}>
+                          <div className="min-w-0 flex-1">
                             {rosterMode === 'view' ? (
                               <>
                                 <p className={`font-bold text-sm ${themeMode === 'dark' ? 'text-white' : 'text-slate-900'}`}>{displayName}</p>
-                                <div className="mt-1 flex flex-wrap gap-3 text-xs">
-                                  {displayEmail ? <span className="flex items-center gap-1"><a className="text-sky-400 hover:underline" href={`mailto:${displayEmail}`}>{displayEmail}</a><button type="button" title="Copiar correo" onClick={() => navigator.clipboard.writeText(displayEmail)}><MaterialIcon name="content_copy" /></button></span> : <span className="text-slate-500 italic">Sin correo</span>}
-                                  {displayPhone ? <span className="flex items-center gap-1"><a className="text-emerald-400 hover:underline" href={buildWhatsAppLink ? buildWhatsAppLink(displayPhone) : `https://wa.me/${displayPhone}`} target="_blank" rel="noreferrer">{displayPhone}</a><button type="button" title="Copiar teléfono" onClick={() => navigator.clipboard.writeText(displayPhone)}><MaterialIcon name="content_copy" /></button></span> : <span className="text-slate-500 italic">Sin teléfono</span>}
+                                <div className="mt-1 flex flex-wrap gap-2 text-xs">
+                                  {displayEmail ? <button type="button" onClick={() => handleCopyRosterContact(displayEmail, 'email', student.id)} title="Copiar correo" aria-label={`Copiar correo de ${displayName}`} className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-2 py-1 font-medium text-sky-400 hover:bg-sky-500/20"><MaterialIcon name={copiedRosterContact === `${student.id}:email` ? 'check' : 'mail'} />Correo</button> : <span className="text-slate-500 italic">Sin correo</span>}
+                                  {displayPhone ? <button type="button" onClick={() => handleCopyRosterContact(displayPhone, 'phone', student.id)} title="Copiar teléfono" aria-label={`Copiar teléfono de ${displayName}`} className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-1 font-medium text-emerald-400 hover:bg-emerald-500/20"><MaterialIcon name={copiedRosterContact === `${student.id}:phone` ? 'check' : 'phone'} />Teléfono</button> : <span className="text-slate-500 italic">Sin teléfono</span>}
                                 </div>
                               </>
                             ) : (
@@ -784,7 +793,7 @@ export function ReportsView({
                               onClick={() => handleGenerateStudentQr?.(String(student.id), student)}
                               title={`Mostrar carnet QR de ${displayName}`}
                               aria-label={`Mostrar carnet QR de ${displayName}`}
-                              className="shrink-0 rounded-lg bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-600"
+                              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500 px-2.5 py-1.5 text-[10px] font-bold text-white hover:bg-amber-600 sm:px-3 sm:py-2 sm:text-xs"
                             >
                               <MaterialIcon name="qr_code_2" /> Carnet QR
                             </button>
@@ -882,22 +891,25 @@ export function ReportsView({
             return (
               <div className="space-y-4">
                 <div className={`${cardBgClass} rounded-xl border shadow-sm overflow-hidden`}>
-                  <button type="button" onClick={() => setCertificateGenerationOpen(prev => !prev)} className="w-full p-4 flex items-center justify-between text-left">
-                    <div><h3 className="font-bold">Generar certificados</h3><p className="text-xs text-slate-400">Selecciona el tipo y genera uno o varios documentos.</p></div>
-                    <span className="text-xs text-slate-400">{certificateGenerationOpen ? 'Ocultar' : 'Mostrar'}</span>
+                  <button type="button" onClick={() => setCertificateGenerationOpen(prev => !prev)} aria-expanded={certificateGenerationOpen} className="group flex w-full items-center justify-between rounded-t-xl p-4 text-left transition-colors hover:bg-slate-500/5 active:bg-slate-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500">
+                    <div><h3 className="font-bold">Generar certificados</h3></div>
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-500/30 px-2.5 py-1 text-xs font-semibold text-slate-400 transition-colors group-hover:border-sky-500/40 group-hover:text-sky-400">
+                      {certificateGenerationOpen ? 'Ocultar' : 'Mostrar'}
+                      <MaterialIcon name={certificateGenerationOpen ? 'expand_less' : 'expand_more'} className="transition-transform duration-300" />
+                    </span>
                   </button>
-                  {certificateGenerationOpen && (
+                  <CollapsibleContent open={certificateGenerationOpen}>
                     <div className="border-t border-slate-700 p-4 space-y-4">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 items-stretch">
-                        <select value={certificateGenerationType} onChange={event => setCertificateGenerationType(event.target.value)} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`}>
+                      <div className="grid grid-cols-2 gap-2 items-stretch lg:grid-cols-5">
+                        <select value={certificateGenerationType} onChange={event => setCertificateGenerationType(event.target.value)} className={`col-span-1 min-w-0 rounded-lg px-2 py-2 text-xs sm:px-3 sm:text-sm ${inputBgClass}`}>
                           <option value="asistencia">Certificado de asistencia</option>
                           {canGenerateLevelCertificates && <option value="nivel">Certificado de nivel</option>}
                           <option value="carta">Carta de asistencia</option>
                         </select>
-                        <input type="date" value={certificateLetterDate} onChange={event => setCertificateLetterDate(event.target.value)} className={`rounded-lg px-3 py-2 text-sm ${inputBgClass}`} aria-label="Fecha de la carta" />
-                        <button type="button" onClick={() => setSelectedCertificateIds(generationStudents.map(student => student.id))} className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-700 dark:text-emerald-400">Seleccionar todos</button>
-                        <button type="button" onClick={() => setSelectedCertificateIds([])} className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-700 dark:text-rose-400">Deseleccionar todos</button>
-                        <button type="button" onClick={() => handleExportSelectedCertificatesZip(selectedGroupId)} className="rounded-lg bg-sky-600 px-4 py-2 text-xs font-bold text-white">Exportar ZIP</button>
+                        <input type="date" value={certificateLetterDate} onChange={event => setCertificateLetterDate(event.target.value)} className={`min-w-0 rounded-lg px-2 py-2 text-xs sm:px-3 sm:text-sm ${inputBgClass}`} aria-label="Fecha de la carta" />
+                        <button type="button" onClick={() => setSelectedCertificateIds(generationStudents.map(student => student.id))} className="inline-flex min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-lg bg-emerald-500/10 px-1.5 py-2 text-[9px] font-bold text-emerald-700 dark:text-emerald-400 sm:px-3 sm:text-xs"><MaterialIcon name="select_all" /> Seleccionar</button>
+                        <button type="button" onClick={() => setSelectedCertificateIds([])} className="inline-flex min-w-0 items-center justify-center gap-1 whitespace-nowrap rounded-lg bg-rose-500/10 px-1.5 py-2 text-[9px] font-bold text-rose-700 dark:text-rose-400 sm:px-3 sm:text-xs"><MaterialIcon name="deselect" /> Deseleccionar</button>
+                        <button type="button" onClick={() => handleExportSelectedCertificatesZip(selectedGroupId)} className="col-span-2 inline-flex items-center justify-center gap-1 rounded-lg bg-sky-600 px-4 py-2 text-xs font-bold text-white lg:col-span-1"><MaterialIcon name="folder_zip" /> Exportar ZIP</button>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         {generationStudents.length === 0 ? <p className="text-sm text-slate-400 md:col-span-2">No hay catequizandos en este grupo.</p> : generationStudents.map((student, index) => (
@@ -911,31 +923,34 @@ export function ReportsView({
                         ))}
                       </div>
                     </div>
-                  )}
+                  </CollapsibleContent>
                 </div>
 
                 <div className={`${cardBgClass} rounded-xl border shadow-sm overflow-hidden`}>
-                  <button type="button" onClick={() => setCertificateSearchOpen(prev => !prev)} className="w-full p-4 flex items-center justify-between text-left">
+                  <button type="button" onClick={() => setCertificateSearchOpen(prev => !prev)} aria-expanded={certificateSearchOpen} className="group flex w-full items-center justify-between rounded-t-xl p-4 text-left transition-colors hover:bg-slate-500/5 active:bg-slate-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500">
                     <div><h3 className="font-bold">Buscar certificados creados</h3><p className="text-xs text-slate-400">Consulta por tipo, nombre o QR.</p></div>
-                    <span className="text-xs text-slate-400">{certificateSearchOpen ? 'Ocultar' : 'Mostrar'}</span>
+                    <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-slate-500/30 px-2.5 py-1 text-xs font-semibold text-slate-400 transition-colors group-hover:border-sky-500/40 group-hover:text-sky-400">
+                      {certificateSearchOpen ? 'Ocultar' : 'Mostrar'}
+                      <MaterialIcon name={certificateSearchOpen ? 'expand_less' : 'expand_more'} className="transition-transform duration-300" />
+                    </span>
                   </button>
-                  {certificateSearchOpen && (
+                  <CollapsibleContent open={certificateSearchOpen}>
                     <div className="border-t border-slate-700 p-4 space-y-4">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                        <input value={certificateSearch} onChange={event => { setCertificateSearch(event.target.value); setCertificatePage(1); }} placeholder="Buscar nombre, grupo o QR" className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} />
-                        <select value={certificateSearchType} onChange={event => { setCertificateSearchType(event.target.value); setCertificatePage(1); }} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                      <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+                        <input value={certificateSearch} onChange={event => { setCertificateSearch(event.target.value); setCertificatePage(1); }} placeholder="Buscar nombre, grupo o QR" className={`col-span-2 min-w-0 rounded-lg px-3 py-2 text-xs lg:col-span-1 ${inputBgClass}`} />
+                        <select value={certificateSearchType} onChange={event => { setCertificateSearchType(event.target.value); setCertificatePage(1); }} className={`min-w-0 rounded-lg px-2 py-2 text-xs sm:px-3 ${inputBgClass}`}>
                           <option value="all">Todos los certificados</option><option value="asistencia">Asistencia</option><option value="nivel">Nivel</option><option value="carta">Carta</option>
                         </select>
-                        <select value={levelCertificateFilters.level} onChange={event => { setLevelCertificateFilters(prev => ({ ...prev, level: event.target.value })); setCertificatePage(1); }} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                        <select value={levelCertificateFilters.level} onChange={event => { setLevelCertificateFilters(prev => ({ ...prev, level: event.target.value })); setCertificatePage(1); }} className={`min-w-0 rounded-lg px-2 py-2 text-xs sm:px-3 ${inputBgClass}`}>
                           <option value="all">Todos los niveles</option>{levelOptions.map(option => <option key={option} value={option}>{option}</option>)}
                         </select>
-                        <select value={levelCertificateFilters.year} onChange={event => { setLevelCertificateFilters(prev => ({ ...prev, year: event.target.value })); setCertificatePage(1); }} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                        <select value={levelCertificateFilters.year} onChange={event => { setLevelCertificateFilters(prev => ({ ...prev, year: event.target.value })); setCertificatePage(1); }} className={`min-w-0 rounded-lg px-2 py-2 text-xs sm:px-3 ${inputBgClass}`}>
                           <option value="all">Todos los años</option>{Array.from(new Set(groups.map(group => group.year || '2026-2027'))).map(year => <option key={year} value={year}>{year}</option>)}
                         </select>
-                        <select value={certificateFilters.scope} onChange={event => setCertificateFilters(prev => ({ ...prev, scope: event.target.value }))} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                        <select value={certificateFilters.scope} onChange={event => setCertificateFilters(prev => ({ ...prev, scope: event.target.value }))} className={`min-w-0 rounded-lg px-2 py-2 text-xs sm:px-3 ${inputBgClass}`}>
                           <option value="all">Todos los grupos</option>{visibleGroups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
                         </select>
-                        <button type="button" onClick={handleScanCertificateQr} className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white">Buscar por QR</button>
+                        <button type="button" onClick={handleScanCertificateQr} className="col-span-2 rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white lg:col-span-1">Buscar por QR</button>
                       </div>
                       <div className="flex flex-wrap gap-2 items-center justify-between">
                         <span className="text-xs text-slate-400">{filteredCertificateRecords.length} registro(s)</span>
@@ -973,12 +988,18 @@ export function ReportsView({
                       </div>
                       {totalCertificatePages > 1 && <div className="flex items-center justify-center gap-3"><button type="button" disabled={certificatePage <= 1} onClick={() => setCertificatePage(page => Math.max(1, page - 1))} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-bold disabled:opacity-40">Anterior</button><span className="text-xs text-slate-400">Página {certificatePage} de {totalCertificatePages}</span><button type="button" disabled={certificatePage >= totalCertificatePages} onClick={() => setCertificatePage(page => Math.min(totalCertificatePages, page + 1))} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-bold disabled:opacity-40">Siguiente</button></div>}
                     </div>
-                  )}
+                  </CollapsibleContent>
                 </div>
               </div>
             );
           })()}
           </div>
+        </div>
+      )}
+      {copiedRosterContact && (
+        <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-[200] -translate-x-1/2 rounded-full border border-emerald-400/30 bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-xl">
+          <MaterialIcon name="check_circle" className="mr-1 align-middle text-emerald-400" />
+          {copiedRosterContact.endsWith(':email') ? 'Correo copiado' : 'Teléfono copiado'}
         </div>
       )}
     </div>

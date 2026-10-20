@@ -586,15 +586,15 @@ export const AssistantWidget = ({
   const displayedMessages = activeTabMode === 'favorites' ? favorites : assistantMessages;
 
   return (
-    <div className={`rounded-2xl border p-3 sm:p-4 transition-colors ${
+    <div className={`min-w-0 rounded-2xl border p-3 pb-4 sm:p-4 sm:pb-5 transition-colors ${
       isDark ? 'border-sky-500/20 bg-sky-500/5' : 'border-sky-300 bg-sky-50/70'
     }`}>
       {/* HEADER DE MARIA LISO Y LIMPIO */}
       <div className="flex items-center justify-between gap-2 mb-3 border-b pb-2 border-slate-700/40">
         <div className="flex items-center gap-2">
           <h3 className={`text-base font-bold ${isDark ? 'text-sky-300' : 'text-sky-900'}`}>MarIA</h3>
-          <span className="text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 px-2 py-0.5 rounded-full font-medium" title={`Modelo activo: ${activeModel}`}>
-            Powered by <strong className="font-mono text-sky-300 font-bold">{activeModel}</strong>
+          <span className="text-[10px] bg-sky-500/10 text-sky-400 border border-sky-500/20 px-2 py-0.5 rounded-full font-medium" title={`Versión del modelo: ${activeModel}`}>
+            Powered by <strong className="text-sky-300 font-bold">Gemini</strong>
           </span>
         </div>
         
@@ -648,7 +648,11 @@ export const AssistantWidget = ({
                 </div>
               )}
 
-              <div className={`text-sm break-words [word-break:break-word] overflow-wrap-break-word [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ul]:my-1 [&>ol]:my-1 ${
+              {message.role === 'assistant' && message.text === '...' ? (
+                <div className="flex items-center gap-2 py-1 text-xs italic text-sky-300" role="status" aria-live="polite">
+                  <MaterialIcon name="auto_awesome" className="animate-pulse" /> MarIA está procesando y respondiendo en tiempo real...
+                </div>
+              ) : <div className={`text-sm break-words [word-break:break-word] overflow-wrap-break-word [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ul]:my-1 [&>ol]:my-1 ${
                 message.role === 'assistant'
                   ? (isDark ? 'prose prose-invert max-w-none' : 'text-slate-800')
                   : 'text-white'
@@ -698,7 +702,7 @@ export const AssistantWidget = ({
                 >
                   {message.text}
                 </ReactMarkdown>
-              </div>
+              </div>}
 
               {/* BARRA DE ACCIONES CON ICONOS Y TOOLTIPS */}
               {message.role === 'assistant' && (
@@ -743,7 +747,7 @@ export const AssistantWidget = ({
           );
         })}
 
-        {isLoading && (
+        {isLoading && !assistantMessages.some(message => message.role === 'assistant' && message.text === '...') && (
           <div className={`max-w-[95%] rounded-xl px-3.5 py-2.5 text-xs italic animate-pulse border ${
             isDark ? 'bg-slate-800 text-sky-300 border-slate-700' : 'bg-white text-sky-900 border-slate-200 shadow-sm'
           }`}>
@@ -812,8 +816,9 @@ export const AssistantWidget = ({
             value={assistantInput}
             onChange={(event) => setAssistantInput(event.target.value)}
             placeholder={isListening ? "Escuchando tu voz..." : (isModelReady ? "Pregunta a MarIA o consulta asistencias..." : "Cargando...")}
+            title={isListening ? 'Escuchando tu voz...' : (isModelReady ? 'Pregunta a MarIA o consulta asistencias...' : 'Cargando...')}
             disabled={isLoading || !isModelReady}
-            className={`min-w-0 flex-1 bg-transparent px-1 py-2 text-sm outline-none disabled:opacity-50 ${isDark ? 'text-white placeholder:text-slate-400' : 'text-slate-900 placeholder:text-slate-500'}`}
+            className={`min-w-0 flex-1 text-ellipsis bg-transparent px-1 py-2 text-sm outline-none disabled:opacity-50 ${isDark ? 'text-white placeholder:text-slate-400' : 'text-slate-900 placeholder:text-slate-500'}`}
           />
           <button
             type="submit"

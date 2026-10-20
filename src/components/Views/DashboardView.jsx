@@ -29,7 +29,7 @@ const getCurrentDeviceLocation = () => new Promise((resolve, reject) => {
   });
 });
 
-function AnimatedHeight({ children, open = true, className = '' }) {
+function AnimatedHeight({ children, open = true, className = '', bottomOverflow = 0 }) {
   const containerRef = useRef(null);
   const contentRef = useRef(null);
 
@@ -40,7 +40,7 @@ function AnimatedHeight({ children, open = true, className = '' }) {
 
     let frameId = 0;
     const updateHeight = () => {
-      const nextHeight = open ? content.scrollHeight : 0;
+      const nextHeight = open ? content.scrollHeight + bottomOverflow : 0;
       const currentHeight = container.getBoundingClientRect().height;
 
       if (container.dataset.heightInitialized !== 'true') {
@@ -67,7 +67,7 @@ function AnimatedHeight({ children, open = true, className = '' }) {
       observer.disconnect();
       window.cancelAnimationFrame(frameId);
     };
-  }, [open]);
+  }, [open, bottomOverflow]);
 
   return (
     <div
@@ -149,6 +149,8 @@ export function DashboardView({
   setSelectedGroupForStudent
 }) {
   const [hoveredDonutSegment, setHoveredDonutSegment] = useState(null);
+  const [isAttendanceSummaryOpen, setIsAttendanceSummaryOpen] = useState(false);
+  const [isAssistantSectionOpen, setIsAssistantSectionOpen] = useState(true);
   const [isFormationQrOpen, setIsFormationQrOpen] = useState(false);
   const [attendanceLocationModal, setAttendanceLocationModal] = useState(null);
   const [formationLinkCopied, setFormationLinkCopied] = useState(false);
@@ -389,44 +391,52 @@ export function DashboardView({
             <button
               type="button"
               onClick={() => setDashboardPanelOpen(prev => !prev)}
-              className="dashboard-toggle-button px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-700 hover:bg-slate-600 text-white"
+              aria-expanded={dashboardPanelOpen}
+              className="dashboard-toggle-button inline-flex items-center gap-1.5 rounded-full border border-sky-400/25 bg-sky-500/10 px-3.5 py-2 text-xs font-bold text-sky-200 shadow-sm transition-all hover:border-sky-300/50 hover:bg-sky-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
+              <MaterialIcon name={dashboardPanelOpen ? 'expand_less' : 'expand_more'} />
               {dashboardPanelOpen ? 'Ocultar' : 'Mostrar'}
             </button>
           </div>
         </div>
 
-        <AnimatedHeight open={dashboardPanelOpen}>
+        <AnimatedHeight open={dashboardPanelOpen} bottomOverflow={8}>
           {dashboardPanelOpen && (
-            <div className="mt-3 grid grid-cols-1 xl:grid-cols-[1fr_1.2fr] gap-4">
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-bold text-slate-300">Consulta de asistencia</p>
-                <span className="text-[11px] text-slate-400 uppercase">{dashboardAttendanceType === 'all' ? 'Todas' : dashboardAttendanceType === 'misa' ? 'Misa' : dashboardAttendanceType === 'formacion' ? 'Formación' : 'Encuentro'}</span>
+            <div className="mt-3 grid grid-cols-1 xl:grid-cols-[0.9fr_1.1fr] gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <button type="button" onClick={() => setIsAttendanceSummaryOpen(open => !open)} aria-expanded={isAttendanceSummaryOpen} className="flex min-w-0 flex-1 items-center justify-between rounded-lg py-1 text-left text-sm font-bold text-slate-300 hover:text-sky-300 md:hidden">
+                  <span>Consulta de asistencia</span>
+                  <MaterialIcon name={isAttendanceSummaryOpen ? 'expand_less' : 'expand_more'} />
+                </button>
+                <p className="hidden text-sm font-bold text-slate-300 md:block">Consulta de asistencia</p>
+                <span className="shrink-0 text-[11px] text-slate-400 uppercase">{dashboardAttendanceType === 'all' ? 'Todas' : dashboardAttendanceType === 'misa' ? 'Misa' : dashboardAttendanceType === 'formacion' ? 'Formación' : 'Encuentro'}</span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <AnimatedHeight open={isAttendanceSummaryOpen} className="mt-2 md:!h-auto md:!overflow-visible">
+              <div className="space-y-4 pb-1">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                 <select value={dashboardGroupId} onChange={(event) => {
                   const nextGroupId = event.target.value;
                   setDashboardGroupId(nextGroupId);
                   if (visibleGroups.find(group => group.id === nextGroupId)?.type !== 'catequistas' && dashboardAttendanceType === 'formacion') {
                     setDashboardAttendanceType('all');
                   }
-                }} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`}>
+                }} className={`col-span-2 min-w-0 rounded-lg px-3 py-2 text-xs sm:col-span-1 ${inputBgClass}`}>
                   <option value="">{userRole === 'catequista' ? 'Todos mis grupos' : 'Todos los grupos visibles'}</option>
                   {visibleGroups.map(group => <option key={group.id} value={group.id}>{group.name}{group.diaconiaName ? ` - ${group.diaconiaName}` : ''}</option>)}
                 </select>
-                <select value={dashboardAttendanceType} onChange={(event) => setDashboardAttendanceType(event.target.value)} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} aria-label="Tipo de asistencia del gráfico">
+                <select value={dashboardAttendanceType} onChange={(event) => setDashboardAttendanceType(event.target.value)} className={`min-w-0 rounded-lg px-3 py-2 text-xs ${inputBgClass}`} aria-label="Tipo de asistencia del gráfico">
                   <option value="all">Todas</option>
                   <option value="encuentro">Encuentro</option>
                   <option value="misa">Misa</option>
                   {selectedDashboardGroup?.type === 'catequistas' && <option value="formacion">Formación</option>}
                 </select>
-                <input type="date" value={dashboardDate} onChange={(event) => setDashboardDate(event.target.value)} style={browserThemeStyle} className={`rounded-lg px-3 py-2 text-xs ${inputBgClass}`} />
+                <input type="date" value={dashboardDate} onChange={(event) => setDashboardDate(event.target.value)} style={browserThemeStyle} aria-label="Fecha de asistencia" className={`min-w-0 rounded-lg px-2 sm:px-3 py-2 text-xs ${inputBgClass}`} />
               </div>
 
-              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-4 flex flex-col sm:flex-row items-center gap-5">
-                <div className="relative h-32 w-32 shrink-0">
+              <div className="rounded-xl border border-slate-700 bg-slate-900/40 p-3 sm:p-4 flex flex-row items-center gap-3 sm:gap-5">
+                <div className="relative h-28 w-28 shrink-0 sm:h-32 sm:w-32">
                   <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90" aria-label="Distribución de asistencia">
                     <circle cx="50" cy="50" r={donutRadius} fill="none" stroke={themeMode === 'dark' ? '#334155' : '#cbd5e1'} strokeWidth="18" />
                     {donutSegments.map(segment => {
@@ -459,19 +469,29 @@ export function DashboardView({
                   </div>
                   {hoveredDonutSegment && (() => {
                     const segment = donutSegments.find(item => item.key === hoveredDonutSegment);
-                    return segment ? <div className="pointer-events-none absolute -top-2 left-1/2 z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[11px] font-bold text-white shadow-lg">{segment.label}: {donutTotal ? Math.round((segment.value / donutTotal) * 100) : 0}%</div> : null;
+                    return segment ? <div className="attendance-chart-tooltip pointer-events-none absolute -top-2 left-1/2 z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg px-2.5 py-1.5 text-[11px] font-bold shadow-lg">{segment.label}: {donutTotal ? Math.round((segment.value / donutTotal) * 100) : 0}%</div> : null;
                   })()}
                 </div>
-                <div className="w-full space-y-2 text-xs text-slate-400">
-                  <div className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Presentes</span><span className="font-bold text-emerald-400">{dashboardAttendanceStats.present}</span></div>
-                  <div className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />Justificados</span><span className="font-bold text-amber-400">{dashboardAttendanceStats.justified}</span></div>
-                  <div className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-rose-500" />Ausentes</span><span className="font-bold text-rose-400">{dashboardAttendanceStats.absent}</span></div>
+                <div className="min-w-0 flex-1 space-y-2 text-xs text-slate-400">
+                  <div className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Presentes</span><span className={`font-bold ${themeMode === 'dark' ? 'text-emerald-400' : 'text-emerald-700'}`}>{dashboardAttendanceStats.present}</span></div>
+                  <div className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />Justificados</span><span className={`font-bold ${themeMode === 'dark' ? 'text-amber-400' : 'text-amber-700'}`}>{dashboardAttendanceStats.justified}</span></div>
+                  <div className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-rose-500" />Ausentes</span><span className={`font-bold ${themeMode === 'dark' ? 'text-rose-400' : 'text-rose-700'}`}>{dashboardAttendanceStats.absent}</span></div>
                   <p className="pt-1 text-[11px] text-slate-500">{dashboardDate ? `Fecha: ${dashboardDate}` : 'Resumen acumulado del grupo'}</p>
                 </div>
               </div>
+              </div>
+              </AnimatedHeight>
             </div>
 
-            <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-3 sm:p-4">
+            <div className="min-w-0 pb-1">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-sm font-bold text-slate-300">Asistente MarIA</span>
+                <button type="button" onClick={() => setIsAssistantSectionOpen(open => !open)} aria-expanded={isAssistantSectionOpen} className="inline-flex items-center gap-1 rounded-full border border-sky-400/20 px-2.5 py-1 text-[11px] font-semibold text-sky-300 transition-colors hover:bg-sky-500/10 md:hidden">
+                  <MaterialIcon name={isAssistantSectionOpen ? 'expand_less' : 'expand_more'} />
+                  {isAssistantSectionOpen ? 'Contraer' : 'Expandir'}
+                </button>
+              </div>
+              <AnimatedHeight open={isAssistantSectionOpen} bottomOverflow={8} className="md:!h-auto md:!overflow-visible">
               <AssistantWidget 
                 attendanceType={dashboardAttendanceType} 
                 absentRate={absentRate} 
@@ -483,6 +503,7 @@ export function DashboardView({
                 selectedGroupId={selectedGroupId}
                 attendanceDate={attendanceDate}
               />
+              </AnimatedHeight>
             </div>
             </div>
           )}
@@ -491,16 +512,16 @@ export function DashboardView({
 
       {/* SECCIÓN PRINCIPAL DE TOMA DE ASISTENCIA */}
       <div className="space-y-4">
-        <div className={`${cardBgClass} p-4 sm:p-6 rounded-xl border shadow-sm space-y-4`}>
+        <div className={`${cardBgClass} p-3 sm:p-6 rounded-xl border shadow-sm space-y-3 sm:space-y-4`}>
           <div className="flex items-center justify-between">
             <h2 className="text-lg sm:text-xl font-bold flex items-center gap-2">
               <MaterialIcon name="fact_check" /> {selectedAttendanceGroup?.type === 'catequistas' ? 'Control de Asistencia de Catequistas' : 'Control de Asistencia'}
             </h2>
           </div>
           
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
             <div>
-              <label className={`block text-xs font-bold ${labelTextClass} uppercase mb-1`}>Fecha del Encuentro</label>
+              <label className={`block text-[10px] sm:text-xs font-bold ${labelTextClass} uppercase mb-1`}>Fecha del Encuentro</label>
               <input
                 type="date"
                 value={attendanceDate}
@@ -510,12 +531,12 @@ export function DashboardView({
                   setAttendanceDate(date);
                   setAttendanceLabel(getAttendanceLabel(sortedAttendanceStudents, date, attendanceType));
                 }}
-                className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
+                className={`w-full min-w-0 rounded-lg px-2.5 sm:px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Tipo de asistencia</label>
+              <label className="block text-[10px] sm:text-xs font-bold text-slate-400 uppercase mb-1">Tipo de asistencia</label>
               <select
                 value={attendanceType}
                 onChange={(e) => {
@@ -523,7 +544,7 @@ export function DashboardView({
                   setAttendanceType(nextType);
                   setAttendanceLabel(getAttendanceLabel(sortedAttendanceStudents, attendanceDate, nextType));
                 }}
-                className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
+                className={`w-full min-w-0 rounded-lg px-2.5 sm:px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
               >
                 <option value="encuentro">Encuentro</option>
                 <option value="misa">Misa</option>
@@ -532,13 +553,13 @@ export function DashboardView({
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
-                {attendanceType === 'formacion' ? 'Tema de Formación (Opcional)' : 'Tema del Encuentro (Opcional)'}
+              <label className="block text-[10px] sm:text-xs font-bold text-slate-400 uppercase mb-1">
+                Tema (Opcional)
               </label>
               <div className="flex gap-2">
                 <input
                   type="text"
-                  placeholder={attendanceType === 'formacion' ? 'Ej. Formación de catequistas' : 'Ej. Encuentro #3 - Los Mandamientos / Asistencia a Misa'}
+                  placeholder={attendanceType === 'formacion' ? 'Ej. Formación de catequistas' : attendanceType === 'misa' ? 'Ej. Misa de niños' : 'Ej. Encuentro #3 - Los Mandamientos'}
                   value={attendanceLabel}
                   onChange={(e) => {
                     const nextLabel = e.target.value;
@@ -571,13 +592,13 @@ export function DashboardView({
                       }
                     }
                   }}
-                  className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
+                  className={`w-full min-w-0 rounded-lg px-2.5 sm:px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Seleccionar Grupo</label>
+              <label className="block text-[10px] sm:text-xs font-bold text-slate-400 uppercase mb-1">Seleccionar Grupo</label>
               <select
                 value={selectedGroupId}
                 onChange={(e) => {
@@ -589,7 +610,7 @@ export function DashboardView({
                   setAttendanceType(nextType);
                   setAttendanceLabel(getAttendanceLabel(visibleStudents.filter(student => student.groupId === groupId), attendanceDate, nextType));
                 }}
-                className={`w-full rounded-lg px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
+                className={`w-full min-w-0 rounded-lg px-2.5 sm:px-4 py-2 text-xs sm:text-sm ${inputBgClass}`}
               >
                 <option value="">Selecciona un Grupo...</option>
                 {visibleGroups.map(g => (
@@ -599,30 +620,30 @@ export function DashboardView({
             </div>
 
             {selectedGroupId && (
-              <div className="sm:col-span-4 grid grid-cols-1 gap-2 pt-1 sm:grid-cols-3">
-                <button
-                  type="button"
-                  onClick={handleScanQr}
-                  className="w-full rounded-lg bg-sky-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-sky-700"
-                >
-                  Escanear QR
-                </button>
+              <div className={`col-span-2 sm:col-span-4 grid grid-cols-2 gap-2 pt-0.5 sm:pt-1 transition-[grid-template-columns] duration-300 ease-out ${isCatechistAttendanceGroup && ['misa', 'encuentro'].includes(attendanceType) ? 'sm:grid-cols-2 lg:grid-cols-2' : 'sm:grid-cols-3 lg:grid-cols-3'}`}>
                 {isCatechistAttendanceGroup && attendanceType === 'formacion' && (
-                  <button type="button" onClick={() => setIsFormationQrOpen(true)} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-emerald-500">
+                  <button type="button" onClick={() => setIsFormationQrOpen(true)} className="col-span-2 flex w-full min-w-0 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-2 text-[10px] sm:text-[11px] font-bold text-white hover:bg-emerald-500 sm:col-span-3 lg:col-span-1">
                     <MaterialIcon name="qr_code_2" /> QR para registrar asistencia
                   </button>
                 )}
                 {!isCatechistAttendanceGroup && ['encuentro', 'misa'].includes(attendanceType) && (
-                  <button type="button" onClick={() => { setStudentQrCopied(false); setIsStudentAttendanceQrOpen(true); }} className="w-full rounded-lg bg-emerald-600 px-3 py-2 text-[11px] font-bold text-white hover:bg-emerald-500">
+                  <button type="button" onClick={() => { setStudentQrCopied(false); setIsStudentAttendanceQrOpen(true); }} className="col-span-2 flex w-full min-w-0 items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-2 text-[10px] sm:text-[11px] font-bold text-white hover:bg-emerald-500 sm:col-span-3 lg:col-span-1">
                     <MaterialIcon name="qr_code_2" /> QR para asistencia de {attendanceType === 'misa' ? 'misa' : 'catequizandos'}
                   </button>
                 )}
                 <button
                   type="button"
-                  onClick={() => setDeleteDateTarget({ groupId: selectedGroupId, dateStr: attendanceDate, type: attendanceType })}
-                  className="w-full rounded-lg bg-rose-600/10 border border-rose-500/50 px-3 py-2 text-[11px] font-bold text-rose-400 hover:bg-rose-600/20"
+                  onClick={handleScanQr}
+                  className="order-3 flex w-full min-w-0 items-center justify-center gap-1.5 rounded-lg bg-sky-600 px-2 py-2 text-[10px] sm:order-3 sm:text-[11px] lg:order-none font-bold text-white hover:bg-sky-700"
                 >
-                  Borrar asistencia de esta fecha
+                  <MaterialIcon name="qr_code_scanner" /> <span>Escanear QR</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeleteDateTarget({ groupId: selectedGroupId, dateStr: attendanceDate, type: attendanceType })}
+                  className="order-2 flex w-full min-w-0 items-center justify-center gap-1.5 rounded-lg bg-rose-600/10 border border-rose-500/50 px-2 py-2 text-[10px] sm:order-2 sm:text-[11px] lg:order-none font-bold text-rose-400 hover:bg-rose-600/20"
+                >
+                  <MaterialIcon name="delete" /> <span>Borrar asistencia de este encuentro</span>
                 </button>
               </div>
             )}
@@ -646,21 +667,21 @@ export function DashboardView({
                     const displayPhone = student.parentPhone || student.phone || student.family?.guardian?.phone1 || student.family?.mother?.phone1 || student.family?.father?.phone1 || '';
                     const contactStudent = { ...student, parentEmail: displayEmail, parentPhone: displayPhone };
                     return (
-                      <div key={student.id} className="p-4 space-y-3">
+                      <div key={student.id} className="p-3 sm:p-4 space-y-2">
                         <div className="flex min-w-0 items-start justify-between gap-2">
                           <div className="min-w-0 flex-1">
                             <h4 className="truncate font-bold text-sm">{student.fullName || student.name}</h4>
                           </div>
-                          <div className="flex shrink-0 gap-1">
-                            <button type="button" disabled={!displayEmail} onClick={() => status === null ? handleCopyAttendanceContact(displayEmail, 'Correo') : handleOpenAttendanceMessage(contactStudent, 'email')} title={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} aria-label={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} className={`${status === null ? 'rounded-md border border-slate-500 bg-slate-600/70 p-2 text-slate-200 hover:bg-slate-600' : 'attendance-email-button rounded-md p-2'} disabled:cursor-not-allowed disabled:opacity-40`}><MaterialIcon name="mail" /></button>
-                            <button type="button" disabled={!displayPhone} onClick={() => status === null ? handleCopyAttendanceContact(displayPhone, 'Teléfono') : handleOpenAttendanceMessage(contactStudent, 'phone')} title={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} aria-label={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} className={`${status === null ? 'rounded-md border border-slate-500 bg-slate-600/70 p-2 text-slate-200 hover:bg-slate-600' : 'attendance-phone-button rounded-md p-2'} disabled:cursor-not-allowed disabled:opacity-40`}><MaterialIcon name="phone" /></button>
+                          <div className="inline-flex shrink-0 items-center gap-0 rounded-full border border-slate-600/70 bg-slate-800/70 p-0.5">
+                            <button type="button" disabled={!displayEmail} onClick={() => status === null ? handleCopyAttendanceContact(displayEmail, 'Correo') : handleOpenAttendanceMessage(contactStudent, 'email')} title={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} aria-label={!displayEmail ? 'Correo no registrado' : status === null ? 'Copiar correo' : 'Preparar mensaje por correo'} className="rounded-full px-2 py-1 text-[14px] leading-none text-sky-400 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"><MaterialIcon name="mail" /></button>
+                            <button type="button" disabled={!displayPhone} onClick={() => status === null ? handleCopyAttendanceContact(displayPhone, 'Teléfono') : handleOpenAttendanceMessage(contactStudent, 'phone')} title={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} aria-label={!displayPhone ? 'Teléfono no registrado' : status === null ? 'Copiar teléfono' : 'Preparar mensaje por WhatsApp'} className="rounded-full px-2 py-1 text-[14px] leading-none text-emerald-400 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"><MaterialIcon name="phone" /></button>
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-[repeat(3,minmax(0,1fr))_auto] gap-1.5 pt-1">
+                        <div className="inline-grid w-full grid-cols-3 gap-0.5 rounded-full border border-slate-700/70 bg-slate-900/40 p-0.5">
                           <button
                             onClick={() => handleMarkAttendance(student.id, 'present')}
-                            className={`whitespace-nowrap px-1 py-2 text-[10px] font-bold rounded-lg transition-all border sm:text-xs ${
+                            className={`whitespace-nowrap px-1 py-1.5 text-[9px] font-bold rounded-full transition-all sm:text-[10px] ${
                               status === 'present'
                                 ? 'bg-emerald-600 border-emerald-500 text-white shadow-sm'
                                 : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100')
@@ -670,7 +691,7 @@ export function DashboardView({
                           </button>
                           <button
                             onClick={() => handleMarkAttendance(student.id, 'justified')}
-                            className={`whitespace-nowrap px-1 py-2 text-[10px] font-bold rounded-lg transition-all border sm:text-xs ${
+                            className={`whitespace-nowrap px-1 py-1.5 text-[9px] font-bold rounded-full transition-all sm:text-[10px] ${
                               status === 'justified'
                                 ? 'bg-amber-500 border-amber-400 text-white shadow-sm'
                                 : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100')
@@ -680,7 +701,7 @@ export function DashboardView({
                           </button>
                           <button
                             onClick={() => handleMarkAttendance(student.id, 'absent')}
-                            className={`whitespace-nowrap px-1 py-2 text-[10px] font-bold rounded-lg transition-all border sm:text-xs ${
+                            className={`whitespace-nowrap px-1 py-1.5 text-[9px] font-bold rounded-full transition-all sm:text-[10px] ${
                               status === 'absent'
                                 ? 'bg-rose-600 border-rose-500 text-white shadow-sm'
                                 : (themeMode === 'dark' ? 'bg-black border-neutral-800 text-rose-400 hover:bg-rose-500/10 hover:text-rose-300' : 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100')
@@ -688,8 +709,8 @@ export function DashboardView({
                           >
                             Ausente
                           </button>
-                          {attendanceRecord?.location && <button type="button" onClick={() => setAttendanceLocationModal({ member: student, record: attendanceRecord })} title="Ver ubicación en Google Maps" aria-label={`Ver ubicación de ${student.name || student.fullName}`} className="rounded-lg border border-sky-500/30 px-2 text-sky-400 hover:bg-sky-500/10"><MaterialIcon name="location_on" /></button>}
                         </div>
+                        {attendanceRecord?.location && <button type="button" onClick={() => setAttendanceLocationModal({ member: student, record: attendanceRecord })} title="Ver ubicación en Google Maps" aria-label={`Ver ubicación de ${student.name || student.fullName}`} className="rounded-full border border-sky-500/30 px-2 text-sky-400 hover:bg-sky-500/10"><MaterialIcon name="location_on" /></button>}
                       </div>
                     );
                   })

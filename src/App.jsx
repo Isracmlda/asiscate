@@ -298,6 +298,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [groupCycleFilter, setGroupCycleFilter] = useState('');
   const [isUserNameModalOpen, setIsUserNameModalOpen] = useState(false);
+  const [pendingDeleteUser, setPendingDeleteUser] = useState(null);
   const [userNameDraft, setUserNameDraft] = useState('');
 
   // Formularios
@@ -389,7 +390,8 @@ export default function App() {
     slot: '08:00-10:00',
     quantity: '1'
   });
-  const [inventoryAssetForm, setInventoryAssetForm] = useState({ name: '', stock: '1', showTogether: false });
+  const [inventoryAssetForm, setInventoryAssetForm] = useState({ name: '', stock: '1', showTogether: false, kind: 'asset', room: '' });
+  const [inventoryFurnitureForm, setInventoryFurnitureForm] = useState({ name: '', stock: '1', showTogether: false, room: '' });
   const [editingInventoryItemId, setEditingInventoryItemId] = useState(null);
   const [editingInventoryAssetId, setEditingInventoryAssetId] = useState(null);
   const [editingInventoryReservationId, setEditingInventoryReservationId] = useState(null);
@@ -2153,6 +2155,14 @@ export default function App() {
     setScannerModal({ open: true, type: 'certificate', status: 'iniciando' });
   };
 
+  const handleScanInventoryQr = async () => {
+    if (!('BarcodeDetector' in window) || !navigator.mediaDevices?.getUserMedia) {
+      alert('Tu navegador no soporta escaneo QR con cámara. Prueba en Chrome o Edge actualizado.');
+      return;
+    }
+    setScannerModal({ open: true, type: 'inventory', status: 'iniciando' });
+  };
+
   useEffect(() => {
     if (!scannerModal?.open) return;
 
@@ -2188,6 +2198,23 @@ export default function App() {
                 parsed = JSON.parse(value);
               } catch {
                 parsed = null;
+              }
+
+              if (scannerModal?.type === 'inventory') {
+                const compactInventoryQr = String(value || '').match(/^AI1\|([^|]+)\|(\d+)$/);
+                const assetId = parsed?.type === 'inventory-asset'
+                  ? String(parsed.assetId || '')
+                  : compactInventoryQr ? decodeURIComponent(compactInventoryQr[1]) : '';
+                const unit = compactInventoryQr ? Number(compactInventoryQr[2]) : Number(parsed?.unit) || 1;
+                const asset = inventoryAssets.find(item => item.id === assetId);
+                if (asset && unit >= 1 && unit <= Math.max(1, Number(asset.stock) || 1)) {
+                  const resultName = `${asset.name}${asset.kind === 'furniture' && asset.room ? ` · ${asset.room}` : ''} · N.° ${unit}`;
+                  setScannerModal({ open: true, type: 'inventory', status: 'ok', result: resultName });
+                } else {
+                  setScannerModal({ open: true, type: 'inventory', status: 'not_found', result: assetId || 'etiqueta no válida' });
+                }
+                setTimeout(() => setScannerModal(null), 3500);
+                return;
               }
 
               if (scannerModal?.type === 'payment') {
@@ -2308,7 +2335,7 @@ export default function App() {
         stream.getTracks().forEach(track => track.stop());
       }
     };
-  }, [scannerModal?.open, attendanceDate, attendanceLabel, attendanceType, allUsers, catechistRoster, selectedGroupId, handleMarkAttendance, paymentRecords, generatedCertificates, levelCertificateHistory, attendanceLetterHistory, issuedCertificates, students]);
+  }, [scannerModal?.open, attendanceDate, attendanceLabel, attendanceType, allUsers, catechistRoster, selectedGroupId, handleMarkAttendance, paymentRecords, generatedCertificates, levelCertificateHistory, attendanceLetterHistory, issuedCertificates, students, inventoryAssets]);
 
   const getAttendanceStatus = (student, dateStr, targetType = attendanceType) => {
     if (!student.attendance) return null;
@@ -3359,7 +3386,8 @@ ${catechistName}`;
     setEditingInventoryAssetId(null);
     setEditingInventoryReservationId(null);
     setInventoryForm({ name: '', stock: '1' });
-    setInventoryAssetForm({ name: '', stock: '1', showTogether: false });
+    setInventoryAssetForm({ name: '', stock: '1', showTogether: false, kind: 'asset', room: '' });
+    setInventoryFurnitureForm({ name: '', stock: '1', showTogether: false, room: '' });
     setInventoryReservationForm({ itemId: '', date: new Date().toISOString().split('T')[0], slot: '08:00-10:00', quantity: '1' });
   };
 
@@ -3383,11 +3411,17 @@ ${catechistName}`;
       ? (inventoryAssets.find(a => a.id === asset.parentAssetId) || asset)
       : asset;
     setEditingInventoryAssetId(targetAsset.id);
-    setInventoryAssetForm({ 
-      name: targetAsset.name, 
-      stock: String(targetAsset.stock || 0), 
-      showTogether: targetAsset.showTogether === true 
-    });
+    const editForm = {
+      name: targetAsset.name,
+      stock: String(targetAsset.stock || 0),
+      showTogether: targetAsset.showTogether === true,
+      room: targetAsset.room || ''
+    };
+    if (targetAsset.kind === 'furniture') {
+      setInventoryFurnitureForm(editForm);
+    } else {
+      setInventoryAssetForm({ ...editForm, kind: 'asset' });
+    }
   };
 
   const startInventoryReservationEdit = (reservation) => {
@@ -3444,18 +3478,31 @@ ${catechistName}`;
     setInventoryForm({ name: '', stock: '1' });
   };
 
-  const handleAddInventoryAsset = async (event) => {
+  const handleAddInventoryAsset = async (event, kind = 'asset', submittedForm = null) => {
     event.preventDefault();
-    if (!inventoryAssetForm.name.trim()) return;
+    if (!['admin', 'coordinador', 'coordinadorGeneral'].includes(userRole)) {
+      alert('Solo los administradores y coordinadores pueden gestionar activos y mobiliario.');
+      return;
+    }
+    const formData = submittedForm || (kind === 'furniture' ? inventoryFurnitureForm : inventoryAssetForm);
+    if (!formData.name.trim()) return;
+    if (kind === 'furniture' && !formData.room) {
+      alert('Selecciona el aula o salón del mobiliario.');
+      return;
+    }
 
     const payload = {
-      name: inventoryAssetForm.name.trim(),
-      stock: Number(inventoryAssetForm.stock) || 0,
+      name: formData.name.trim(),
+      stock: Math.max(1, Number(formData.stock) || 1),
+      kind,
+      ...(kind === 'furniture' ? { room: formData.room } : { room: '' }),
       createdBy: user?.uid || userData?.id || userData?.fullName || 'system',
       diaconiaId: effectiveDiaconiaId,
       diaconiaName: diaconias.find(diaconia => diaconia.id === effectiveDiaconiaId)?.name || '',
+      parroquiaId: diaconias.find(diaconia => diaconia.id === effectiveDiaconiaId)?.parroquiaId || effectiveParroquiaId || userData?.parroquiaId || '',
+      parroquiaName: parroquias.find(parroquia => parroquia.id === (diaconias.find(diaconia => diaconia.id === effectiveDiaconiaId)?.parroquiaId || effectiveParroquiaId || userData?.parroquiaId))?.name || '',
       createdAt: new Date().toISOString(),
-      showTogether: inventoryAssetForm.showTogether === true
+      showTogether: formData.showTogether === true
     };
 
     if (editingInventoryAssetId) {
@@ -3470,7 +3517,8 @@ ${catechistName}`;
       setInventoryReservationForm(prev => ({ ...prev, itemId: prev.itemId || newAsset.id }));
     }
 
-    setInventoryAssetForm({ name: '', stock: '1', showTogether: false });
+    setInventoryAssetForm({ name: '', stock: '1', showTogether: false, kind: 'asset', room: '' });
+    setInventoryFurnitureForm({ name: '', stock: '1', showTogether: false, room: '' });
   };
 
   const handleInventoryStockChange = async (itemId, delta) => {
@@ -3536,7 +3584,9 @@ ${catechistName}`;
       alert('Solo puedes eliminar tus propios activos.');
       return;
     }
-    const linkedReservations = inventoryReservations.filter(res => res.itemId === assetId);
+    const linkedReservations = inventoryReservations.filter(res => (
+      res.itemId === assetId || String(res.itemId || '').startsWith(`${assetId}__unit__`)
+    ));
     await Promise.all([
       deleteDoc(doc(db, 'inventoryAssets', assetId)),
       ...linkedReservations.map(reservation => deleteDoc(doc(db, 'inventoryReservations', reservation.id)))
@@ -5024,20 +5074,26 @@ ${catechistName}`;
     }
   };
 
-  const handleDeleteUser = async (targetUser) => {
+  const handleDeleteUser = (targetUser) => {
     if (!canModifyManagedUser(targetUser)) return;
+    setPendingDeleteUser(targetUser);
+  };
+
+  const handleConfirmDeleteUser = async () => {
+    const targetUser = pendingDeleteUser;
+    if (!targetUser || !canModifyManagedUser(targetUser)) return;
     const targetEmail = targetUser?.email?.toLowerCase() || '';
     if (['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'].includes(targetEmail)) {
+      setPendingDeleteUser(null);
       alert("No se puede eliminar a un Administrador Principal.");
       return;
     }
 
     if (userRole === 'coordinador' && targetUser.diaconiaId !== userData?.diaconiaId) {
+      setPendingDeleteUser(null);
       alert("Solo puedes eliminar usuarios pertenecientes a tu diaconía.");
       return;
     }
-
-    if (!window.confirm(`¿Seguro que deseas eliminar al usuario ${targetUser.name || targetUser.email}?`)) return;
 
     try {
       await deleteDoc(doc(db, 'users', targetUser.id));
@@ -5045,6 +5101,7 @@ ${catechistName}`;
         const matchingRosterEntries = catechistRoster.filter(entry => String(entry.email || '').trim().toLowerCase() === targetEmail);
         await Promise.all(matchingRosterEntries.map(entry => deleteDoc(doc(db, 'catechistRoster', entry.id))));
       }
+      setPendingDeleteUser(null);
       fetchAllData();
     } catch (error) {
       console.error("Error eliminando usuario:", error);
@@ -6029,11 +6086,30 @@ ${catechistName}`;
             handleAddInventoryAsset={handleAddInventoryAsset}
             inventoryAssetForm={inventoryAssetForm}
             setInventoryAssetForm={setInventoryAssetForm}
+            inventoryFurnitureForm={inventoryFurnitureForm}
+            setInventoryFurnitureForm={setInventoryFurnitureForm}
             editingInventoryAssetId={editingInventoryAssetId}
             setEditingInventoryAssetId={setEditingInventoryAssetId}
             startInventoryAssetEdit={startInventoryAssetEdit}
             handleInventoryAssetStockChange={handleInventoryAssetStockChange}
             handleDeleteInventoryAsset={handleDeleteInventoryAsset}
+            visibleInventoryAssets={visibleInventoryAssets}
+            onScanInventoryQr={handleScanInventoryQr}
+            canManageInventoryAssets={['admin', 'coordinador', 'coordinadorGeneral'].includes(userRole)}
+            getInventoryLabelLocation={asset => {
+              const targetDiaconiaId = asset.diaconiaId || effectiveDiaconiaId || userData?.diaconiaId || '';
+              const diaconia = diaconias.find(item => item.id === targetDiaconiaId)
+                || diaconias.find(item => asset.diaconiaName && item.name === asset.diaconiaName);
+              const targetParroquiaId = diaconia?.parroquiaId || asset.parroquiaId || effectiveParroquiaId || userData?.parroquiaId || '';
+              const parishName = parroquias.find(item => item.id === targetParroquiaId)?.name
+                || asset.parroquiaName || userData?.parroquiaName || '';
+              const diaconiaName = diaconia?.name || (asset.diaconiaName && asset.diaconiaName !== 'Diaconía' ? asset.diaconiaName : '')
+                || (targetDiaconiaId ? 'Diaconía' : '');
+              return {
+                diaconia: diaconiaName,
+                parish: parishName
+              };
+            }}
             groupScheduleOptions={groupScheduleOptionsByDiaconia[effectiveDiaconiaId] || groupScheduleOptions}
           />
         )}
@@ -6240,7 +6316,7 @@ ${catechistName}`;
                   <div className="divide-y divide-slate-700 max-h-60 overflow-y-auto">
                     {parroquias.map(p => (
                       <div key={p.id} className="py-2 text-sm font-semibold flex justify-between items-center gap-2">
-                        <span>{p.name}</span><button type="button" onClick={async () => { const name = window.prompt('Nuevo nombre de la parroquia', p.name); if (name?.trim()) { await updateDoc(doc(db, 'parroquias', p.id), { name: name.trim() }); await fetchAllData(); } }} className="rounded bg-slate-700 px-2 py-1 text-[10px] text-white">Editar</button>
+                        <span>{p.name}</span><button type="button" onClick={async () => { const name = window.prompt('Nuevo nombre de la parroquia', p.name); if (name?.trim()) { await updateDoc(doc(db, 'parroquias', p.id), { name: name.trim() }); await fetchAllData(); } }} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-700 text-white hover:bg-slate-600" title="Editar parroquia" aria-label={`Editar parroquia ${p.name}`}><MaterialIcon name="edit" /></button>
                       </div>
                     ))}
                   </div>
@@ -6282,8 +6358,8 @@ ${catechistName}`;
                       const par = parroquias.find(p => p.id === d.parroquiaId);
                       return (
                         <div key={d.id} className="py-2 text-xs flex justify-between items-center gap-2">
-                          <span className="font-semibold">{d.name}</span>
-                          <span className="text-slate-500">({par?.name || 'Sin Parroquia'})</span><span className="flex gap-1"><button type="button" onClick={async () => { const name = window.prompt('Nuevo nombre de la diaconía', d.name); if (name?.trim()) { await updateDoc(doc(db, 'diaconias', d.id), { name: name.trim() }); await fetchAllData(); } }} className="rounded bg-slate-700 px-2 py-1 text-[10px] text-white">Editar</button><button type="button" onClick={async () => { if (window.confirm('¿Eliminar esta diaconía?')) { await deleteDoc(doc(db, 'diaconias', d.id)); await fetchAllData(); } }} className="rounded bg-rose-700 px-2 py-1 text-[10px] text-white">Eliminar</button></span>
+                          <span className="min-w-0 flex-1 font-semibold">{d.name}</span>
+                          <span className="min-w-0 flex-1 text-slate-500">({par?.name || 'Sin Parroquia'})</span><span className="flex shrink-0 gap-1"><button type="button" onClick={async () => { const name = window.prompt('Nuevo nombre de la diaconía', d.name); if (name?.trim()) { await updateDoc(doc(db, 'diaconias', d.id), { name: name.trim() }); await fetchAllData(); } }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-slate-700 text-white hover:bg-slate-600" title="Editar diaconía" aria-label={`Editar diaconía ${d.name}`}><MaterialIcon name="edit" /></button><button type="button" onClick={async () => { if (window.confirm('¿Eliminar esta diaconía?')) { await deleteDoc(doc(db, 'diaconias', d.id)); await fetchAllData(); } }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-rose-700 text-white hover:bg-rose-600" title="Eliminar diaconía" aria-label={`Eliminar diaconía ${d.name}`}><MaterialIcon name="delete" /></button></span>
                         </div>
                       );
                     })}
@@ -6394,60 +6470,94 @@ ${catechistName}`;
         </div>
       )}
 
+      {pendingDeleteUser && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingDeleteUser(null); }}
+        >
+          <div role="dialog" aria-modal="true" aria-labelledby="delete-user-title" className={`${cardBgClass} w-full max-w-md rounded-2xl border border-rose-900/60 p-5 shadow-2xl shadow-black/50 sm:p-6`}>
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 text-rose-400 ring-1 ring-rose-500/20"><MaterialIcon name="person_remove" /></div>
+              <div className="min-w-0 flex-1">
+                <h3 id="delete-user-title" className="text-base font-bold">Eliminar usuario</h3>
+                <p className="mt-2 text-sm text-slate-300">¿Seguro que deseas eliminar a <span className="font-semibold text-white">{pendingDeleteUser.name || pendingDeleteUser.email}</span>?</p>
+                <p className="mt-1 text-xs text-slate-400">Esta acción eliminará su cuenta y no se puede deshacer.</p>
+              </div>
+              <button type="button" onClick={() => setPendingDeleteUser(null)} aria-label="Cerrar" className="rounded-lg p-1 text-slate-400 transition hover:bg-white/10 hover:text-white"><MaterialIcon name="close" /></button>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setPendingDeleteUser(null)} className="rounded-xl bg-slate-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-slate-600">Cancelar</button>
+              <button type="button" onClick={handleConfirmDeleteUser} className="rounded-xl bg-rose-700 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-rose-950/30 transition hover:bg-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-400"><MaterialIcon name="delete" /> Eliminar usuario</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isUserNameModalOpen && (
         <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex justify-center items-center p-4">
-          <div className={`${cardBgClass} rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl border`}>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold">Preferencias</h3>
-              <button onClick={() => setIsUserNameModalOpen(false)} aria-label="Cerrar" className="rounded-lg bg-rose-700 px-2.5 py-1 text-lg font-bold leading-none text-white hover:bg-rose-800">✕</button>
+          <div className={`${cardBgClass} max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700/80 p-5 shadow-2xl shadow-slate-950/50 sm:p-6`}>
+            <div className="mb-5 flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-400 ring-1 ring-sky-400/20"><MaterialIcon name="tune" /></div>
+                <div>
+                  <h3 className="text-lg font-bold tracking-tight">Preferencias</h3>
+                  <p className="mt-0.5 text-xs text-slate-400">Personaliza tu perfil y la experiencia de AsisCate</p>
+                </div>
+              </div>
+              <button onClick={() => setIsUserNameModalOpen(false)} aria-label="Cerrar" className="rounded-xl bg-rose-700/90 px-3 py-2 text-lg font-bold leading-none text-white transition duration-200 hover:rotate-90 hover:bg-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-400">✕</button>
             </div>
 
             <div className="space-y-5">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-bold text-slate-400 uppercase">Color del navbar</label>
-                  <button
-                    type="button"
-                    onClick={handleResetNavbarColor}
-                    className="text-xs text-sky-400 hover:text-sky-300 font-medium underline"
-                  >
-                    Restablecer color original
-                  </button>
-                </div>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="color"
-                    value={isAllowedNavbarColor(navbarColor) ? navbarColor : '#7f1d1d'}
-                    onChange={(event) => handleNavbarColorChange(event.target.value)}
-                    className="w-16 h-12 rounded-lg border border-slate-600 cursor-pointer bg-transparent"
-                    aria-label="Seleccionar color del navbar"
-                  />
-                  <div
-                    className="flex-1 h-12 rounded-lg border border-slate-700 flex items-center px-4 font-mono text-xs text-white"
-                    style={{ backgroundColor: navbarColor }}
-                  >
-                    {navbarColor.toUpperCase()} (Vista previa)
+              <div className="space-y-4">
+                <h4 className="border-b border-slate-800 pb-2 text-xs font-bold uppercase tracking-wider text-slate-300">Información personal</h4>
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <label className="block text-xs font-bold uppercase text-slate-400">Nombre de usuario</label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="relative min-w-0 flex-1">
+                      <input
+                        value={userNameDraft}
+                        onChange={(event) => setUserNameDraft(event.target.value)}
+                        className={`w-full rounded-xl py-2.5 pl-3 pr-10 text-sm transition duration-200 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20 ${inputBgClass}`}
+                        placeholder="Escribe tu nombre"
+                      />
+                      <button type="button" onClick={handleResetUserName} className="absolute right-1.5 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-sky-500/10 hover:text-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-500/40" title="Restablecer nombre original" aria-label="Restablecer nombre original"><MaterialIcon name="restart_alt" /></button>
+                    </div>
+                    <input
+                      type="color"
+                      value={isAllowedNavbarColor(navbarColor) ? navbarColor : '#7f1d1d'}
+                      onChange={(event) => handleNavbarColorChange(event.target.value)}
+                      className="h-10 w-11 shrink-0 cursor-pointer rounded-xl border border-slate-600 bg-transparent p-1 transition-transform duration-200 hover:scale-105"
+                      aria-label="Seleccionar color del navbar"
+                      title={`Color del navbar: ${navbarColor.toUpperCase()}`}
+                    />
+                    <button type="button" onClick={handleResetNavbarColor} className="shrink-0 text-sky-400 transition-colors hover:text-sky-300" title="Restablecer color original" aria-label="Restablecer color original"><MaterialIcon name="restart_alt" /></button>
                   </div>
                 </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-bold text-slate-400 uppercase">Nombre de usuario</label>
-                  <button
-                    type="button"
-                    onClick={handleResetUserName}
-                    className="text-xs text-sky-400 hover:text-sky-300 font-medium underline"
-                  >
-                    Restablecer nombre original
-                  </button>
+                <div>
+                  <div className={`flex items-center gap-1 rounded-full border border-slate-600 px-1.5 py-0.5 transition duration-200 focus-within:border-sky-500 focus-within:ring-2 focus-within:ring-sky-500/20 ${inputBgClass}`}>
+                    <CountryCodeSelect
+                      value={userPhoneCode}
+                      onChange={(code) => setUserPhoneCode(code)}
+                      wrapperClassName="!w-1/4 shrink-0"
+                      className="!rounded-full !border-0 !bg-transparent !px-2 !py-1.5 focus:!ring-0"
+                    />
+                    <input
+                      type="tel"
+                      value={userPhoneNumber}
+                      onChange={(e) => setUserPhoneNumber(e.target.value)}
+                      placeholder="Número de teléfono"
+                      aria-label="Número de teléfono"
+                      className="min-w-0 flex-1 border-0 bg-transparent px-3 py-1.5 text-xs outline-none placeholder:text-slate-500 focus:ring-0 sm:text-sm"
+                    />
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    {COUNTRY_CODES.find(c => c.code === userPhoneCode)?.digits
+                      ? `Formato requerido para ${userPhoneCode}: exactamente ${COUNTRY_CODES.find(c => c.code === userPhoneCode)?.digits} dígitos.`
+                      : 'Ingresa de 7 a 15 dígitos según tu país.'}
+                  </p>
                 </div>
-                <input
-                  value={userNameDraft}
-                  onChange={(event) => setUserNameDraft(event.target.value)}
-                  className={`w-full rounded-lg px-3 py-2 text-sm ${inputBgClass}`}
-                  placeholder="Escribe tu nombre"
-                />
               </div>
 
               <div>
@@ -6495,32 +6605,7 @@ ${catechistName}`;
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                  Número Telefónico *
-                </label>
-                <div className="flex gap-2">
-                  <CountryCodeSelect
-                    value={userPhoneCode}
-                    onChange={(code) => setUserPhoneCode(code)}
-                    className={inputBgClass}
-                  />
-                  <input
-                    type="tel"
-                    value={userPhoneNumber}
-                    onChange={(e) => setUserPhoneNumber(e.target.value)}
-                    placeholder="88888888"
-                    className={`w-3/5 rounded-lg px-3 py-2 text-xs sm:text-sm ${inputBgClass}`}
-                  />
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  {COUNTRY_CODES.find(c => c.code === userPhoneCode)?.digits
-                    ? `Formato requerido para ${userPhoneCode}: exactamente ${COUNTRY_CODES.find(c => c.code === userPhoneCode)?.digits} dígitos.`
-                    : 'Ingresa de 7 a 15 dígitos según tu país.'}
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-slate-700 p-3">
+              <div className="border-t border-slate-800 pt-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-bold">Notificaciones de asistencia de este perfil</p>
@@ -6541,7 +6626,7 @@ ${catechistName}`;
                     aria-label="Notificaciones de asistencia de este perfil"
                     onClick={handleTogglePersonalAttendanceReminders}
                     disabled={savingAttendanceReminders || (!isStandaloneApp() && userData?.attendanceRemindersEnabled !== true)}
-                    className={`shrink-0 rounded-lg px-3 py-2 text-xs font-bold text-white disabled:opacity-60 ${
+                    className={`shrink-0 rounded-xl px-3 py-2 text-xs font-bold text-white shadow-sm transition duration-200 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 ${
                       userData?.attendanceRemindersEnabled === true
                         ? 'bg-emerald-600 hover:bg-emerald-700'
                         : 'bg-slate-700 hover:bg-slate-600'
@@ -6577,9 +6662,9 @@ ${catechistName}`;
               </div>
             </div>
 
-            <div className="mt-5 flex gap-2 justify-end">
-              <button type="button" onClick={() => setIsUserNameModalOpen(false)} className="px-3 py-2 rounded-lg bg-slate-700 text-white text-xs font-bold">Cancelar</button>
-              <button type="button" onClick={handleSaveUserName} className="px-3 py-2 rounded-lg bg-red-800 hover:bg-red-900 text-white text-xs font-bold">Guardar</button>
+            <div className="sticky bottom-[-1.5rem] -mx-5 -mb-5 mt-5 flex justify-end gap-2 border-t border-slate-800 bg-slate-950/95 px-5 py-4 backdrop-blur sm:bottom-[-1.5rem] sm:-mx-6 sm:-mb-6 sm:px-6">
+              <button type="button" onClick={() => setIsUserNameModalOpen(false)} className="rounded-xl bg-slate-700 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-slate-600">Cancelar</button>
+              <button type="button" onClick={handleSaveUserName} className="rounded-xl bg-red-800 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-red-950/30 transition hover:-translate-y-0.5 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400">Guardar cambios</button>
             </div>
           </div>
         </div>

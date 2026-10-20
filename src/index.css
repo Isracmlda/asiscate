@@ -125,6 +125,7 @@
    sistema operativo anule el contraste cuando AsisCate está en tema claro. */
 .theme-light .payment-method-values { color: #334155 !important; }
 .theme-light .payment-method-label { color: #0f172a !important; }
+.attendance-chart-tooltip { background-color: #0f172a !important; color: #f8fafc !important; }
 .theme-dark .payment-method-values { color: #e2e8f0 !important; }
 .theme-dark .payment-method-label { color: #ffffff !important; }
 .theme-light .payment-person-name { color: #0f172a !important; }

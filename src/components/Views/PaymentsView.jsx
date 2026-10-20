@@ -103,7 +103,6 @@ export function PaymentsView({
       <div className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-4">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold">Pagos</h2>
-          <p className="text-xs sm:text-sm text-slate-400">Seguimiento de pagos y comprobantes.</p>
         </div>
         <div className="bg-sky-600/10 border border-sky-500/30 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-x-5 gap-y-2 lg:flex-1 lg:max-w-2xl lg:ml-6">
           <div><p className="text-[11px] uppercase font-bold text-sky-400">Pagos Recibidos</p><p className="text-xl font-black text-sky-500">₡{collectedByMethod.total.toLocaleString()}</p></div>
@@ -396,43 +395,19 @@ export function PaymentsView({
         </div>}
 
         <div id="payment-history-section" className={`${cardBgClass} order-2 p-4 sm:p-6 rounded-xl border shadow-sm`}>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+          <div className="mb-3">
             <h3 className="text-base sm:text-lg font-bold">Historial de pagos</h3>
-            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-              <select value={historyStudentId} onChange={event => setHistoryStudentId(event.target.value)} disabled={!effectiveGroupId || effectiveGroupId === 'all'} className={`rounded-lg px-2 py-1.5 text-xs ${inputBgClass}`} aria-label="Catequizando para historial">
-                <option value="">Selecciona catequizando</option>
-                {students.filter(student => student.groupId === effectiveGroupId).map(student => <option key={student.id} value={student.id}>{student.name || student.fullName}</option>)}
-              </select>
-              <button type="button" disabled={!historyStudentId} onClick={generateStudentPaymentHistoryPdf} className="rounded-lg bg-red-800 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50">PDF historial</button>
-            </div>
           </div>
 
           <div className="space-y-3">
-            <div className={`grid grid-cols-1 gap-2 ${isGroupScoped ? 'sm:grid-cols-[auto_1.4fr_1fr]' : 'sm:grid-cols-[auto_1.4fr_1fr_1.1fr]'}`}>
-              <button type="button" onClick={handleScanPaymentQr} className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-bold text-white whitespace-nowrap"><MaterialIcon name="qr_code_scanner" /> Escanear QR</button>
-              <input
-                value={paymentFilters.search}
-                onChange={(event) => {
-                  setPaymentFilters(prev => ({ ...prev, search: event.target.value, ...(isGroupScoped ? { groupId: fixedGroupId } : {}) }));
-                  setPaymentCurrentPage(1);
-                }}
-                placeholder="Buscar por nombre o N° recibo..."
-                className={`w-full rounded-lg px-3 py-2 text-xs ${inputBgClass}`}
-              />
-              {!isGroupScoped && <select
-                value={paymentFilters.groupId}
-                onChange={(event) => {
-                  setPaymentFilters(prev => ({ ...prev, groupId: event.target.value }));
-                  setPaymentCurrentPage(1);
-                }}
-                className={`w-full rounded-lg px-3 py-2 text-xs ${inputBgClass} sm:order-4`}
-              >
-                <option value="all">Todos los grupos</option>
-                {visibleGroups.map(group => (
-                  <option key={group.id} value={group.id}>{group.name}</option>
-                ))}
-              </select>}
-              <div className="flex items-center gap-1 sm:order-3">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+              <button type="button" onClick={handleScanPaymentQr} className="order-1 w-full min-w-0 rounded-lg bg-sky-600 px-2 py-2 text-[11px] font-bold whitespace-nowrap text-white sm:order-none sm:w-auto sm:px-3 sm:text-xs"><MaterialIcon name="qr_code_scanner" /> Escanear QR</button>
+              <button type="button" disabled={!historyStudentId} onClick={generateStudentPaymentHistoryPdf} className="order-2 w-full whitespace-nowrap rounded-lg bg-red-800 px-2 py-2 text-[11px] font-bold text-white disabled:opacity-50 sm:order-none sm:w-auto sm:px-3 sm:py-1.5 sm:text-xs">PDF historial</button>
+              <select value={historyStudentId} onChange={event => setHistoryStudentId(event.target.value)} disabled={!effectiveGroupId || effectiveGroupId === 'all'} className={`order-3 min-w-0 w-full rounded-lg px-2 py-1.5 text-xs sm:order-none sm:w-auto ${inputBgClass}`} aria-label="Catequizando para historial">
+                <option value="">Selecciona catequizando</option>
+                {students.filter(student => student.groupId === effectiveGroupId).map(student => <option key={student.id} value={student.id}>{student.name || student.fullName}</option>)}
+              </select>
+              <div className="order-4 flex min-w-0 items-center gap-1 sm:order-none">
                 <input
                   type="date"
                   value={paymentFilters.date}
@@ -440,7 +415,7 @@ export function PaymentsView({
                     setPaymentFilters(prev => ({ ...prev, date: event.target.value, ...(isGroupScoped ? { groupId: fixedGroupId } : {}) }));
                     setPaymentCurrentPage(1);
                   }}
-                  className={`w-full rounded-lg px-2.5 py-1.5 text-xs ${inputBgClass}`}
+                  className={`w-full min-w-0 rounded-lg px-2 py-1.5 text-xs ${inputBgClass}`}
                   title="Filtrar por fecha"
                 />
                 {paymentFilters.date && (
@@ -450,13 +425,35 @@ export function PaymentsView({
                       setPaymentFilters(prev => ({ ...prev, date: '', ...(isGroupScoped ? { groupId: fixedGroupId } : {}) }));
                       setPaymentCurrentPage(1);
                     }}
-                    className="px-2 py-1 text-xs text-slate-400 hover:text-white rounded bg-slate-700/50"
+                    className="shrink-0 rounded bg-slate-700/50 px-2 py-1 text-xs text-slate-400 hover:text-white"
                     title="Limpiar fecha"
                   >
                     ✕
                   </button>
                 )}
               </div>
+              {!isGroupScoped && <select
+                value={paymentFilters.groupId}
+                onChange={(event) => {
+                  setPaymentFilters(prev => ({ ...prev, groupId: event.target.value }));
+                  setPaymentCurrentPage(1);
+                }}
+                className={`col-span-2 order-5 w-full min-w-0 rounded-lg px-3 py-2 text-xs sm:order-none sm:col-span-1 sm:w-auto ${inputBgClass}`}
+              >
+                <option value="all">Todos los grupos</option>
+                {visibleGroups.map(group => (
+                  <option key={group.id} value={group.id}>{group.name}</option>
+                ))}
+              </select>}
+              <input
+                value={paymentFilters.search}
+                onChange={(event) => {
+                  setPaymentFilters(prev => ({ ...prev, search: event.target.value, ...(isGroupScoped ? { groupId: fixedGroupId } : {}) }));
+                  setPaymentCurrentPage(1);
+                }}
+                placeholder="Buscar por nombre o N° recibo..."
+                className={`col-span-2 order-6 w-full min-w-0 rounded-lg px-3 py-2 text-xs sm:order-none sm:flex-1 ${inputBgClass}`}
+              />
             </div>
 
             {filteredRecordsForView.length === 0 ? (

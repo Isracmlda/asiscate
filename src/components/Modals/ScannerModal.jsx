@@ -17,7 +17,9 @@ export function ScannerModal({
               ? 'Escanear QR de comprobante de pago'
               : scannerModal.type === 'certificate'
                 ? 'Escanear QR de certificado'
-                : 'Escanear QR de asistencia'}
+                : scannerModal.type === 'inventory'
+                  ? 'Verificar activo o mobiliario'
+                  : 'Escanear QR de asistencia'}
           </h3>
           <button type="button" onClick={() => setScannerModal(null)} aria-label="Cerrar" className="bg-rose-700 hover:bg-rose-800 text-white px-2.5 py-1 rounded-lg text-lg font-bold leading-none">✕</button>
         </div>
@@ -30,7 +32,9 @@ export function ScannerModal({
                 ? `Comprobante encontrado: ${scannerModal.result}`
                 : scannerModal.type === 'certificate'
                   ? `Certificado encontrado: ${scannerModal.result}`
-                  : `Asistencia marcada para: ${scannerModal.result}`}
+                  : scannerModal.type === 'inventory'
+                    ? `Etiqueta verificada: ${scannerModal.result}`
+                    : `Asistencia marcada para: ${scannerModal.result}`}
             </p>
             <p className="text-[11px] text-slate-400 mt-2 italic">Cerrando en 2 segundos...</p>
           </div>
@@ -43,7 +47,9 @@ export function ScannerModal({
                 ? `No se encontró ningún comprobante para: ${scannerModal.result}`
                 : scannerModal.type === 'certificate'
                   ? `No se encontró ningún certificado para: ${scannerModal.result}`
-                  : `No se encontró ${isCatechistAttendanceScan ? 'el catequista' : 'el catequizando'}: ${scannerModal.result}`}
+                  : scannerModal.type === 'inventory'
+                    ? `No se encontró ningún activo o mobiliario para: ${scannerModal.result}`
+                    : `No se encontró ${isCatechistAttendanceScan ? 'el catequista' : 'el catequizando'}: ${scannerModal.result}`}
             </p>
             <p className="text-[11px] text-slate-400 mt-2 italic">Cerrando en 2 segundos...</p>
           </div>
@@ -55,7 +61,9 @@ export function ScannerModal({
                 ? 'Apunta la cámara al código QR de la factura o comprobante.'
                 : scannerModal.type === 'certificate'
                   ? 'Apunta la cámara al código QR impreso en el certificado.'
-                  : `Apunta la cámara al carnet del ${isCatechistAttendanceScan ? 'catequista' : 'catequizando'} para marcar asistencia automáticamente.`}
+                  : scannerModal.type === 'inventory'
+                    ? 'Apunta la cámara a la etiqueta del activo o mobiliario para verificarlo.'
+                    : `Apunta la cámara al carnet del ${isCatechistAttendanceScan ? 'catequista' : 'catequizando'} para marcar asistencia automáticamente.`}
             </p>
           </>
         )}

@@ -33,6 +33,10 @@ export function StudentsView({
   const parroquiaMap = useMemo(() => new Map(parroquias.map(p => [p.id, p.name])), [parroquias]);
   const diaconiaMap = useMemo(() => new Map(diaconias.map(d => [d.id, d.name])), [diaconias]);
 
+  const getDisplayLevel = (value) => String(value || 'Primer Nivel')
+    .replace(/\s*\(Primera Comunión\)$/i, '')
+    .trim();
+
   // Extraer lista única de ciclos catequéticos registrados en los estudiantes y grupos
   const availableCycles = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -64,7 +68,8 @@ export function StudentsView({
 
       // 2. Filtro por Nivel
       if (selectedLevelFilter !== 'all') {
-        const studentLevel = student.level || 'Primer Nivel';
+        const assignedGroup = student.groupId ? groupMap.get(student.groupId) : null;
+        const studentLevel = getDisplayLevel(student.level || assignedGroup?.level || 'Primer Nivel');
         if (studentLevel !== selectedLevelFilter) return false;
       }
 
@@ -88,6 +93,8 @@ export function StudentsView({
     });
   }, [students, searchTerm, selectedLevelFilter, selectedCycleFilter, selectedGroupFilter, groupMap]);
 
+  const displayLevelOptions = useMemo(() => Array.from(new Set(levelOptions.map(getDisplayLevel))), [levelOptions]);
+
   // Paginación
   const totalPages = pageSize === 'all' ? 1 : Math.ceil(filteredStudents.length / (Number(pageSize) || 25));
   const paginatedStudents = useMemo(() => {
@@ -96,10 +103,6 @@ export function StudentsView({
     const start = (currentPage - 1) * size;
     return filteredStudents.slice(start, start + size);
   }, [filteredStudents, currentPage, pageSize]);
-
-  // Resumen estadístico
-  const withGroupCount = useMemo(() => students.filter(s => s.groupId && groupMap.has(s.groupId)).length, [students, groupMap]);
-  const withoutGroupCount = students.length - withGroupCount;
 
   const handleClearFilters = () => {
     setSearchTerm('');
@@ -127,14 +130,11 @@ export function StudentsView({
           <h2 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
             <MaterialIcon name="badge" /> <span>Directorio General de Catequizandos</span>
           </h2>
-          <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-            Explora, filtra y administra toda la colección de catequizandos por nombre, nivel y ciclo catequético.
-          </p>
         </div>
       </div>
 
       {/* Tarjetas resumen */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <div className={`${cardBgClass} p-4 rounded-xl border border-slate-700/60`}>
           <span className="text-[11px] font-bold text-slate-400 uppercase block">Total Registrados</span>
           <span className="text-2xl font-black text-white">{students.length}</span>
@@ -142,14 +142,6 @@ export function StudentsView({
         <div className={`${cardBgClass} p-4 rounded-xl border border-amber-500/30`}>
           <span className="text-[11px] font-bold text-amber-400 uppercase block">Filtrados Mostrados</span>
           <span className="text-2xl font-black text-amber-300">{filteredStudents.length}</span>
-        </div>
-        <div className={`${cardBgClass} p-4 rounded-xl border border-emerald-500/30`}>
-          <span className="text-[11px] font-bold text-emerald-400 uppercase block">Con Grupo Asignado</span>
-          <span className="text-2xl font-black text-emerald-300">{withGroupCount}</span>
-        </div>
-        <div className={`${cardBgClass} p-4 rounded-xl border border-rose-500/30`}>
-          <span className="text-[11px] font-bold text-rose-400 uppercase block">Sin Grupo</span>
-          <span className="text-2xl font-black text-rose-300">{withoutGroupCount}</span>
         </div>
       </div>
 
@@ -167,9 +159,9 @@ export function StudentsView({
           )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {/* 1. Búsqueda por nombre */}
-          <div>
+          <div className="col-span-2 md:col-span-1">
             <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Buscar por Nombre / Contacto</label>
             <input
               type="text"
@@ -189,7 +181,7 @@ export function StudentsView({
               className={`w-full rounded-xl px-3 py-2 text-xs font-semibold ${inputBgClass}`}
             >
               <option value="all">Todos los Niveles</option>
-              {levelOptions.map(level => (
+              {displayLevelOptions.map(level => (
                 <option key={level} value={level}>{level}</option>
               ))}
             </select>
@@ -211,7 +203,7 @@ export function StudentsView({
           </div>
 
           {/* 4. Filtro por Estado de Grupo */}
-          <div>
+          <div className="col-span-2 md:col-span-1">
             <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1">Estado de Grupo</label>
             <select
               value={selectedGroupFilter}
@@ -260,7 +252,7 @@ export function StudentsView({
                 paginatedStudents.map((student, index) => {
                   const rowIndex = (pageSize === 'all' ? 0 : (currentPage - 1) * Number(pageSize)) + index + 1;
                   const group = student.groupId ? groupMap.get(student.groupId) : null;
-                  const level = student.level || group?.level || 'Primer Nivel';
+                  const level = getDisplayLevel(student.level || group?.level || 'Primer Nivel');
                   const cycle = student.cycle || group?.year || 'Sin ciclo';
                   const parroquiaName = student.parroquiaId ? parroquiaMap.get(student.parroquiaId) : null;
                   const diaconiaName = student.diaconiaId ? diaconiaMap.get(student.diaconiaId) : null;

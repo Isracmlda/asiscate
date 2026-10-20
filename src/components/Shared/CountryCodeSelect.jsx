@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { COUNTRY_CODES } from '../../utils/validators';
 
-export function CountryCodeSelect({ value, onChange, className }) {
+export function CountryCodeSelect({ value, onChange, className, wrapperClassName = '' }) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -18,7 +18,7 @@ export function CountryCodeSelect({ value, onChange, className }) {
   }, []);
 
   return (
-    <div ref={dropdownRef} className="relative inline-block w-2/5">
+    <div ref={dropdownRef} className={`relative inline-block w-2/5 ${wrapperClassName}`}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
