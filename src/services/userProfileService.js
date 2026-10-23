@@ -2,7 +2,7 @@ import { deleteDoc, doc, getDoc, getDocFromServer, setDoc, updateDoc } from 'fir
 
 const DEFAULT_ADMIN_EMAILS = ['cmisra2407@gmail.com', 'asiscate.elcarmen@gmail.com'];
 
-export async function resolveUserProfile(db, currentUser) {
+export async function resolveUserProfile(db, currentUser, { createProfile = true } = {}) {
   const userRef = doc(db, 'users', currentUser.uid);
   let userSnapshot;
   try {
@@ -72,6 +72,10 @@ export async function resolveUserProfile(db, currentUser) {
     }
     return { profile, role };
   }
+
+  // El QR de asistencia solo admite perfiles de AsisCate ya existentes.
+  // No crear el perfil de la app al autenticar a alguien por primera vez desde este flujo.
+  if (!createProfile) return { profile: null, role: null };
 
   let approved = isDefaultAdmin;
   if (!approved && email) {

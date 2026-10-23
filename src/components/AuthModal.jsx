@@ -8,6 +8,7 @@ export function AuthModal({
   authError,
   authSubmitting,
   authMode,
+  isFormationCheckin = false,
   setAuthMode,
   setAuthError,
   emailAuthInput,
@@ -61,7 +62,7 @@ export function AuthModal({
               <path fill="#FBBC05" d="M5.24 14.24a7.22 7.22 0 010-4.48V6.66H1.27a12 12 0 000 10.68l3.97-3.1z"/>
               <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.37 0 3.37 2.67 1.27 6.66l3.97 3.1c.95-2.88 3.61-5.01 6.76-5.01z"/>
             </svg>
-            Continuar con Google
+            {isFormationCheckin ? 'Iniciar sesión con Google' : 'Continuar con Google'}
           </button>
 
           <button
@@ -75,14 +76,14 @@ export function AuthModal({
               <path fill="#05a6f0" d="M1 12h10v10H1z"/>
               <path fill="#ffba08" d="M12 12h10v10H1z"/>
             </svg>
-            Continuar con Microsoft
+            {isFormationCheckin ? 'Iniciar sesión con Microsoft' : 'Continuar con Microsoft'}
           </button>
         </div>
 
         <div className="relative flex py-2 items-center mb-3">
           <div className="flex-grow border-t border-slate-300/40"></div>
           <button type="button" aria-expanded={emailSectionOpen} onClick={() => setEmailSectionOpen(open => !open)} className="flex-shrink mx-3 inline-flex items-center gap-1 text-slate-400 hover:text-red-500 text-xs font-medium transition-colors">
-            {emailSectionOpen ? 'Ocultar acceso con correo' : 'Continuar con correo'}
+            {emailSectionOpen ? 'Ocultar acceso con correo' : isFormationCheckin ? 'Iniciar sesión con correo' : 'Continuar con correo'}
             <MaterialIcon name="expand_more" className={`transition-transform duration-300 ${emailSectionOpen ? 'rotate-180' : ''}`} />
           </button>
           <div className="flex-grow border-t border-slate-300/40"></div>
@@ -103,13 +104,15 @@ export function AuthModal({
           >
             Iniciar Sesión
           </button>
-          <button
-            type="button"
-            onClick={() => { setAuthMode('register'); setAuthError(''); }}
-            className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors ${authMode === 'register' ? 'bg-white dark:bg-black shadow-sm text-red-900 dark:text-white' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
-          >
-            Crear Cuenta
-          </button>
+          {!isFormationCheckin && (
+            <button
+              type="button"
+              onClick={() => { setAuthMode('register'); setAuthError(''); }}
+              className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-colors ${authMode === 'register' ? 'bg-white dark:bg-black shadow-sm text-red-900 dark:text-white' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'}`}
+            >
+              Crear Cuenta
+            </button>
+          )}
         </div>
 
         {/* Formulario correo y contraseña */}
@@ -171,6 +174,11 @@ export function AuthModal({
             </fieldset>
           </div>
         </div>
+        {isFormationCheckin && (
+          <a href="https://asiscate-el-carmen.web.app/?authMode=register" target="_blank" rel="noreferrer" className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 px-4 py-3 text-center text-xs font-bold text-emerald-600 transition hover:bg-emerald-500/10">
+            <MaterialIcon name="person_add" /> Registrarme en AsisCate
+          </a>
+        )}
       </div>
     </div>
   );

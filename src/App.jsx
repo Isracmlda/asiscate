@@ -59,15 +59,50 @@ import {
   writeBatch
 } from 'firebase/firestore';
 
-const FORMATION_CHECKIN_AUTH_KEY = 'asiscate-formation-checkin-auth';
+const FORMATION_CHECKIN_CONTEXT_KEY = 'asiscate-formation-checkin-context';
+const FORMATION_CHECKIN_CONTEXT_MAX_AGE = 15 * 60 * 1000;
 
-const markFormationCheckinLoginAttempt = (isCheckinFlow) => {
-  if (!isCheckinFlow) return;
+const restoreFormationCheckinContext = () => {
+  if (typeof window === 'undefined') return;
+  const currentParams = new URLSearchParams(window.location.search);
+  const currentIsCheckin = currentParams.get('formationCheckin') === '1';
+  let storedContext = null;
   try {
-    sessionStorage.setItem(FORMATION_CHECKIN_AUTH_KEY, '1');
+    const rawContext = sessionStorage.getItem(FORMATION_CHECKIN_CONTEXT_KEY)
+      || localStorage.getItem(FORMATION_CHECKIN_CONTEXT_KEY);
+    storedContext = rawContext ? JSON.parse(rawContext) : null;
   } catch (error) {
-    console.warn('No se pudo guardar el intento de autenticación para el QR:', error);
+    console.warn('No se pudo recuperar el contexto de asistencia QR:', error);
   }
+
+  if (currentIsCheckin) {
+    const context = { search: currentParams.toString(), savedAt: Date.now() };
+    try { sessionStorage.setItem(FORMATION_CHECKIN_CONTEXT_KEY, JSON.stringify(context)); } catch { /* El contexto también se guarda en localStorage. */ }
+    try { localStorage.setItem(FORMATION_CHECKIN_CONTEXT_KEY, JSON.stringify(context)); } catch { /* La URL actual conserva el contexto. */ }
+    return;
+  }
+
+  const contextAge = Date.now() - Number(storedContext?.savedAt);
+  if (!storedContext?.search || !Number.isFinite(contextAge) || contextAge < 0 || contextAge > FORMATION_CHECKIN_CONTEXT_MAX_AGE) {
+    try { sessionStorage.removeItem(FORMATION_CHECKIN_CONTEXT_KEY); } catch { /* Storage puede estar deshabilitado. */ }
+    try { localStorage.removeItem(FORMATION_CHECKIN_CONTEXT_KEY); } catch { /* Storage puede estar deshabilitado. */ }
+    return;
+  }
+
+  const savedParams = new URLSearchParams(storedContext.search);
+  if (savedParams.get('formationCheckin') !== '1') return;
+  savedParams.forEach((value, key) => {
+    if (!currentParams.has(key)) currentParams.set(key, value);
+  });
+  const nextSearch = currentParams.toString();
+  window.history.replaceState({}, '', `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`);
+};
+
+restoreFormationCheckinContext();
+
+const clearFormationCheckinContext = () => {
+  try { sessionStorage.removeItem(FORMATION_CHECKIN_CONTEXT_KEY); } catch { /* Storage puede estar deshabilitado. */ }
+  try { localStorage.removeItem(FORMATION_CHECKIN_CONTEXT_KEY); } catch { /* Storage puede estar deshabilitado. */ }
 };
 
 const loadFaviconAsPng = async () => {
@@ -98,6 +133,7 @@ const DEFAULT_GROUP_SCHEDULE_OPTIONS = {
 
 const CATECHIST_GROUP_PREFIX = 'catequistas:';
 const CATECHIST_PARISH_GROUP_PREFIX = 'catequistas:parroquia:';
+const CATECHIST_FORMATION_GROUP_ID = 'catequistas:formacion';
 const CATECHIST_USER_PREFIX = 'catequista:user:';
 const CATECHIST_PENDING_PREFIX = 'catequista:pending:';
 const EXCLUDED_CATECHIST_EMAIL = 'asiscate.elcarmen@gmail.com';
@@ -451,13 +487,22 @@ export default function App() {
   const [isDeletingStudent, setIsDeletingStudent] = useState(false);
 
   // Autenticación extendida (Correo/Contraseña, Microsoft, Google)
-  const [authMode, setAuthMode] = useState(() => new URLSearchParams(window.location.search).get('authMode') === 'register' ? 'register' : 'login'); // 'login' | 'register'
+  const [authMode, setAuthMode] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('formationCheckin') !== '1' && params.get('authMode') === 'register' ? 'register' : 'login';
+  }); // 'login' | 'register'
   const [emailAuthInput, setEmailAuthInput] = useState(() => new URLSearchParams(window.location.search).get('email') || '');
   const [passwordAuthInput, setPasswordAuthInput] = useState('');
   const [nameAuthInput, setNameAuthInput] = useState('');
   const [authError, setAuthError] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [formationCheckinResult, setFormationCheckinResult] = useState(null);
+  const [formationCheckinDraft, setFormationCheckinDraft] = useState(null);
+  const [formationCheckinParishId, setFormationCheckinParishId] = useState('');
+  const [formationCheckinDiaconiaId, setFormationCheckinDiaconiaId] = useState('');
+  const [formationCheckinPhoneCode, setFormationCheckinPhoneCode] = useState('+506');
+  const [formationCheckinPhoneNumber, setFormationCheckinPhoneNumber] = useState('');
+  const [formationCheckinSaving, setFormationCheckinSaving] = useState(false);
   const [formationCheckinDataReady, setFormationCheckinDataReady] = useState(false);
   const isFormationCheckinFlowRef = useRef(new URLSearchParams(window.location.search).get('formationCheckin') === '1');
   const isStudentAttendanceQrFlowRef = useRef(new URLSearchParams(window.location.search).get('studentAttendanceQr') === '1');
@@ -519,8 +564,11 @@ export default function App() {
 
   const fetchAndResolveUser = async (currentUser) => {
     try {
-      const { profile, role } = await resolveUserProfile(db, currentUser);
+      const { profile, role } = await resolveUserProfile(db, currentUser, {
+        createProfile: !isFormationCheckinFlowRef.current
+      });
       setUserData(profile);
+      if (!profile) return role || 'catequista';
       setUserPhoneCode(profile.phoneCode || '+506');
       setUserPhoneNumber(profile.phoneNumber || '');
       setModalParroquiaId(profile.parroquiaId || '');
@@ -682,24 +730,6 @@ export default function App() {
   const { user, loading, setLoading } = useAuthSession({
     resolveUser: fetchAndResolveUser,
     loadData: fetchAllData,
-    beforeResolve: async (currentUser) => {
-      if (!isFormationCheckinFlowRef.current) return true;
-      let isFreshLogin = false;
-      try {
-        isFreshLogin = sessionStorage.getItem(FORMATION_CHECKIN_AUTH_KEY) === '1';
-      } catch (error) {
-        console.warn('No se pudo revisar la sesión del QR:', error);
-      }
-      if (isFreshLogin) return true;
-
-      // Cada apertura del enlace QR debe autenticar a la persona que va a marcar.
-      try {
-        await signOut(auth);
-      } catch (error) {
-        console.error('No se pudo cerrar la sesión anterior antes del acceso QR:', error);
-      }
-      return false;
-    },
     onResolved: (resolvedRole) => {
       setUserRole(resolvedRole);
       const initialView = resolvedRole === 'admin'
@@ -1075,11 +1105,13 @@ export default function App() {
 
   const handleGoogleLogin = async () => {
     try {
-      markFormationCheckinLoginAttempt(isFormationCheckinFlowRef.current);
       setAuthError('');
       setAuthSubmitting(true);
       setLoading(true);
       if (isFormationCheckinFlowRef.current) {
+        // Firebase signOut no elimina la sesión que el navegador mantiene con Google.
+        // Fuerza el selector para que la siguiente persona no reutilice esa cuenta.
+        googleProvider.setCustomParameters({ prompt: 'select_account' });
         await prepareFormationAuthRedirect();
         await signInWithRedirect(auth, googleProvider);
       } else {
@@ -1096,11 +1128,11 @@ export default function App() {
 
   const handleMicrosoftLogin = async () => {
     try {
-      markFormationCheckinLoginAttempt(isFormationCheckinFlowRef.current);
       setAuthError('');
       setAuthSubmitting(true);
       setLoading(true);
       if (isFormationCheckinFlowRef.current) {
+        microsoftProvider.setCustomParameters({ prompt: 'select_account' });
         await prepareFormationAuthRedirect();
         await signInWithRedirect(auth, microsoftProvider);
       } else {
@@ -1118,6 +1150,11 @@ export default function App() {
   const handleEmailAuthSubmit = async (e) => {
     e.preventDefault();
     setAuthError('');
+    if (isFormationCheckinFlowRef.current && authMode !== 'login') {
+      setAuthMode('login');
+      setAuthError('Desde el QR solo puedes iniciar sesión. Si aún no tienes perfil, regístrate en AsisCate.');
+      return;
+    }
     if (!emailAuthInput.trim() || !passwordAuthInput.trim()) {
       setAuthError('Por favor ingresa tu correo y contraseña.');
       return;
@@ -1132,7 +1169,6 @@ export default function App() {
     }
 
     try {
-      markFormationCheckinLoginAttempt(isFormationCheckinFlowRef.current);
       setAuthSubmitting(true);
       setLoading(true);
       if (authMode === 'login') {
@@ -1787,64 +1823,182 @@ export default function App() {
     }
   }, [allUsers, attendanceDate, attendanceLabel, attendanceType, catechistRoster, fetchAllData, isOnline, notify, setAllUsers, setCatechistRoster, setUserData, students, user?.uid]);
 
+  const registerFormationAttendance = useCallback(async (userId, date, label) => {
+    let locationData;
+    if (navigator.geolocation) {
+      try {
+        const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true, timeout: 10000, maximumAge: 0
+        }));
+        locationData = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          capturedAt: new Date().toISOString()
+        };
+      } catch (error) {
+        console.info('No se obtuvo ubicación para la asistencia QR:', error?.message || error);
+      }
+    }
+
+    const saved = await handleMarkAttendance(`${CATECHIST_USER_PREFIX}${userId}`, 'present', date, label, 'formacion', {
+      checkInMethod: 'qr',
+      ...(locationData ? { location: locationData } : {})
+    }, false);
+    if (!saved) {
+      setFormationCheckinResult({ status: 'error', message: 'No se pudo guardar la asistencia. Revisa tu conexión e inténtalo de nuevo.' });
+      return false;
+    }
+    setFormationCheckinResult({ status: 'success', withLocation: Boolean(locationData) });
+    clearFormationCheckinContext();
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.warn('La asistencia quedó guardada, pero no se pudo cerrar la sesión automáticamente:', error);
+    }
+    return true;
+  }, [handleMarkAttendance]);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('formationCheckin') !== '1' || !user || loading || !formationCheckinDataReady) return;
     const groupId = params.get('groupId') || '';
+    const sourceParishId = params.get('parroquiaId') || '';
     const date = params.get('date') || '';
     const label = params.get('label') || '';
     const checkinKey = `${user.uid}:${groupId}:${date}`;
     if (handledFormationCheckinRef.current === checkinKey) return;
     handledFormationCheckinRef.current = checkinKey;
 
-    const finish = () => {
-      try {
-        sessionStorage.removeItem(FORMATION_CHECKIN_AUTH_KEY);
-      } catch (error) {
-        console.warn('No se pudo limpiar el intento de autenticación del QR:', error);
-      }
-      params.delete('formationCheckin');
-      params.delete('groupId');
-      params.delete('date');
-      params.delete('label');
-      const nextSearch = params.toString();
-      window.history.replaceState({}, '', `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`);
-    };
+    // Conserva el enlace para que la persona pueda reintentar si hay un error.
+    const finish = clearFormationCheckinContext;
 
     const runCheckin = async () => {
-      const normalizedEmail = String(user.email || userData?.email || '').trim().toLowerCase();
+      let normalizedEmail = String(user.email || userData?.email || '').trim().toLowerCase();
       const userRecord = allUsers.find(item => item.id === user.uid)
         || allUsers.find(item => String(item.email || '').trim().toLowerCase() === normalizedEmail)
         || (userData?.id === user.uid ? userData : null);
+      normalizedEmail = String(normalizedEmail || userRecord?.email || '').trim().toLowerCase();
+      if (normalizedEmail === EXCLUDED_CATECHIST_EMAIL) {
+        setFormationCheckinResult({
+          status: 'error',
+          message: 'Esta cuenta no está autorizada para registrar asistencia.',
+          email: normalizedEmail
+        });
+        finish();
+        return;
+      }
       const rosterRecord = catechistRoster.find(item => (
         item.linkedUserId === user.uid
         || (normalizedEmail && [item.email, item.contactEmail].some(value => String(value || '').trim().toLowerCase() === normalizedEmail))
       ));
       const isParishGroup = groupId.startsWith(CATECHIST_PARISH_GROUP_PREFIX);
+      const isSharedFormationGroup = groupId === CATECHIST_FORMATION_GROUP_ID;
       const groupDiaconiaId = groupId.startsWith(CATECHIST_GROUP_PREFIX) && !isParishGroup ? groupId.slice(CATECHIST_GROUP_PREFIX.length) : '';
       const groupParishId = isParishGroup ? groupId.slice(CATECHIST_PARISH_GROUP_PREFIX.length) : '';
+      const sourceGroupDiaconia = diaconias.find(item => item.id === groupDiaconiaId);
+      const registeredDiaconia = diaconias.find(item => item.id === userRecord?.diaconiaId);
+      const registeredParish = parroquias.find(item => item.id === userRecord?.parroquiaId);
+      const hasValidTerritory = Boolean(
+        registeredDiaconia
+        && registeredParish
+        && registeredDiaconia.parroquiaId === registeredParish.id
+      );
       const attendeeDiaconiaId = userRecord?.diaconiaId || rosterRecord?.diaconiaId || userData?.diaconiaId || '';
       const attendeeParishId = userRecord?.parroquiaId || rosterRecord?.parroquiaId || userData?.parroquiaId
         || diaconias.find(item => item.id === attendeeDiaconiaId)?.parroquiaId || '';
-      const isCatechistAccount = userRecord?.role === 'catequista' || Boolean(rosterRecord) || Boolean(attendeeDiaconiaId);
-      const inGroupScope = isParishGroup
-        ? Boolean(groupParishId) && attendeeParishId === groupParishId
-        : Boolean(groupDiaconiaId) && attendeeDiaconiaId === groupDiaconiaId;
-      if (!inGroupScope || !date || !userRecord || !isCatechistAccount || userRecord.active === false) {
-        const message = !isCatechistAccount
-          ? 'Este correo todavía no está registrado como catequista en la app.'
+      const canCompleteTerritory = !hasValidTerritory;
+      const inGroupScope = isSharedFormationGroup
+        || canCompleteTerritory
+        || (isParishGroup
+          ? Boolean(groupParishId) && attendeeParishId === groupParishId
+          : Boolean(groupDiaconiaId) && attendeeDiaconiaId === groupDiaconiaId);
+      if (!inGroupScope || !date || !userRecord || userRecord.active === false) {
+        const message = !userRecord
+          ? 'Esta cuenta no tiene un perfil registrado en AsisCate. Regístrate en la app principal para poder marcar asistencia.'
           : 'Esta cuenta no pertenece a la diaconía o parroquia de esta formación.';
         setFormationCheckinResult({
           status: 'error',
           message,
-          canRegister: !isCatechistAccount,
+          canRegister: !userRecord,
           email: normalizedEmail
         });
         finish();
         return;
       }
 
-      setFormationCheckinResult({ status: 'processing' });
+      const attendanceUserId = userRecord.id || user.uid;
+      const hasContactPhone = Boolean(userRecord.phoneNumber || userRecord.phone);
+      if (hasValidTerritory && hasContactPhone) {
+        setFormationCheckinResult({ status: 'processing' });
+        const saved = await registerFormationAttendance(attendanceUserId, date, label);
+        if (!saved) finish();
+        return;
+      }
+
+      const assignedDiaconiaId = registeredDiaconia?.id || rosterRecord?.diaconiaId || '';
+      const defaultParishId = sourceParishId || groupParishId || sourceGroupDiaconia?.parroquiaId
+        || userRecord.parroquiaId || rosterRecord?.parroquiaId
+        || diaconias.find(item => item.id === assignedDiaconiaId)?.parroquiaId || '';
+      const assignedDiaconia = diaconias.find(item => item.id === assignedDiaconiaId);
+      const savedPhoneCode = userRecord.phoneCode || '+506';
+      const savedPhoneDigits = String(userRecord.phoneNumber || userRecord.phone || rosterRecord?.phone || '').replace(/\D/g, '');
+      const savedCountryDigits = savedPhoneCode.replace(/\D/g, '');
+      setFormationCheckinDiaconiaId(userRecord.diaconiaId || rosterRecord?.diaconiaId || '');
+      setFormationCheckinParishId(defaultParishId);
+      if (assignedDiaconia && defaultParishId && assignedDiaconia.parroquiaId !== defaultParishId) {
+        setFormationCheckinDiaconiaId('');
+      }
+      setFormationCheckinPhoneCode(savedPhoneCode);
+      setFormationCheckinPhoneNumber(userRecord.phoneNumber || (savedCountryDigits && savedPhoneDigits.startsWith(savedCountryDigits)
+        ? savedPhoneDigits.slice(savedCountryDigits.length)
+        : savedPhoneDigits));
+      setFormationCheckinDraft({
+        userId: attendanceUserId,
+        date,
+        label,
+        name: userRecord.name || user.displayName || 'Catequista'
+      });
+      setFormationCheckinResult({ status: 'confirm' });
+    };
+
+    setFormationCheckinResult({ status: 'processing' });
+    runCheckin().catch(error => {
+      console.error('Error registrando asistencia desde el enlace QR:', error);
+      setFormationCheckinResult({ status: 'error', message: 'No se pudo registrar la asistencia. Revisa tu conexión e inténtalo de nuevo.' });
+      finish();
+    });
+  }, [allUsers, catechistRoster, diaconias, formationCheckinDataReady, loading, registerFormationAttendance, user, userData?.diaconiaId, userData?.email, userData?.id, userData?.parroquiaId]);
+
+  const handleConfirmFormationCheckin = async (event) => {
+    event.preventDefault();
+    if (!formationCheckinDraft || formationCheckinSaving) return;
+    const selectedDiaconia = diaconias.find(item => item.id === formationCheckinDiaconiaId);
+    if (!selectedDiaconia || (formationCheckinParishId && selectedDiaconia.parroquiaId !== formationCheckinParishId)) {
+      setFormationCheckinResult({ status: 'confirm', message: 'Selecciona la diaconía donde apareces registrado.' });
+      return;
+    }
+    const phoneResult = validatePhoneNumber(formationCheckinPhoneCode, formationCheckinPhoneNumber);
+    if (!phoneResult.valid) {
+      setFormationCheckinResult({ status: 'confirm', message: phoneResult.message });
+      return;
+    }
+
+    setFormationCheckinSaving(true);
+    setFormationCheckinResult({ status: 'processing' });
+    try {
+      const profileUpdates = {
+        parroquiaId: selectedDiaconia.parroquiaId || formationCheckinParishId || '',
+        diaconiaId: selectedDiaconia.id,
+        phoneCode: formationCheckinPhoneCode,
+        phoneNumber: phoneResult.rawDigits,
+        phone: phoneResult.formatted
+      };
+      await updateDoc(doc(db, 'users', formationCheckinDraft.userId), profileUpdates);
+      setAllUsers(previous => previous.map(item => item.id === formationCheckinDraft.userId
+        ? { ...item, ...profileUpdates }
+        : item));
+      setUserData(previous => previous ? { ...previous, ...profileUpdates } : previous);
 
       let locationData;
       if (navigator.geolocation) {
@@ -1863,27 +2017,42 @@ export default function App() {
         }
       }
 
-      const attendanceUserId = userRecord.id || user.uid;
-      const saved = await handleMarkAttendance(`${CATECHIST_USER_PREFIX}${attendanceUserId}`, 'present', date, label, 'formacion', {
+      const saved = await handleMarkAttendance(`${CATECHIST_USER_PREFIX}${formationCheckinDraft.userId}`, 'present', formationCheckinDraft.date, formationCheckinDraft.label, 'formacion', {
         checkInMethod: 'qr',
         ...(locationData ? { location: locationData } : {})
       }, false);
       if (!saved) {
-        setFormationCheckinResult({ status: 'error', message: 'No se pudo guardar la asistencia. Revisa tu conexión e inténtalo de nuevo.' });
-        finish();
+        setFormationCheckinResult({ status: 'confirm', message: 'Tus datos quedaron guardados, pero no se pudo registrar la asistencia. Inténtalo nuevamente.' });
         return;
       }
       setFormationCheckinResult({ status: 'success', withLocation: Boolean(locationData) });
-      finish();
-    };
+      clearFormationCheckinContext();
+      try {
+        await signOut(auth);
+      } catch (signOutError) {
+        console.warn('La asistencia quedó guardada, pero no se pudo cerrar la sesión automáticamente:', signOutError);
+      }
+    } catch (error) {
+      console.error('Error guardando el perfil o la asistencia de formación:', error);
+      setFormationCheckinResult({ status: 'confirm', message: 'No se pudieron guardar tus datos y asistencia. Revisa tu conexión e inténtalo de nuevo.' });
+    } finally {
+      setFormationCheckinSaving(false);
+    }
+  };
 
-    setFormationCheckinResult({ status: 'processing' });
-    runCheckin().catch(error => {
-      console.error('Error registrando asistencia desde el enlace QR:', error);
-      setFormationCheckinResult({ status: 'error', message: 'No se pudo registrar la asistencia. Revisa tu conexión e inténtalo de nuevo.' });
-      finish();
-    });
-  }, [allUsers, catechistRoster, diaconias, formationCheckinDataReady, handleMarkAttendance, loading, user, userData?.diaconiaId, userData?.email, userData?.id, userData?.parroquiaId]);
+  const handleRestartFormationCheckin = async () => {
+    try {
+      await signOut(auth);
+      if (auth.currentUser) throw new Error('Firebase todavía mantiene una sesión activa.');
+      window.location.reload();
+    } catch (error) {
+      console.error('No se pudo cerrar la sesión antes de volver al QR:', error);
+      setFormationCheckinResult(previous => ({
+        ...previous,
+        message: 'No se pudo cerrar la sesión. Inténtalo de nuevo antes de registrar a otra persona.'
+      }));
+    }
+  };
 
   const handleSaveAttendanceLabelForDate = async (groupId, dateStr, nextLabel = attendanceLabel, targetType = attendanceType) => {
     if (!groupId || !dateStr) return;
@@ -5251,13 +5420,61 @@ ${catechistName}`;
     return <StudentAttendanceQrPage sessionId={params.get('sessionId') || ''} themeMode={themeMode} />;
   }
 
-  if (isFormationCheckinFlowRef.current && user) {
+  if (isFormationCheckinFlowRef.current && (user || ['success', 'error'].includes(formationCheckinResult?.status))) {
     const checkinStatus = formationCheckinResult?.status || 'processing';
     const checkinSucceeded = checkinStatus === 'success';
     const checkinFailed = checkinStatus === 'error';
-    const registrationUrl = new URL('/', window.location.origin);
+    const checkinNeedsConfirmation = checkinStatus === 'confirm';
+    const registrationUrl = new URL('https://asiscate-el-carmen.web.app/');
     registrationUrl.searchParams.set('authMode', 'register');
     if (formationCheckinResult?.email) registrationUrl.searchParams.set('email', formationCheckinResult.email);
+    if (checkinNeedsConfirmation) {
+      const checkinDiaconias = diaconias.filter(item => !formationCheckinParishId || item.parroquiaId === formationCheckinParishId);
+      const selectedFormationDiaconia = diaconias.find(item => item.id === formationCheckinDiaconiaId);
+      const selectedFormationParish = parroquias.find(item => item.id === selectedFormationDiaconia?.parroquiaId);
+      return (
+        <div className={`min-h-screen flex items-center justify-center p-5 ${themeMode === 'dark' ? 'bg-black text-white' : 'bg-gradient-to-br from-red-50 to-slate-100 text-slate-800'}`}>
+          <div role="dialog" aria-modal="true" aria-labelledby="formation-checkin-confirm-title" className={`w-full max-w-md rounded-3xl border p-6 shadow-xl sm:p-8 ${themeMode === 'dark' ? 'border-neutral-800 bg-neutral-950' : 'border-red-100 bg-white'}`}>
+            <AsisCateLogo className="mx-auto mb-4 h-14 w-14" />
+            <h1 id="formation-checkin-confirm-title" className="text-center text-xl font-extrabold">Confirma tus datos</h1>
+            <p className="mt-2 text-center text-sm leading-6 text-slate-400">Antes de registrar tu asistencia, confirma la parroquia y la diaconía donde apareces, además de tu teléfono. Así quedará visible en el grupo correcto.</p>
+            <div className={`mt-5 rounded-xl border px-3 py-2 text-sm ${themeMode === 'dark' ? 'border-neutral-800 bg-neutral-900' : 'border-slate-200 bg-slate-50'}`}>
+              <p className="font-bold">{formationCheckinDraft?.name || 'Catequista'}</p>
+              <p className="mt-0.5 break-all text-xs text-slate-400">{user?.email || userData?.email || ''}</p>
+            </div>
+            <form onSubmit={handleConfirmFormationCheckin} className="mt-4 space-y-4">
+              <label className="block text-left text-sm font-semibold">
+                Parroquia
+                <select required value={formationCheckinParishId} onChange={event => { setFormationCheckinParishId(event.target.value); setFormationCheckinDiaconiaId(''); }} className={`mt-1.5 w-full rounded-xl px-3 py-3 text-sm ${themeMode === 'dark' ? 'border border-neutral-700 bg-neutral-900 text-white' : 'border border-slate-300 bg-white text-slate-800'}`}>
+                  <option value="">Selecciona tu parroquia</option>
+                  {parroquias.map(item => <option key={item.id} value={item.id}>{item.name || 'Parroquia'}</option>)}
+                </select>
+              </label>
+              <label className="block text-left text-sm font-semibold">
+                Diaconía donde apareces registrado
+                <select required disabled={!formationCheckinParishId} value={formationCheckinDiaconiaId} onChange={event => setFormationCheckinDiaconiaId(event.target.value)} className={`mt-1.5 w-full rounded-xl px-3 py-3 text-sm disabled:cursor-not-allowed disabled:opacity-60 ${themeMode === 'dark' ? 'border border-neutral-700 bg-neutral-900 text-white' : 'border border-slate-300 bg-white text-slate-800'}`}>
+                  <option value="">Selecciona tu diaconía</option>
+                  {checkinDiaconias.map(item => <option key={item.id} value={item.id}>{item.name || 'Diaconía'}</option>)}
+                </select>
+              </label>
+              {formationCheckinParishId && checkinDiaconias.length === 0 && <p className="-mt-2 text-left text-xs text-rose-400">No hay diaconías registradas para esta parroquia.</p>}
+              {selectedFormationDiaconia && <p className="-mt-2 text-left text-xs text-slate-400">Parroquia: {selectedFormationParish?.name || 'Sin parroquia asignada'}</p>}
+              <label className="block text-left text-sm font-semibold">
+                Teléfono de contacto
+                <div className="mt-1.5 flex gap-2">
+                  <CountryCodeSelect value={formationCheckinPhoneCode} onChange={setFormationCheckinPhoneCode} className={themeMode === 'dark' ? 'border border-neutral-700 bg-neutral-900 text-white' : 'border border-slate-300 bg-white text-slate-800'} />
+                  <input type="tel" inputMode="tel" autoComplete="tel-national" required value={formationCheckinPhoneNumber} onChange={event => setFormationCheckinPhoneNumber(event.target.value)} placeholder="Número telefónico" className={`min-w-0 flex-1 rounded-xl px-3 py-3 text-sm ${themeMode === 'dark' ? 'border border-neutral-700 bg-neutral-900 text-white placeholder-neutral-500' : 'border border-slate-300 bg-white text-slate-800 placeholder-slate-400'}`} />
+                </div>
+              </label>
+              {formationCheckinResult?.message && <p role="alert" className="text-sm text-rose-500">{formationCheckinResult.message}</p>}
+              <button type="submit" disabled={formationCheckinSaving} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-500 disabled:cursor-wait disabled:opacity-60">
+                {formationCheckinSaving ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Guardando…</> : <><MaterialIcon name="how_to_reg" /> Confirmar y registrar asistencia</>}
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={`min-h-screen flex items-center justify-center p-5 ${themeMode === 'dark' ? 'bg-black text-white' : 'bg-gradient-to-br from-red-50 to-slate-100 text-slate-800'}`}>
         <div className={`w-full max-w-md rounded-3xl border p-8 text-center shadow-xl ${themeMode === 'dark' ? 'border-neutral-800 bg-neutral-950' : 'border-red-100 bg-white'}`}>
@@ -5270,11 +5487,16 @@ ${catechistName}`;
           <h1 className="text-2xl font-extrabold">{checkinSucceeded ? '¡Asistencia registrada!' : checkinFailed ? 'No se pudo registrar' : 'Registrando asistencia'}</h1>
           <p className="mt-3 text-sm leading-6 text-slate-400">
             {checkinSucceeded
-              ? `La asistencia a la formación se registró con éxito${formationCheckinResult.withLocation ? ' junto con tu ubicación' : ''}. Ya puedes cerrar esta página.`
+              ? `La asistencia a la formación se registró con éxito${formationCheckinResult.withLocation ? ' junto con tu ubicación' : ''}. La sesión se cerró para que la siguiente persona pueda escanear el QR.`
               : checkinFailed
                 ? formationCheckinResult.message
                 : 'Estamos confirmando tu cuenta y guardando la asistencia. No cierres esta página todavía.'}
           </p>
+          {(checkinSucceeded || checkinFailed) && (
+            <button type="button" onClick={handleRestartFormationCheckin} className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-500">
+              <MaterialIcon name="qr_code_scanner" /> Registrar otra asistencia
+            </button>
+          )}
           {checkinFailed && formationCheckinResult.canRegister && (
             <div className="mt-6">
               <a href={registrationUrl.toString()} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-500">
@@ -5296,6 +5518,7 @@ ${catechistName}`;
     return (
       <AuthModal
         themeMode={themeMode}
+        isFormationCheckin={isFormationCheckinFlowRef.current}
         onToggleTheme={handleToggleTheme}
         authError={authError}
         authSubmitting={authSubmitting}

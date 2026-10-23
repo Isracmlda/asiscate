@@ -277,7 +277,8 @@ export function DashboardView({
     const browserOrigin = isLocalhost ? window.location.origin : `https://${firebaseConfig.projectId}.firebaseapp.com`;
     return buildAttendanceBrowserLink({
       formationCheckin: '1',
-      groupId: selectedAttendanceGroup.id,
+      groupId: 'catequistas:formacion',
+      parroquiaId: selectedAttendanceGroup.parroquiaId || '',
       date: attendanceDate,
       label: attendanceLabel
     }, browserOrigin);
